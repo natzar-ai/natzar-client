@@ -1,0 +1,68 @@
+{
+  "name": "@natzar/client",
+  "version": "0.2.1",
+  "description": "Official TypeScript client for the Natzar Partner API \u2014 AI health-assistant chat, async physician consults, live video consults, and webhook signature verification.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/natzar-ai/natzar-client.git"
+  },
+  "homepage": "https://natzar-ai.github.io/natzar-client/",
+  "bugs": {
+    "url": "https://github.com/natzar-ai/natzar-client/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/esm/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/esm/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js"
+    },
+    "./patient": {
+      "types": "./dist/esm/patient/index.d.ts",
+      "import": "./dist/esm/patient/index.js",
+      "require": "./dist/cjs/patient/index.js"
+    },
+    "./contract": {
+      "types": "./dist/esm/contract/index.d.ts",
+      "import": "./dist/esm/contract/index.js",
+      "require": "./dist/cjs/contract/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "sync-contract": "node scripts/sync-contract.mjs",
+    "check-contract": "node scripts/sync-contract.mjs --check",
+    "clean": "rm -rf dist",
+    "build": "npm run check-contract && npm run clean && npm run build:esm && npm run build:cjs",
+    "build:esm": "tsc -p tsconfig.build.json && node scripts/esm-extensions.mjs",
+    "build:cjs": "tsc -p tsconfig.cjs.json && node scripts/cjs-package.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test --experimental-strip-types test/*.test.ts",
+    "prepublishOnly": "npm test"
+  },
+  "dependencies": {
+    "zod": "^3.25.17"
+  },
+  "keywords": [
+    "natzar",
+    "telehealth",
+    "health",
+    "api-client",
+    "webhooks"
+  ]
+}
