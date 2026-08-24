@@ -26,10 +26,17 @@ export interface NatzarEndpoints {
    */
   baseUrl: string;
   /**
-   * Origin that serves the embed script and the widget iframe
-   * (`<origin>/embed/v1/embed.js`). Not used by the REST client itself; it is
-   * here so a host page can get both halves of an integration from one config
-   * object instead of hardcoding the second.
+   * Origin of the Natzar web app — the host that serves the embed script and
+   * the widget iframe (`<origin>/embed/v1/embed.js`, `<origin>/embed.html`),
+   * plus the patient-facing `/telehealth` and `/async` pages that invite links
+   * point at. Not used by the REST client itself; it is here so a host page can
+   * get both halves of an integration from one config object instead of
+   * hardcoding the second.
+   *
+   * Deliberately a DIFFERENT host from {@link baseUrl}: the app is static
+   * hosting (Amplify/CloudFront) and the REST API is API Gateway. They are not
+   * behind one domain, and pointing this at the API (or vice versa) yields
+   * 403s that read like credential problems.
    */
   embedOrigin: string;
 }
@@ -51,15 +58,15 @@ export const NATZAR_ENDPOINTS: Readonly<Record<NatzarEnvironment, NatzarEndpoint
   },
   dev: {
     baseUrl: 'https://nzcmjra5c3.execute-api.us-east-2.amazonaws.com/v1',
-    embedOrigin: 'https://dev.checkup.getmyhealthchecked.com',
+    embedOrigin: 'https://dev.app.natzar.ai',
   },
   stage: {
     baseUrl: 'https://sffiedz762.execute-api.us-east-2.amazonaws.com/v1',
-    embedOrigin: 'https://stage.checkup.getmyhealthchecked.com',
+    embedOrigin: 'https://stage.app.natzar.ai',
   },
   prod: {
     baseUrl: 'https://gd4n95b4zl.execute-api.us-east-2.amazonaws.com/v1',
-    embedOrigin: 'https://checkup.getmyhealthchecked.com',
+    embedOrigin: 'https://app.natzar.ai',
   },
 };
 

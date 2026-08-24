@@ -1,6 +1,6 @@
 {
   "name": "@natzar/client",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Official TypeScript client for the Natzar Partner API \u2014 AI health-assistant chat, async physician consults, live video consults, and webhook signature verification.",
   "license": "MIT",
   "repository": {

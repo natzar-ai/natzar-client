@@ -11,9 +11,15 @@
  * ## Quickstart
  *
  * ```html
- * <script src="https://<your-natzar-host>/embed/v1/embed.js"></script>
+ * <script src="https://app.natzar.ai/embed/v1/embed.js"></script>
  * <natzar-telehealth session-token="…" locale="en" theme="auto"></natzar-telehealth>
  * ```
+ *
+ * The script host is the Natzar app origin for the environment your key
+ * belongs to — `https://app.natzar.ai` (prod),
+ * `https://stage.app.natzar.ai`, `https://dev.app.natzar.ai`. It is also
+ * `NATZAR_ENDPOINTS[env].embedOrigin` in `@natzar/client`, so a host page
+ * can read it from the same config object rather than hardcoding it.
  *
  * 1. Server-side, mint a session token:
  *    `POST /v1/telehealth-consults/{id}/embed-session` (or

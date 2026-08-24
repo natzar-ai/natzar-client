@@ -23,6 +23,15 @@ test('local points at localhost:5173', () => {
   assert.equal(local.embedOrigin, 'http://localhost:5173');
 });
 
+test('the deployed embed origins are the Natzar app hosts', () => {
+  // These are what a partner pastes into a <script src>, and what the widget
+  // iframe is loaded from — a wrong host here is a blank widget on their page,
+  // not an error anyone sees. Pin them.
+  assert.equal(resolveEndpoints({environment: 'prod'}, {}).embedOrigin, 'https://app.natzar.ai');
+  assert.equal(resolveEndpoints({environment: 'stage'}, {}).embedOrigin, 'https://stage.app.natzar.ai');
+  assert.equal(resolveEndpoints({environment: 'dev'}, {}).embedOrigin, 'https://dev.app.natzar.ai');
+});
+
 test('all four environments are addressable and distinct', () => {
   const urls = (['local', 'dev', 'stage', 'prod'] as const).map(
     (environment) => resolveEndpoints({environment}, {}).baseUrl,

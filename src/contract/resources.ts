@@ -136,6 +136,7 @@ export type AsyncNotice =
   | 'assigned'
   | 'reassigned'
   | 'queue_delay'
+  | 'still_searching'
   | 'no_capacity_closed'
   | 'resolve_requested'
   | 'closed_resolved'
