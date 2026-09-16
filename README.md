@@ -1,11 +1,13 @@
 # @natzar/client
 
 Official TypeScript client for the **Natzar Partner API** — AI health-assistant
-chat, async physician consults, live video consults, and webhooks.
+chat, async physician consults, live video consults, and webhooks — plus the
+two browser surfaces built on it: a patient's care conversation and a
+physician's workspace inside your own portal.
 
 - **[API reference →](https://natzar-ai.github.io/natzar-client/)** — generated
   from the contract, every route, field, error code and webhook payload.
-- Works in Node 18+ and in the browser (two entry points — see below).
+- Works in Node 18+ and in the browser (three entry points — see below).
 - No framework dependency. Subscriptions are plain callbacks.
 
 ```bash
@@ -93,9 +95,109 @@ if (entry.awaiting === 'consent') {
 if (entry.awaiting === 'rating') {
   await care.rate(entry, {stars: 5, feedback: 'Very helpful'});
 }
+
+if (entry.awaiting === 'join') {
+  // a video consult is waiting — see "Video consults" below
+  const state = await care.telehealth.join(entry.consultId!);
+}
+
+if (entry.awaiting === 'book') {
+  // an appointment can be booked — see "Video consults" below
+  const grid = await care.telehealth.slots(entry.consultId!);
+}
 ```
 
-The prompt disappears from the next snapshot on its own once answered.
+The prompt disappears from the next snapshot on its own once answered. When a
+message carried one of the platform's consult links, `entry.text` is the prose
+without the URL and `entry.link` says what the link can do right now
+(`consent` / `rate` / `join` / `book`, or `open` / `rated` / `ended` / `none`
+for a control you keep visible but disabled).
+
+Two more flags worth rendering: `entry.emergency` marks the platform's
+deterministic emergency line (show it loudly, apart from ordinary advice), and
+`entry.signature` carries the clinician's signature on a `physician` entry.
+
+### Attachments
+
+Stage the file first, then attach the handle to a message. Images and PDFs are
+read by the assistant.
+
+```ts
+const staged = await care.attachments.upload(file);          // a File or Blob
+await care.conversation.send({
+  text: 'Here is the rash',
+  attachment: {...staged, previewUrl: URL.createObjectURL(file)},   // previewUrl is optional
+});
+```
+
+Refused uploads reject with `unsupported_type` or `file_too_large`.
+
+### Video consults
+
+A video consult invited from the conversation runs on `care.telehealth`, keyed
+by the consult id on the entry. The SDK mints and caches the consult-scoped
+session for you.
+
+```ts
+const {mode} = await care.telehealth.session(consultId);   // 'queue' | 'scheduled'
+
+// On-demand: join() is the presence beat — call it every ~10s while waiting.
+const state = await care.telehealth.join(consultId);
+if (state.status === 'waiting') showQueue(state.position, state.estimatedMinutes);
+if (state.livekit) connectRoom(state.livekit);              // {token, url, roomName}
+await care.telehealth.leave(consultId);                     // give up the place in line
+await care.telehealth.rate(consultId, {communication: 5, overall: 5});
+
+// Scheduled: pick a slot, then beat in the waiting room from `waitingRoomOpensAt`.
+const timezone = deviceTimeZone() ?? undefined;                 // from '@natzar/client/contract'
+const grid = await care.telehealth.slots(consultId, {timezone});
+const {appointment} = await care.telehealth.book(consultId, {startsAt: grid.slots[0].startsAt, timezone});
+const beat = await care.telehealth.appointmentBeat(consultId);   // beat.livekit once the call is on
+await care.telehealth.cancelBooking(consultId);
+```
+
+A lost booking race rejects with `slot_taken`; `error.details.slots` holds a
+fresh grid so the retry is against times that still exist.
+
+#### Time zones
+
+Pass the patient's zone (`deviceTimeZone()` in a browser) as `timezone` on
+`slots` and `book`. The grid then comes back **in that zone**: every
+`localDate` is the patient's own calendar day, `timezone` echoes what was
+used, and the appointment is stamped with it so the confirmation and the
+reminders the platform sends read in the patient's clock. Nothing is guessed:
+omit it and the grid is in the clinic's zone (`clinicTimezone`, also on every
+response) — say so on screen.
+
+```ts
+import {deviceTimeZone, describeTimeZone, offsetDifferenceMinutes, describeOffsetDifference} from '@natzar/client/contract';
+
+const grid = await care.telehealth.slots(consultId, {timezone: deviceTimeZone() ?? undefined});
+const days = groupBy(grid.slots, (s) => s.localDate);            // days in the patient's zone
+label(`Times in ${describeTimeZone(grid.timezone).longName}`);
+if (grid.clinicTimezone !== grid.timezone) {
+  const at = new Date(grid.slots[0].startsAt);
+  const diff = offsetDifferenceMinutes(grid.clinicTimezone, grid.timezone, at);   // clinic minus patient
+  if (diff !== 0) note(`The clinic is in ${describeTimeZone(grid.clinicTimezone, at).longName} (${describeOffsetDifference(diff)})`);
+}
+if (grid.truncated) offerMore(() => care.telehealth.slots(consultId, {from: grid.nextFrom!, timezone: grid.timezone}));
+```
+
+A booked `appointment` carries three zones: `timezone` (the one you asked
+for), `physicianTimezone` (the physician's calendar zone — show "their
+clock" when it differs at `startsAt`) and `clinicTimezone`.
+
+### Session expiry
+
+Sessions are short-lived. Pass `onExpired` and re-mint on your server; the
+subscription pauses (no requests) until you hand over the new session, then
+resumes where it was.
+
+```ts
+const care = connectPatient(session, {
+  onExpired: async () => care.refresh(await mintSessionOnMyServer()),
+});
+```
 
 ### The live consult
 
@@ -133,27 +235,137 @@ nothing.
 
 ---
 
-## Why there are two entry points
+## Why there are three entry points
 
-| | `@natzar/client` | `@natzar/client/patient` |
-|---|---|---|
-| Runs in | your server | the browser |
-| Credential | `pp_live_…` API key | a session your server minted |
-| Scope | your whole tenant | one patient |
-| Use for | provisioning, clinician tools, webhooks | patient-facing UI |
+| | `@natzar/client` | `@natzar/client/patient` | `@natzar/client/physician` |
+|---|---|---|---|
+| Runs in | your server | the browser | the browser |
+| Credential | `pp_live_…` API key | an embed session your server minted | a physician session your server minted |
+| Scope | your whole tenant | one patient | one clinician |
+| Use for | provisioning, webhooks, admin | patient-facing UI | the clinician's screen in your portal |
 
 The API key is tenant-scoped: it can read **every** patient you have, so it must
-never reach a browser bundle. The session token is scoped to one patient and
+never reach a browser bundle. A session token is scoped to one person and
 expires, so it can. It is the same split as Stripe's secret and publishable
 keys.
 
 This is why you do not need to build a relay: mint a session on your server,
 hand it to the browser, done.
 
-> Sessions are **self-describing** — the mint response carries the endpoint and
-> the public transport key alongside the token, so nothing about our deployment
-> is baked into your bundle and key rotation is invisible to you. Pass the whole
-> response to `connectPatient()`.
+> Sessions are **self-describing** — the mint response carries the endpoint
+> alongside the token, so nothing about our deployment is baked into your
+> bundle and key rotation is invisible to you. Pass the whole response to
+> `connectPatient()` / `connectPhysician()`.
+
+---
+
+## The physician surface
+
+A clinician works inside **your** portal, signed in with **your** login, and
+never sees a second sign-in. Your server exchanges your session for a Natzar
+physician session (single sign-on by token exchange); the browser does the rest.
+
+```ts
+// your server — after YOUR authentication of the clinician
+const session = await natzar.physicians.session(physicianId);   // tenant key only
+// → send `session` to the browser as-is ({sessionToken, expiresAt, apiUrl, physician})
+
+// your browser
+import {connectPhysician} from '@natzar/client/physician';
+
+const desk = connectPhysician(session, {onExpired: () => remintAndRefresh()});
+
+const stop = desk.workspace.subscribe((ws, sync) => {
+  if (!ws) return;                                   // sync.phase === 'connecting'
+  render({
+    presence: ws.physician.presence,                 // 'ready' | 'busy' | 'offline'
+    queue: ws.telehealth.queue,                      // patients waiting, in order
+    ringing: ws.telehealth.active,                   // the call for THIS physician, or null
+    inbox: {queued: ws.async.queued, mine: ws.async.mine, overdue: ws.async.overdue},
+    upcoming: ws.telehealth.upcoming,                // next 7 days of appointments
+  });
+});
+
+await desk.presence.ready();                          // on the live rota — the SDK heartbeats
+const {livekit} = await desk.telehealth.room(id);     // once `active` reads in_progress
+await desk.telehealth.end(id);                        // back on the rota; `next` may already ring
+```
+
+What the SDK owns so you do not have to:
+
+- **One read, polled.** The workspace is the whole clinician screen in one
+  document; the subscription polls it, fingerprints it, and calls back only when
+  something that drives a render changed. Every action (`ready`, `claim`,
+  `reply`, `end`…) re-reads at once instead of waiting out the interval.
+- **The heartbeat.** A physician stays on the live rota only while beats arrive
+  (every 15 s, 45 s TTL). The SDK beats while the physician is `ready` or on a
+  call **and** a workspace subscription is open — unsubscribe on unmount and
+  the beat stops, so a closed laptop never keeps a clinician on the rota.
+- **Expiry.** The first `401` fires `onExpired` once; subscriptions park and
+  beats stop. Mint a fresh session on your server and call
+  `desk.refresh(session)` — everything resumes where it was.
+
+The inbox is the messaging half:
+
+```ts
+await desk.inbox.claim(consultId);                    // take a queued thread
+const stopThread = desk.inbox.thread(consultId).subscribe(({consult, messages}) => …);
+const file = await desk.attachments.upload({patientId: consult.patientId}, blob);
+await desk.inbox.reply(consultId, {text: 'Rest and fluids.', attachment: file});
+await desk.inbox.resolve(consultId, {note: 'Take care.'});
+await desk.inbox.escalate(consultId);                 // → a live video consult for the patient
+```
+
+`desk.languages.set({languages: ['fr', 'en']})` records the languages the
+physician consults in (base codes; `PHYSICIAN_LANGUAGES` in the contract) — a
+ranked routing preference, never a filter: a patient goes first to a physician
+who speaks their language, then to an English speaker, then to anyone.
+
+A session reaches only the physician-side routes (`403 forbidden` elsewhere)
+and always acts as its own physician — `desk.client` is the typed REST client
+bound to it, for routes this surface does not model (`schedules`, `licenses`,
+`asyncConsults.list({assignee: 'me'})`).
+
+### The availability calendar
+
+The hours patients can book are a **schedule**: recurring rules ("Tuesdays
+09:00–12:00", every week or every N weeks, optionally between two dates) plus
+dated exceptions (time off or extra hours, on a day or across a range). The
+engine that turns them into a calendar — and turns a calendar gesture back
+into the smallest change — ships in the contract, and the platform runs the
+same code, so what you draw is what patients see:
+
+```ts
+import {resolveDays, openWindow, closeWindow, blockDates, diffSchedule} from '@natzar/client/contract';
+
+// Read a range (rules always come back whole; exceptions + resolved days for the range).
+const schedule = await desk.client.schedules.get('me', {from: '2026-09-01', to: '2026-10-31'});
+render(schedule.days);                                // [{date, intervals: [{start, end, specialty}]}]
+
+// Edit by DATE, not by row — the engine picks the right rows to touch.
+let draft = {rules: schedule.rules, exceptions: schedule.exceptions};
+draft = closeWindow(draft, {date: '2026-09-14', start: 14 * 60, end: 16 * 60});  // this day only
+draft = blockDates(draft, {from: '2026-12-21', to: '2027-01-04', reason: 'Leave'});
+preview(resolveDays(draft, '2026-09-01', '2026-10-31'));  // live, before saving
+
+// Save the difference — nothing else on the calendar moves.
+await desk.client.schedules.update('me', diffSchedule(schedule, draft), undefined, {from: '2026-09-01', to: '2026-10-31'});
+```
+
+`schedules.replace` is the whole-rota alternative for a rostering system that
+owns the schedule outright.
+
+Every rule and exception is read in **one zone per physician**: the
+physician's own (`schedulingTimezone`) when set, else the clinic's. The
+schedule response names it as `timezone` (with `clinicTimezone` beside it and
+`today` in it); set or clear it with `schedules.update(id, {timezone: 'America/Toronto'})`
+/ `{timezone: null}`. A zone change keeps every rule's wall-clock meaning —
+Tuesday 09:00 stays 09:00 — and existing appointments keep their instants
+(`upcomingAppointments` on the response says how many will re-render on the
+new clock). Per-rule `timezone` is refused when it differs from the
+physician's zone (`rule_zone_mismatch`); it is the schedule's zone that
+carries the meaning. `listTimeZoneIds()` and `describeTimeZone()` from the
+contract feed a zone picker.
 
 ---
 
@@ -187,16 +399,23 @@ await natzar.agent.send({externalPatientId: 'u_1', text: 'hello', idempotencyKey
 ### Clinician actions
 
 Actions taken *as a physician* need that clinician's own credential — an API key
-identifies your application, not a person. Sign them in against the Natzar
-provider pool and pass their ID token:
+identifies your application, not a person. Three are accepted, strongest first:
+
+| credential | where | pass as |
+|---|---|---|
+| a Natzar physician session | the browser | `connectPhysician(session)` — see above |
+| their Cognito ID token (signed in to the Natzar provider pool) | your server | `{physicianToken}` per call |
+| their physician id, asserted by your server | your server | `{physicianId}` per call — switched off per tenant with `403 forbidden` |
 
 ```ts
 await natzar.asyncConsults.postReply(
   consultId,
   {text: 'Take 400mg ibuprofen twice daily.'},
-  {physicianToken: clinicianIdToken},
+  {physicianToken: clinicianIdToken},   // or {physicianId: 'phys_…'}
 );
 ```
+
+`{id}` on any `/physicians/{id}/…` route may be `'me'` — the acting physician.
 
 ### Errors
 

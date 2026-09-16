@@ -21,7 +21,9 @@
  *
  * Cross-tenant access NEVER yields 403: a resource belonging to another
  * partner is indistinguishable from a missing one (`not_found`), so ids are
- * not an existence oracle.
+ * not an existence oracle. The 403 codes are all about YOUR credential's
+ * authority (`forbidden`, `key_capability_disabled`, `on_demand_disabled`,
+ * `origin_not_allowed`), never about whether something exists.
  *
  * @packageDocumentation
  */
@@ -42,9 +44,31 @@ export type ErrorCode =
   /**
    * The `Authorization: Bearer pp_…` API key is missing, malformed, revoked,
    * from another environment (`pp_test_…` against prod or vice versa), or the
-   * partner account is suspended. HTTP 401.
+   * partner account is suspended. Also returned when a physician SESSION
+   * token in that header is malformed, expired, or was invalidated by an
+   * API-key rotation (mint a fresh one via `POST /v1/physicians/{id}/session`),
+   * and when a route that needs a physician credential got none — the
+   * message lists the three accepted forms. HTTP 401.
    */
   | 'unauthorized'
+  /**
+   * The credential is VALID but may not do this. Distinct from
+   * `unauthorized` (we could not tell who you are) — here we know exactly who
+   * you are, and the answer is no. Raised by the physician-side surface:
+   *
+   * - a physician SESSION token (`Authorization: Bearer <session>`) called a
+   *   route outside the physician allowlist (creating consults, minting embed
+   *   sessions, listing physicians, minting another session, …) — those need
+   *   the tenant API key;
+   * - `X-Natzar-Physician-Id` was sent by a key whose partner account has
+   *   physician assertion switched off (`capabilities.physicianAssertion ===
+   *   false`) — send the clinician's Cognito ID token in `X-Natzar-Physician`,
+   *   or mint a physician session with the key instead.
+   *
+   * Never returned for a resource that merely belongs to someone else — that
+   * stays `not_found`. Retrying unchanged will fail again. HTTP 403.
+   */
+  | 'forbidden'
   /**
    * No such resource in YOUR tenant. Also returned (deliberately, instead of
    * 403) when the id exists but belongs to a different partner. HTTP 404.
@@ -52,11 +76,44 @@ export type ErrorCode =
   | 'not_found'
   /**
    * The tenant this API key belongs to does not have the requested product
-   * enabled (`asyncEnabled` for async consults, `telehealthEnabled` for
-   * telehealth). Returned by the consult-creation endpoints. Contact us to
+   * enabled at all — the MODALITY is off (`asyncEnabled` for async consults,
+   * `telehealthEnabled` for telehealth), so neither mode of it can be
+   * created. Returned by the consult-creation endpoints. Contact us to
    * enable the feature; retrying will not help. HTTP 409.
+   *
+   * Its narrower siblings tell you the refusal was NOT "you don't have this
+   * product": {@link ErrorCode | `mode_disabled`} (the tenant runs the
+   * modality, but not the mode you asked for) and
+   * {@link ErrorCode | `key_capability_disabled`} (the tenant runs it, your
+   * key is not licensed for it). Branching only on `feature_disabled`
+   * remains safe — those two are additions, and a client that treats every
+   * one of the three as "not available here" is correct.
    */
   | 'feature_disabled'
+  /**
+   * The tenant offers this modality, but not in the MODE you asked for —
+   * e.g. `POST /v1/telehealth-consults` with `mode: "scheduled"` against a
+   * tenant that runs the live queue and has never turned booking on. Read
+   * `capabilities` from `GET /v1/patients/state` to see which modes are
+   * live; contact the tenant to have the other one enabled. HTTP 409.
+   */
+  | 'mode_disabled'
+  /**
+   * The mode you asked for does not exist for that modality, in any tenant —
+   * today only in-person visits, which are always for a time and therefore
+   * have no `live` mode. A request shape error, not a configuration one:
+   * no tenant can enable it. HTTP 400.
+   */
+  | 'mode_not_supported'
+  /**
+   * The TENANT offers this scenario, but THIS API key is not licensed for it.
+   * A key can only ever narrow its tenant's capabilities, never widen them,
+   * and an operator has narrowed this one. Distinct from
+   * {@link ErrorCode | `on_demand_disabled`}, which is about who may
+   * INITIATE; this is about whether the key participates in the scenario at
+   * all. Contact us to widen the key; retrying will not help. HTTP 403.
+   */
+  | 'key_capability_disabled'
   /**
    * `POST /v1/patients`: the phone number is already registered — either to a
    * patient outside your tenant, or to a DIFFERENT patient (other
@@ -97,10 +154,12 @@ export type ErrorCode =
    */
   | 'thread_not_active'
   /**
-   * The acting physician is not the consult's current assignee — replies and
-   * resolves are restricted to the assigned physician, and the assignment may
-   * have changed under you (SLA reassignment). Re-read the consult; use
-   * `claim`/`takeover` to obtain the assignment. HTTP 409.
+   * The acting physician is not the consult's current assignee — replies,
+   * resolves, escalations and physician-side closes are restricted to the
+   * assigned physician, and the assignment may have changed under you (SLA
+   * reassignment). Re-read the consult; use `claim`/`takeover` to obtain the
+   * assignment. The telehealth twin: `room`/`end`/`ready` on a consult whose
+   * `practitioner` is somebody else (or nobody yet). HTTP 409.
    */
   | 'not_assigned'
   /**
@@ -136,6 +195,29 @@ export type ErrorCode =
    */
   | 'consult_not_cancellable'
   /**
+   * `POST /v1/telehealth-consults/{id}/book`: the requested start is no longer
+   * offerable — somebody took it in the moments between reading `/slots` and
+   * booking, or it never was on offer for this consult's specialty.
+   *
+   * This is the ONLY honest answer to a lost race, and it is deliberately not
+   * an internal error: the reservation is a conditional write, so exactly one
+   * of two simultaneous requests wins and the other must be told plainly. The
+   * `details` carry a FRESH `slots` array, so a retry is against times that
+   * still exist rather than the same one again. HTTP 409.
+   */
+  | 'slot_taken'
+  /**
+   * `POST /v1/telehealth-consults/{id}/book`: the patient already holds as
+   * many upcoming appointments as the platform allows one person at a time
+   * (`details.maxOpen`), counted over their booked consults whose start has
+   * not passed. An abuse guard, not a clinic setting: a patient is expected
+   * to cancel or attend before booking more. Moving an EXISTING appointment
+   * (a `book` on a consult that already has one) is exempt — it never adds
+   * one. Cancel one first, or wait for it to happen; retrying unchanged
+   * fails again. HTTP 409.
+   */
+  | 'too_many_open_bookings'
+  /**
    * Embed surface only: the session token failed verification (bad signature,
    * wrong shape, minted for a suspended partner, or invalidated by an API-key
    * rotation). Mint a fresh one via the `/embed-session` endpoint. HTTP 401.
@@ -154,13 +236,17 @@ export type ErrorCode =
    */
   | 'origin_not_allowed'
   /**
-   * `POST /v1/async-consults` / `POST /v1/telehealth-consults`: this API key
-   * is not authorized to open a consult ON DEMAND — i.e. from nothing, rather
-   * than through an invitation the agent or a physician proposed first (that
-   * path never carries this restriction; it doesn't go through your key at
-   * all). Async and telehealth are gated independently — a key can hold one
-   * without the other. Contact us to enable on-demand access for this key;
-   * retrying will not help. HTTP 403.
+   * `POST /v1/async-consults` / `POST /v1/telehealth-consults`: this consult
+   * may not be opened ON DEMAND — i.e. from nothing, rather than through an
+   * invitation the agent or a physician proposed first (that path never
+   * carries this restriction; it doesn't go through your key at all).
+   *
+   * TWO levels can withhold it and both answer with this code: the TENANT may
+   * have decided patients never request this scenario directly (it is offered
+   * on clinical judgement only), or YOUR KEY may not hold on-demand access
+   * for it. The `message` says which. Async and telehealth are gated
+   * independently at both levels — a key can hold one without the other.
+   * Retrying will not help. HTTP 403.
    */
   | 'on_demand_disabled'
   /**
@@ -204,13 +290,17 @@ export interface ApiError {
  */
 export const ERROR_HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
   invalid_request: 400,
+  mode_not_supported: 400,
   unauthorized: 401,
   embed_token_invalid: 401,
   embed_token_expired: 401,
+  forbidden: 403,
   origin_not_allowed: 403,
   on_demand_disabled: 403,
+  key_capability_disabled: 403,
   not_found: 404,
   feature_disabled: 409,
+  mode_disabled: 409,
   phone_unavailable: 409,
   email_in_use: 409,
   external_id_conflict: 409,
@@ -222,6 +312,8 @@ export const ERROR_HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
   sla_not_overdue: 409,
   message_rejected: 409,
   consult_not_cancellable: 409,
+  slot_taken: 409,
+  too_many_open_bookings: 409,
   rate_limited: 429,
   internal_error: 500,
 };

@@ -85,12 +85,20 @@ export function parseApiError(body: string): ApiError['error'] | null {
   return null;
 }
 
-/** The code to use when the response body did not carry one. */
+/**
+ * The code to use when the response body did not carry one.
+ *
+ * A bare 403 is `forbidden` — the API's own word for "we know who you are and
+ * the answer is no", and what the gateway's un-enveloped denials mean too (a
+ * physician session token on a route outside its allowlist arrives as one).
+ * `origin_not_allowed` is only ever sent WITH an envelope, so mapping the bare
+ * status onto it named a cause the response never claimed.
+ */
 export function codeForStatus(status: number): ErrorCode {
   if (status === 429) return 'rate_limited';
   if (status >= 500) return 'internal_error';
   if (status === 401) return 'unauthorized';
-  if (status === 403) return 'origin_not_allowed';
+  if (status === 403) return 'forbidden';
   if (status === 404) return 'not_found';
   return 'invalid_request';
 }

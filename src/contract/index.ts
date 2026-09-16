@@ -36,6 +36,23 @@
  * side only, never in a browser (the embed widgets use short-lived
  * consult-scoped session tokens instead — see `./embed`).
  *
+ * Routes that act AS A CLINICIAN (replying, going on the video rota, taking
+ * a call) additionally need to know which person, and take any one of three
+ * physician credentials:
+ *
+ * - `X-Natzar-Physician: <Cognito ID token>` beside the key — PROVEN: the
+ *   clinician signed in to us.
+ * - `Authorization: Bearer <physician session token>` INSTEAD of the key —
+ *   SESSION: your backend exchanged its own login for it via
+ *   `POST /v1/physicians/{id}/session`. The browser-safe form, restricted to
+ *   the physician-side routes (`403 forbidden` elsewhere).
+ * - `X-Natzar-Physician-Id: <physician id>` beside the key — ASSERTED: your
+ *   server vouches; refused with `403 forbidden` when your account has
+ *   assertion switched off.
+ *
+ * `{id}` on the `/v1/physicians/{id}/…` routes may be `me`, the acting
+ * physician. The full rules are in `./endpoints`, "Acting as a physician".
+ *
  * ## Error model
  *
  * Non-2xx responses carry `{error: {code, message, details?}}` with a
@@ -55,6 +72,18 @@
  *   `X-Natzar-Signature` verification scheme.
  * - `./embed` — the `<natzar-telehealth>`/`<natzar-async>` custom-element
  *   contract (attributes, DOM events, postMessage protocol).
+ * - `./schedule` — the physician availability engine: how a schedule is
+ *   stored (rules + dated exceptions), resolved into a calendar, edited by
+ *   date, and diffed into a `PATCH /schedule` body. Pure; the platform runs
+ *   the same code.
+ * - `./timezones` — the IANA-zone helpers a zone picker or a zone label
+ *   needs (the id list, validation, the device zone, offset labels, "9 h
+ *   ahead" in five languages). Pure; the platform's own pickers use them.
+ * - `./languages` — the physician-language preference: the five codes a
+ *   physician may declare, their names, the base-code normalizer
+ *   (`fr_CH` → `fr`) and the tier ranking every assigner applies (the
+ *   patient's language, then English, then anyone). Pure; the platform
+ *   routes with it.
  *
  * @packageDocumentation
  */
@@ -65,3 +94,6 @@ export * from './schemas';
 export * from './endpoints';
 export * from './webhooks';
 export * from './embed';
+export * from './schedule';
+export * from './timezones';
+export * from './languages';

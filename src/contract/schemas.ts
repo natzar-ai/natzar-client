@@ -31,6 +31,14 @@
  */
 
 import {z} from 'zod';
+import {
+  MAX_EXCEPTIONS_PER_WRITE,
+  MAX_EXCEPTION_REASON_LENGTH,
+  MAX_RULES_PER_PHYSICIAN,
+  MAX_RULE_INTERVAL_WEEKS,
+} from './schedule';
+import {IANA_ZONE_REGEX, MAX_ZONE_ID_LENGTH} from './timezones';
+import {MAX_PHYSICIAN_LANGUAGES, PHYSICIAN_LANGUAGES} from './languages';
 
 // ---------------------------------------------------------------------------
 // Primitives & limits
@@ -117,6 +125,45 @@ const langSchema = z.enum(['en_US', 'es_US', 'de_CH', 'fr_CH', 'it_CH']);
 const sexSchema = z.enum(['male', 'female']);
 
 /**
+ * An IANA time zone id (`Europe/Zurich`, `America/Los_Angeles`) — the shape
+ * only ({@link IANA_ZONE_REGEX}, at most {@link MAX_ZONE_ID_LENGTH} chars).
+ * The server then checks it against the tz database and refuses an unknown
+ * one — an abbreviation like `CEST`, a typo — with `400 invalid_request`
+ * ("timezone: unknown IANA zone"); validate client-side with
+ * `isKnownTimeZone` from `./timezones` to catch it first. Offsets (`+02:00`)
+ * fail the shape itself: they do not survive daylight saving.
+ */
+export const ianaZoneSchema = z
+  .string()
+  .min(1)
+  .max(MAX_ZONE_ID_LENGTH)
+  .regex(IANA_ZONE_REGEX, 'must be an IANA zone id such as Europe/Zurich');
+
+/**
+ * A tenant specialty slug: lowercase kebab, as `GET /v1/specialties` lists
+ * them. Declared with the primitives because both the physician schemas
+ * (`/specialties`, `/schedule`) and the telehealth ones use it — a `const`
+ * referenced before its declaration would throw at import.
+ */
+export const specialtySlugSchema = z
+  .string()
+  .min(1)
+  .max(48)
+  .regex(/^[a-z0-9][a-z0-9-]*$/, 'must be a lowercase slug');
+
+/**
+ * One language a physician may declare: exactly a base code from
+ * `PHYSICIAN_LANGUAGES` (`en`, `es`, `de`, `fr`, `it`). A full locale such
+ * as `fr_CH` is REFUSED (`400 invalid_request`), not collapsed — the region
+ * half says where a patient is, never what a clinician speaks, and a caller
+ * that sends one has confused the patient's `lang` with the physician's
+ * list. Same placement rule as {@link specialtySlugSchema}: declared with
+ * the primitives because both the physician create and the languages route
+ * use it.
+ */
+export const physicianLanguageSchema = z.enum(PHYSICIAN_LANGUAGES);
+
+/**
  * A staged attachment reference: the `stagingKey` returned by
  * `POST /v1/attachments/upload-urls` after you PUT the bytes. Keys are
  * tenant- and patient-scoped; a key outside the addressed patient's staging
@@ -190,6 +237,20 @@ export const upsertPatientSchema = z
     sex: sexSchema,
     /** Locale for system messages/embeds. Default `en_US`. */
     lang: langSchema.optional(),
+    /**
+     * Where the patient is, for STATE LICENSURE (docs/SCHEDULED-CONSULTS.md).
+     *
+     * ISO 3166-2 subdivision code without the country prefix (`CA`, not
+     * `US-CA`); `country` is ISO 3166-1 alpha-2 and defaults to the tenant's
+     * own. Only consulted by tenants that have licence enforcement switched on
+     * — for everyone else these are simply recorded.
+     *
+     * Send it if you have it: with enforcement on, a consult for a patient
+     * whose state we do not know cannot be routed at all, and the patient is
+     * asked for it before they can book.
+     */
+    state: z.string().min(2).max(3).optional(),
+    country: z.string().length(2).optional(),
   })
   .strict();
 
@@ -258,6 +319,13 @@ export const createPhysicianSchema = z
     givenName: z.string().min(1).max(100).optional(),
     /** Family (last) name. */
     familyName: z.string().min(1).max(100).optional(),
+    /**
+     * The languages the physician consults in, as base codes (`fr`, not
+     * `fr_CH`). A ranked routing preference, never a filter — see
+     * {@link setPhysicianLanguagesSchema}, which replaces the list later.
+     * Omit to record nothing (ranks last, never assumed English).
+     */
+    languages: z.array(physicianLanguageSchema).max(MAX_PHYSICIAN_LANGUAGES).optional(),
     /** Send the portal invitation email immediately. Default false. */
     sendPortalInvite: z.boolean().optional(),
   })
@@ -285,6 +353,132 @@ export const setPhysicianAvailabilitySchema = z
   .object({
     /** May the assignment engine give this physician new async consults? */
     asyncAvailable: z.boolean(),
+  })
+  .strict();
+
+/**
+ * Body of `POST /v1/physicians/{id}/session` — mint a short-lived PHYSICIAN
+ * SESSION token, the credential a clinician's browser uses to call the
+ * physician-side routes directly (no API key in the page, no relay through
+ * your server on every poll).
+ *
+ * Requires the tenant API key: a session may not mint another (`403
+ * forbidden`), which is what keeps a leaked browser token from renewing
+ * itself. Mint it from your backend after YOUR authentication of the user —
+ * this is the token-exchange half of single sign-on. If you also sent a
+ * physician header on this call it must name the same physician (`400`).
+ *
+ * The token is invalidated by an API-key rotation (like embed sessions):
+ * re-mint on `401 unauthorized`.
+ */
+export const createPhysicianSessionSchema = z
+  .object({
+    /** Token lifetime in seconds, 60–86400. Default 3600 (1 hour). */
+    ttlSeconds: z.number().int().min(60).max(86400).optional(),
+  })
+  .strict();
+
+/**
+ * Body of `POST /v1/physicians/{id}/presence` — go on or off the LIVE video
+ * queue. Self-only: the acting physician (any of the three credentials) must
+ * be the addressed one; `me` is accepted as the id.
+ *
+ * `ready: true` puts the physician on the rota and immediately tries to match
+ * them with a waiting patient — the response's `activeConsult` is the consult
+ * now ringing for them, if any. It also counts as a heartbeat; keep beating
+ * (`/heartbeat`) every 15 s or presence lapses after 45 s.
+ * `ready: false` takes them off (`busy`), clearing any pending ring.
+ */
+export const setPhysicianPresenceSchema = z
+  .object({
+    /** On the live queue (`true`) or off it (`false`). */
+    ready: z.boolean(),
+  })
+  .strict();
+
+/**
+ * Body of `POST /v1/physicians/{id}/heartbeat` — keep a `ready` physician on
+ * the rota. An empty object (or omit it). Self-only.
+ *
+ * Presence expires 45 seconds after the last beat; call this every 15 seconds
+ * while the physician is `ready` and your page is open, and STOP when they
+ * close it — a physician nobody is watching for must fall off the rota, or
+ * patients are rung for a clinician who never answers. A heartbeat on a
+ * physician who is not `ready` records `lastSeenAt` and changes nothing else
+ * (it does not revive a lapsed `ready`; post presence again for that). While
+ * `ready`, a beat also retries the match, so `activeConsult` may appear here.
+ */
+export const physicianHeartbeatSchema = z.object({}).strict();
+
+/** The longest agenda window one read may cover: 31 days. */
+export const AGENDA_MAX_WINDOW_MS = 31 * 24 * 60 * 60 * 1000;
+
+/**
+ * Query of `GET /v1/physicians/{id}/agenda` — the physician's booked
+ * appointments in a window, soonest first. Both bounds are ISO-8601 instants;
+ * `from` defaults to now and `to` to `from` + 7 days. A window may span at
+ * most 31 days.
+ */
+export const physicianAgendaQuerySchema = z
+  .object({
+    /** Start of the window (inclusive). Default: now. */
+    from: isoDateTimeSchema.optional(),
+    /** End of the window (inclusive). Default: `from` + 7 days. Max 31 days after `from`. */
+    to: isoDateTimeSchema.optional(),
+  })
+  .strict()
+  .refine(
+    (q) => {
+      if (!q.from || !q.to) return true;
+      const span = Date.parse(q.to) - Date.parse(q.from);
+      return span >= 0 && span <= AGENDA_MAX_WINDOW_MS;
+    },
+    {message: 'to must be at or after from and at most 31 days later'},
+  );
+
+/**
+ * Body of `PUT /v1/physicians/{id}/specialties` — which of the tenant's
+ * specialties this physician covers. A whole-list replace.
+ *
+ * Slugs must exist in the tenant's catalogue (`GET /v1/specialties`); an
+ * unknown one is dropped rather than refused, because a typo that narrowed a
+ * physician to nothing routable would be worse than a typo ignored — read
+ * the returned `physician.specialties` to see what stuck. An EMPTY list means
+ * "covers everything" (the permissive default that lets a clinic turn on
+ * specialty routing without emptying its rota); `acceptsAllSpecialties`
+ * says the same thing explicitly and survives a later non-empty list.
+ */
+export const setPhysicianSpecialtiesSchema = z
+  .object({
+    /** Specialty slugs from the tenant's catalogue. Empty = covers all. */
+    specialties: z.array(specialtySlugSchema).max(100),
+    /** Explicit "takes every specialty", independent of the list. Default false. */
+    acceptsAllSpecialties: z.boolean().optional(),
+  })
+  .strict();
+
+/**
+ * Body of `PUT /v1/physicians/{id}/languages` — the languages this physician
+ * consults in. A whole-list replace, like the specialties.
+ *
+ * Base codes only (`fr`, `en`); a full locale such as `fr_CH` is refused
+ * with `400 invalid_request` rather than collapsed, because the region is a
+ * fact about a patient and a caller sending one has the two lists confused.
+ * Order is kept as sent (the physician's own preference), duplicates are
+ * dropped, and at most {@link MAX_PHYSICIAN_LANGUAGES} entries fit — the
+ * whole catalogue.
+ *
+ * This is a RANKED PREFERENCE, not a constraint: language never excludes a
+ * physician from a patient. Among the physicians a consult may go to, the
+ * platform offers it first to one who speaks the patient's language, then
+ * to one who speaks English, then to anyone — so an EMPTY list means
+ * "nothing recorded" and ranks last (it is never read as English), and
+ * turning the feature on can never leave a rota empty.
+ */
+export const setPhysicianLanguagesSchema = z
+  .object({
+    /** Base language codes, in the physician's order. Empty = nothing recorded. */
+    languages: z.array(physicianLanguageSchema).max(MAX_PHYSICIAN_LANGUAGES),
   })
   .strict();
 
@@ -433,6 +627,14 @@ export const createAsyncConsultSchema = z
   .strict()
   .refine(exactlyOnePatientRef, {message: patientRefMessage});
 
+/**
+ * Which consults a list read covers, by who opened them (see `ConsultOrigin`
+ * in `./resources`). The default is CREDENTIAL-dependent: the tenant key
+ * alone lists `partner`-origin consults (yours); a physician credential
+ * lists `any`, since the clinician works the whole clinic.
+ */
+const originFilterSchema = z.enum(['partner', 'platform', 'any']);
+
 /** Query of `GET /v1/async-consults`. Sorted by `lastActivityAt` descending. */
 export const listAsyncConsultsQuerySchema = z
   .object({
@@ -444,6 +646,16 @@ export const listAsyncConsultsQuerySchema = z
     status: z
       .enum(['invited', 'queued', 'active', 'resolve_requested', 'closed'])
       .optional(),
+    /**
+     * Filter by who holds the thread:
+     * - `me` — the acting physician's (requires a physician credential):
+     *   their open threads, or with `status=closed` their history.
+     * - `unassigned` — `queued` threads nobody holds yet (the claimable pool).
+     * - any other value — our id of a physician: that physician's threads.
+     */
+    assignee: idSchema.optional(),
+    /** Which origins to include. See the note on the default above. */
+    origin: originFilterSchema.optional(),
     /** Opaque cursor from the previous page. */
     cursor: cursorSchema.optional(),
     /** Page size, 1–100. */
@@ -614,6 +826,22 @@ export const closeAsyncConsultSchema = z
   .strict();
 
 /**
+ * Body of `POST /v1/async-consults/{id}/escalate` — the assigned physician
+ * turns the messaging thread into a live video consult. An empty object (or
+ * omit it).
+ *
+ * Requires a physician credential naming the CURRENT assignee (`409
+ * not_assigned`) and an open thread (`409 thread_not_active`). The platform
+ * opens a telehealth consult for the same patient, closes the thread with
+ * `closedReason: 'escalated'`, and sends the patient the `escalated` notice
+ * with their join link through their usual channel — for your patients, onto
+ * the transcript and the `async_consult.message` webhook, exactly as the
+ * portal does it. The response names the new consult so your physician UI can
+ * go `ready` for it.
+ */
+export const escalateAsyncConsultSchema = z.object({}).strict();
+
+/**
  * Body of `POST /v1/async-consults/{id}/consent` — the PATIENT's answer to
  * a consult invite, from your own UI.
  *
@@ -707,6 +935,32 @@ export const createUploadUrlsSchema = z
  * exclusively through the `<natzar-telehealth>` embed — mint a session token
  * via `POST /v1/telehealth-consults/{id}/embed-session` and render the tag.
  */
+/**
+ * ONE medical licence, as a partner records it.
+ *
+ * `state` is an ISO 3166-2 subdivision code WITHOUT the country prefix (`CA`,
+ * not `US-CA`); `country` defaults to the tenant's own. The pair is what
+ * matters — "CA" is California to a US tenant and Canada to a Canadian one.
+ */
+export const physicianLicenseSchema = z
+  .object({
+    state: z.string().min(2).max(3),
+    country: z.string().length(2).optional(),
+    licenseNumber: z.string().max(64).optional(),
+    /** Local date, YYYY-MM-DD. A lapsed licence stops routing automatically. */
+    expiresAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    /** Absent/true = usable. False keeps the record but stops routing on it. */
+    active: z.boolean().optional(),
+  })
+  .strict();
+
+/** Body of `PUT /v1/physicians/{id}/licenses`. A whole-list replace. */
+export const setPhysicianLicensesSchema = z
+  .object({
+    licenses: z.array(physicianLicenseSchema).max(100),
+  })
+  .strict();
+
 export const createTelehealthConsultSchema = z
   .object({
     /** Our patient id. Provide this OR `externalPatientId`. */
@@ -715,9 +969,204 @@ export const createTelehealthConsultSchema = z
     externalPatientId: externalIdSchema.optional(),
     /** Clinical context — the physician's handoff summary. */
     context: z.string().min(1).max(MAX_CONTEXT_LENGTH).optional(),
+    /**
+     * Which live modality to open (docs/SCHEDULED-CONSULTS.md).
+     *
+     * `queue` (the default, and every consult created before this existed) puts
+     * the patient in the on-demand waiting room. `scheduled` creates a consult
+     * with no time yet: read `/slots`, then `/book` one. A `scheduled` consult
+     * is never matched to whoever happens to be free — the whole point is that
+     * the physician is chosen with the time.
+     */
+    mode: z.enum(['queue', 'scheduled']).optional(),
+    /**
+     * Route to one of the tenant's specialties, by slug. An unknown or inactive
+     * slug is not an error: it degrades to the tenant's catch-all specialty,
+     * because a bad routing hint must cost a generalist, never a consultation.
+     * Omit to leave the consult unrouted (any physician may take it).
+     */
+    specialty: specialtySlugSchema.optional(),
   })
   .strict()
   .refine(exactlyOnePatientRef, {message: patientRefMessage});
+
+/**
+ * Query of `GET /v1/telehealth-consults/{id}/slots`. Pass the PATIENT's zone
+ * as `timezone` and the whole grid comes back in it — `from`/`to` are read
+ * in it, every slot's `localDate` is in it, and the response's `timezone`
+ * confirms it — so a day grid groups by the patient's days, not the
+ * clinic's. Without it the grid is in the clinic's zone.
+ */
+export const listTelehealthSlotsQuerySchema = z
+  .object({
+    /** First local date to offer, YYYY-MM-DD in `timezone` when given, else the clinic zone. */
+    from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    /** Last local date to offer, likewise. Clamped to the tenant's booking horizon. */
+    to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    /**
+     * The zone to express the grid in — the patient's device zone. An
+     * unknown id is `400 invalid_request`. Default: the clinic's zone.
+     */
+    timezone: ianaZoneSchema.optional(),
+  })
+  .strict();
+
+/** Body of `POST /v1/telehealth-consults/{id}/book`. */
+export const bookTelehealthConsultSchema = z
+  .object({
+    /** Exact `startsAt` of an offered slot. Anything else is `409 slot_taken`. */
+    startsAt: z.string().datetime(),
+    /**
+     * Pin one of the physicians the slot was offered for. Optional: without
+     * it the platform picks the least-loaded eligible physician within the
+     * language tier — one who speaks the patient's language first, then
+     * English, then anyone (see `./languages`). With it the booking is that
+     * physician's or nobody's — a pin whose time was taken
+     * meanwhile, or that was never offered, is `409 slot_taken` with a fresh
+     * grid, never a silent re-route to a colleague the patient did not pick.
+     */
+    practitionerId: idSchema.optional(),
+    /**
+     * The PATIENT's zone (their device zone). Stored on the consult, echoed as
+     * `appointment.patientTimezone`, and what the patient's own confirmation
+     * and reminders are written in — with the physician's clock beside it
+     * when the two differ. Omit and notices fall back to the clinic's zone.
+     * Also the zone the returned `appointment` is expressed in.
+     */
+    patientTimezone: ianaZoneSchema.optional(),
+  })
+  .strict();
+
+/** A local calendar date, `YYYY-MM-DD`. Real-date checks happen in the schedule engine. */
+const localDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must be YYYY-MM-DD');
+
+/**
+ * One recurring window, as the schedule routes take it. The shape of
+ * {@link ScheduleRule} minus the server id; the semantic checks (window order,
+ * a real date, the every-N-weeks anchor) are the engine's
+ * `normalizeScheduleRule`, applied after this schema — see `./schedule`.
+ */
+const scheduleRuleInputSchema = z
+  .object({
+    /** 0 = Sunday … 6 = Saturday, in the physician's calendar zone. */
+    weekday: z.number().int().min(0).max(6),
+    /** Minutes from local midnight; `endMinute` must exceed `startMinute`. */
+    startMinute: z.number().int().min(0).max(1440),
+    endMinute: z.number().int().min(0).max(1440),
+    /**
+     * Legacy — leave it out. Every rule is read in the physician's calendar
+     * zone, which is set with `timezone` on the schedule body, not per rule.
+     * A value equal to that zone is accepted (and stored as null); any other
+     * value refuses the row with `rule_zone_mismatch`.
+     */
+    timezone: z.string().min(1).max(64).nullish(),
+    /** Inclusive local-date validity range, YYYY-MM-DD. */
+    effectiveFrom: localDateSchema.nullish(),
+    effectiveUntil: localDateSchema.nullish(),
+    /**
+     * Repeat every N weeks (default 1). N > 1 REQUIRES `effectiveFrom`: the
+     * first occurrence is the first `weekday` on or after it.
+     */
+    intervalWeeks: z.number().int().min(1).max(MAX_RULE_INTERVAL_WEEKS).nullish(),
+    /** Restrict this window to one specialty slug. */
+    specialty: specialtySlugSchema.nullish(),
+    /** False keeps the rule but publishes nothing from it. Default true. */
+    active: z.boolean().nullish(),
+  })
+  .strict();
+
+/**
+ * One dated exception, as the schedule routes take it. `endDate` makes it a
+ * range (inclusive, at most `MAX_EXCEPTION_SPAN_DAYS` long). `block` beats
+ * `open` wherever they overlap.
+ */
+const scheduleExceptionInputSchema = z
+  .object({
+    /** First (or only) local date. */
+    date: localDateSchema,
+    /** Last local date, inclusive. Omit for a single day. */
+    endDate: localDateSchema.nullish(),
+    kind: z.enum(['block', 'open']),
+    /** BOTH or NEITHER — omitting both means the whole of each day. */
+    startMinute: z.number().int().min(0).max(1440).nullish(),
+    endMinute: z.number().int().min(0).max(1440).nullish(),
+    /** `open` only: restrict the extra hours to one specialty slug. */
+    specialty: specialtySlugSchema.nullish(),
+    /** Shown to the physician only. */
+    reason: z.string().max(MAX_EXCEPTION_REASON_LENGTH).nullish(),
+  })
+  .strict();
+
+/**
+ * Body of `PUT /v1/physicians/{id}/schedule`. A WHOLE replace: every rule
+ * and every exception the physician has — on any date, past or future — is
+ * replaced by what is sent.
+ */
+export const setPhysicianScheduleSchema = z
+  .object({
+    /** Recurring windows. Replaces every existing rule for this physician. */
+    rules: z.array(scheduleRuleInputSchema).max(MAX_RULES_PER_PHYSICIAN),
+    /** Dated exceptions. Replaces every existing exception, whatever its date. */
+    exceptions: z.array(scheduleExceptionInputSchema).max(MAX_EXCEPTIONS_PER_WRITE).optional(),
+    /**
+     * The physician's calendar zone — the ONE zone every rule and exception
+     * of theirs is read in, and the zone the response is expressed in.
+     * Applied before the rules, so a rota and its zone land together. Omit
+     * to leave the stored zone as it is (the clinic's when none was ever
+     * set); use `PATCH` with `null` to clear it. Changing it keeps every
+     * rule's clock time ("Tuesday 09:00" stays 09:00) and moves the instants
+     * patients can book; booked appointments do not move.
+     */
+    timezone: ianaZoneSchema.optional(),
+  })
+  .strict();
+
+/**
+ * Body of `PATCH /v1/physicians/{id}/schedule` — a CHANGE SET, the way a
+ * calendar edits: rows with an `id` (from a prior read) are updated, rows
+ * without are created, and the two id lists are deleted. Rows not mentioned
+ * are untouched, however far in the future they lie. Any field may be omitted.
+ *
+ * This is what `diffSchedule` in `./schedule` produces from an edited
+ * document, and what the platform's own calendars send.
+ */
+export const updatePhysicianScheduleSchema = z
+  .object({
+    /** Rules to create (no `id`) or update (`id` of an existing rule of this physician). */
+    rules: z.array(scheduleRuleInputSchema.extend({id: idSchema.optional()})).max(MAX_RULES_PER_PHYSICIAN).optional(),
+    /** Exceptions to create or update, likewise. */
+    exceptions: z
+      .array(scheduleExceptionInputSchema.extend({id: idSchema.optional()}))
+      .max(MAX_EXCEPTIONS_PER_WRITE)
+      .optional(),
+    /** Rules to delete. Ids that are not this physician's are ignored. */
+    deletedRuleIds: z.array(idSchema).max(MAX_RULES_PER_PHYSICIAN).optional(),
+    /** Exceptions to delete, likewise. */
+    deletedExceptionIds: z.array(idSchema).max(MAX_EXCEPTIONS_PER_WRITE).optional(),
+    /**
+     * Set (a zone id) or clear (`null` → back to the clinic's zone) the
+     * physician's calendar zone; absent = unchanged. Applied BEFORE the rows
+     * of this change set, so a rule sent alongside is read in the new zone.
+     * A body carrying only `timezone` is a valid, zone-only save. Rules keep
+     * their clock times across the change; appointments keep their instants.
+     */
+    timezone: ianaZoneSchema.nullable().optional(),
+  })
+  .strict();
+
+/**
+ * Query of `GET`, `PUT` and `PATCH /v1/physicians/{id}/schedule`: the
+ * calendar range the response describes, as inclusive local dates in the
+ * physician's calendar zone (the response's `timezone`). Default: today →
+ * the tenant's planning horizon. Longer than `MAX_SCHEDULE_RANGE_DAYS` is
+ * clamped; page by range to go further. Rules are always returned whole.
+ */
+export const physicianScheduleQuerySchema = z
+  .object({
+    from: localDateSchema.optional(),
+    to: localDateSchema.optional(),
+  })
+  .strict();
 
 /** Query of `GET /v1/telehealth-consults`. Sorted by `sentAt` descending. */
 export const listTelehealthConsultsQuerySchema = z
@@ -726,6 +1175,23 @@ export const listTelehealthConsultsQuerySchema = z
     patientId: idSchema.optional(),
     /** Filter to one patient by your id. */
     externalPatientId: externalIdSchema.optional(),
+    /** Filter to one lifecycle state. */
+    status: z
+      .enum(['invited', 'scheduled', 'waiting', 'ringing', 'in_progress', 'completed', 'cancelled', 'no_show'])
+      .optional(),
+    /**
+     * Filter to the consults a physician took or is booked for — our id of
+     * the physician, or `me` for the acting one (requires a physician
+     * credential).
+     */
+    practitionerId: idSchema.optional(),
+    /** Filter to the live queue (`queue`) or booked appointments (`scheduled`). */
+    mode: z.enum(['queue', 'scheduled']).optional(),
+    /**
+     * Which origins to include. Defaults to `partner` for the tenant key
+     * alone and `any` with a physician credential — see `ConsultOrigin`.
+     */
+    origin: originFilterSchema.optional(),
     /** Opaque cursor from the previous page. */
     cursor: cursorSchema.optional(),
     /** Page size, 1–100. */
@@ -754,7 +1220,7 @@ export const joinTelehealthConsultSchema = z.object({}).strict();
  * Body of `POST /v1/telehealth-consults/{id}/rate` — the patient's
  * post-call feedback. Write-once: the first rating stands and later calls
  * return the consult unchanged. Only valid once the call has ended
- * (`409 not_ended` before).
+ * (`409 thread_not_active` before, and for a consult that never held a call).
  */
 export const rateTelehealthConsultSchema = z
   .object({
@@ -768,11 +1234,81 @@ export const rateTelehealthConsultSchema = z
   .strict();
 
 /**
- * Body of `POST /v1/telehealth-consults/{id}/cancel`. Only valid while the
- * consult is `invited` or `waiting` (`409 consult_not_cancellable` after the
- * call starts). The body is an empty object (or omit it entirely).
+ * Body of `POST /v1/telehealth-consults/{id}/cancel`. Only valid before the
+ * call starts — `invited`, `scheduled` or `waiting` (`409
+ * consult_not_cancellable` from `in_progress` on). The body may be omitted
+ * entirely.
+ *
+ * With a physician credential on a BOOKED consult this is the clinician
+ * cancelling their own appointment: the slot is released in the same write,
+ * the patient is notified, and `reason` (if given) is what they are told.
  */
-export const cancelTelehealthConsultSchema = z.object({}).strict();
+export const cancelTelehealthConsultSchema = z
+  .object({
+    /**
+     * Why the appointment is being cancelled, in the patient's own words'
+     * worth of plain text — relayed to them with the cancellation notice.
+     * Recorded on the consult either way.
+     */
+    reason: z.string().min(1).max(500).optional(),
+  })
+  .strict();
+
+/**
+ * Body of `POST /v1/telehealth-consults/{id}/room` — the acting physician
+ * asks for the way into their call. An empty object (or omit it).
+ *
+ * Requires a physician credential, and the consult must be assigned to that
+ * physician (`409 not_assigned` otherwise — including while it is still
+ * `waiting` for a match). What comes back depends on the consult's state:
+ * `in_progress` carries a LiveKit grant; `ringing` carries none (the patient's
+ * client is still confirming — keep polling the workspace); a terminal state
+ * carries only `status`. Calling it also counts as a presence heartbeat.
+ */
+export const telehealthRoomSchema = z.object({}).strict();
+
+/**
+ * Body of `POST /v1/telehealth-consults/{id}/end` — hang up. Idempotent on a
+ * consult that already ended (returns it unchanged, `next: null`).
+ *
+ * With a physician credential the caller must be the consult's practitioner
+ * (`409 not_assigned`). With the tenant key alone this is an administrative
+ * end of somebody else's call; the practitioner on the row is still put back
+ * on the rota (or offline) exactly as if they had hung up themselves.
+ */
+export const endTelehealthConsultSchema = z
+  .object({
+    /**
+     * What the physician does next. `false` (default) — back to `ready`, and
+     * the queue is re-matched immediately: the response's `next` is the
+     * consult now ringing for them, if any. `true` — go `offline` after this
+     * call; `next` is always null.
+     */
+    goOffline: z.boolean().optional(),
+  })
+  .strict();
+
+/**
+ * Body of `POST /v1/telehealth-consults/{id}/ready` — the BOOKED physician's
+ * presence in the waiting room of a `scheduled` consult, the twin of the
+ * patient's `/join` for appointments.
+ *
+ * Call it when the physician opens the appointment and every ~10 seconds
+ * while they stay; the call starts the moment both sides are present inside
+ * the appointment window. Only the practitioner the slot was booked with may
+ * call it (`409 not_assigned`).
+ */
+export const telehealthReadySchema = z
+  .object({
+    /**
+     * `true` (default) — I am here, keep me present. `false` — I stepped away:
+     * releases presence without ending anything, so the patient's screen can
+     * say the clinician is not in the room rather than showing a stale
+     * "connecting".
+     */
+    present: z.boolean().optional(),
+  })
+  .strict();
 
 // ---------------------------------------------------------------------------
 // Events
@@ -809,6 +1345,26 @@ export type CreatePhysicianRequest = z.infer<typeof createPhysicianSchema>;
 export type ListPhysiciansQuery = z.infer<typeof listPhysiciansQuerySchema>;
 /** Inferred body of `POST /v1/physicians/{id}/availability`. See {@link setPhysicianAvailabilitySchema}. */
 export type SetPhysicianAvailabilityRequest = z.infer<typeof setPhysicianAvailabilitySchema>;
+/** Inferred body of `POST /v1/physicians/{id}/session`. See {@link createPhysicianSessionSchema}. */
+export type CreatePhysicianSessionRequest = z.infer<typeof createPhysicianSessionSchema>;
+/** Inferred body of `POST /v1/physicians/{id}/presence`. See {@link setPhysicianPresenceSchema}. */
+export type SetPhysicianPresenceRequest = z.infer<typeof setPhysicianPresenceSchema>;
+/** Inferred body of `POST /v1/physicians/{id}/heartbeat`. See {@link physicianHeartbeatSchema}. */
+export type PhysicianHeartbeatRequest = z.infer<typeof physicianHeartbeatSchema>;
+/** Inferred query of `GET /v1/physicians/{id}/agenda`. See {@link physicianAgendaQuerySchema}. */
+export type PhysicianAgendaQuery = z.infer<typeof physicianAgendaQuerySchema>;
+/** Inferred body of `PUT /v1/physicians/{id}/specialties`. See {@link setPhysicianSpecialtiesSchema}. */
+export type SetPhysicianSpecialtiesRequest = z.infer<typeof setPhysicianSpecialtiesSchema>;
+/** Inferred body of `PUT /v1/physicians/{id}/languages`. See {@link setPhysicianLanguagesSchema}. */
+export type SetPhysicianLanguagesRequest = z.infer<typeof setPhysicianLanguagesSchema>;
+/** Inferred body of `POST /v1/async-consults/{id}/escalate`. See {@link escalateAsyncConsultSchema}. */
+export type EscalateAsyncConsultRequest = z.infer<typeof escalateAsyncConsultSchema>;
+/** Inferred body of `POST /v1/telehealth-consults/{id}/room`. See {@link telehealthRoomSchema}. */
+export type TelehealthRoomRequest = z.infer<typeof telehealthRoomSchema>;
+/** Inferred body of `POST /v1/telehealth-consults/{id}/end`. See {@link endTelehealthConsultSchema}. */
+export type EndTelehealthConsultRequest = z.infer<typeof endTelehealthConsultSchema>;
+/** Inferred body of `POST /v1/telehealth-consults/{id}/ready`. See {@link telehealthReadySchema}. */
+export type TelehealthReadyRequest = z.infer<typeof telehealthReadySchema>;
 /** Inferred query of `GET /v1/patients/state`. See {@link getPatientStateQuerySchema}. */
 export type GetPatientStateQuery = z.infer<typeof getPatientStateQuerySchema>;
 /** Inferred body of `POST /v1/async-consults/{id}/consent`. See {@link respondAsyncConsentSchema}. */
@@ -853,5 +1409,19 @@ export type CreateTelehealthConsultRequest = z.infer<typeof createTelehealthCons
 export type ListTelehealthConsultsQuery = z.infer<typeof listTelehealthConsultsQuerySchema>;
 /** Inferred body of `POST /v1/telehealth-consults/{id}/cancel`. See {@link cancelTelehealthConsultSchema}. */
 export type CancelTelehealthConsultRequest = z.infer<typeof cancelTelehealthConsultSchema>;
+/** Inferred query of `GET /v1/telehealth-consults/{id}/slots`. See {@link listTelehealthSlotsQuerySchema}. */
+export type ListTelehealthSlotsQuery = z.infer<typeof listTelehealthSlotsQuerySchema>;
+/** Inferred body of `POST /v1/telehealth-consults/{id}/book`. See {@link bookTelehealthConsultSchema}. */
+export type BookTelehealthConsultRequest = z.infer<typeof bookTelehealthConsultSchema>;
+/** Inferred body of `PUT /v1/physicians/{id}/schedule`. See {@link setPhysicianScheduleSchema}. */
+export type SetPhysicianScheduleRequest = z.infer<typeof setPhysicianScheduleSchema>;
+/** Inferred body of `PATCH /v1/physicians/{id}/schedule`. See {@link updatePhysicianScheduleSchema}. */
+export type UpdatePhysicianScheduleRequest = z.infer<typeof updatePhysicianScheduleSchema>;
+/** Inferred query of the `/v1/physicians/{id}/schedule` routes. See {@link physicianScheduleQuerySchema}. */
+export type PhysicianScheduleQuery = z.infer<typeof physicianScheduleQuerySchema>;
+/** Inferred body of `PUT /v1/physicians/{id}/licenses`. See {@link setPhysicianLicensesSchema}. */
+export type SetPhysicianLicensesRequest = z.infer<typeof setPhysicianLicensesSchema>;
+/** One licence entry. See {@link physicianLicenseSchema}. */
+export type PhysicianLicenseInput = z.infer<typeof physicianLicenseSchema>;
 /** Inferred query of `GET /v1/events`. See {@link listEventsQuerySchema}. */
 export type ListEventsQuery = z.infer<typeof listEventsQuerySchema>;

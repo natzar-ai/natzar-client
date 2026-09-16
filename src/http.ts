@@ -19,7 +19,12 @@ export type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 export interface HttpConfig {
   /** REST base URL including `/v1`, no trailing slash. */
   baseUrl: string;
-  /** The partner API key (`pp_live_…` / `pp_test_…`). */
+  /**
+   * The bearer credential: a partner API key (`pp_live_…` / `pp_test_…`), or
+   * a physician SESSION token on the browser-side physician surface. Both go
+   * out as `Authorization: Bearer …` — the API tells them apart by shape, so
+   * the request builder does not have to.
+   */
   apiKey: string;
   /** Per-request timeout in milliseconds. Default 30 000. */
   timeoutMs: number;
@@ -36,7 +41,7 @@ export interface HttpConfig {
 }
 
 export interface RequestArgs {
-  method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   /** Path after the base URL, starting with `/` and already interpolated. */
   path: string;
   /** Query parameters. `undefined` values are dropped, not sent as "undefined". */
@@ -60,6 +65,17 @@ export interface RequestArgs {
   headers?: Record<string, string>;
 }
 
+/** Which bearer credential a client was built with. */
+export type CredentialKind = 'apiKey' | 'sessionToken';
+
+// A physician session token is a compact JWS — three base64url segments. Like
+// the key-prefix test below this is a SHAPE check, not a validation: the
+// platform verifies the signature and expiry. What it catches is the class of
+// mistake that otherwise surfaces as a bare 401 indistinguishable from an
+// expired session: a mint response that was never awaited, an empty value out
+// of a store, or the partner key handed over where the session belongs.
+const JWT_SHAPE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+
 /**
  * A partner key that never left the server is the entire security model of
  * this API, so the client says so out loud rather than letting a browser
@@ -68,14 +84,36 @@ export interface RequestArgs {
  * "the Amplify secret did not resolve and we are about to send the literal
  * placeholder as a bearer token" is a mistake worth naming here — it comes
  * back as a bare 401 that looks exactly like a revoked key.
+ *
+ * With `kind: 'sessionToken'` the same check applies to a physician SESSION
+ * token (the browser-side credential): it must have the three-segment JWT
+ * shape. Each message names the credential it was checking and, when the
+ * value plainly belongs to the OTHER slot, says so — swapping the two is the
+ * likeliest wiring mistake and the one the server answers least helpfully.
  */
-export function assertUsableKey(apiKey: string): void {
-  if (!apiKey || !/^pp_(?:live|test)_/.test(apiKey)) {
+export function assertUsableKey(value: string, kind: CredentialKind = 'apiKey'): void {
+  const shown = value ? `"${value.slice(0, 12)}…"` : 'an empty value';
+  if (kind === 'sessionToken') {
+    if (!value || !JWT_SHAPE.test(value)) {
+      throw new Error(
+        'natzar-client: sessionToken must be a physician session token — the `sessionToken` of a ' +
+          '`POST /v1/physicians/{id}/session` mint, a three-segment JWT. Got ' +
+          shown +
+          (/^pp_(?:live|test)_/.test(value)
+            ? '. That is a partner key: it belongs in `apiKey`, and only on your server.'
+            : '. If this came from your own session exchange, the mint most likely failed or was never awaited.'),
+      );
+    }
+    return;
+  }
+  if (!value || !/^pp_(?:live|test)_/.test(value)) {
     throw new Error(
       'natzar-client: apiKey must be a partner key (pp_live_… or pp_test_…). ' +
         'Got ' +
-        (apiKey ? `"${apiKey.slice(0, 12)}…"` : 'an empty value') +
-        '. If this came from a secret manager, the secret most likely did not resolve.',
+        shown +
+        (JWT_SHAPE.test(value)
+          ? '. That looks like a physician session token: pass it as `sessionToken` instead.'
+          : '. If this came from a secret manager, the secret most likely did not resolve.'),
     );
   }
 }

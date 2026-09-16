@@ -93,7 +93,9 @@ test('handleWebhook dispatches once and honours the dedupe hook', async () => {
         seenIds.add(e.id);
         delivered.push(e.id);
       },
-      onDuplicate: (e) => duplicates.push(e.id),
+      onDuplicate: (e) => {
+        duplicates.push(e.id);
+      },
     });
   await run();
   await run(); // the retry

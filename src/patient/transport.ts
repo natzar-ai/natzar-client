@@ -18,6 +18,7 @@
 // exercises it, and it breaks silently on version skew.
 
 import {NatzarApiError} from '../errors';
+import {NatzarSessionError} from '../session-error';
 import type {ErrorCode} from '../contract/index';
 
 /**
@@ -43,10 +44,10 @@ export interface TransportOptions {
   timeoutMs?: number;
 }
 
-/** Thrown when a session is unusable, before any network call is attempted. */
-export class NatzarSessionError extends Error {
-  override readonly name = 'NatzarSessionError';
-}
+// The session error is shared with the physician surface (../session-error) so
+// one `catch` recognises it whichever entry point minted the session; it is
+// re-exported here so this module's public surface is unchanged.
+export {NatzarSessionError};
 
 export function assertConnectable(session: PatientSession): asserts session is Required<Pick<PatientSession, 'sessionToken' | 'graphqlUrl' | 'publicApiKey'>> & PatientSession {
   if (!session?.sessionToken) {
@@ -149,6 +150,10 @@ const parseMaybeJson = (v: unknown): unknown => {
   }
 };
 
+// The refusal vocabulary of the embed surface, verbatim from embed-api and the
+// booking/consent cores it calls. Anything outside this set is reported as
+// `internal_error` rather than passed through, so a partner never ends up
+// branching on a string the surface emitted once by accident.
 const KNOWN_CODES = new Set<string>([
   'embed_token_invalid',
   'embed_token_expired',
@@ -161,10 +166,34 @@ const KNOWN_CODES = new Set<string>([
   'internal_error',
   'not_ended',
   'not_rateable',
+  'not_closed',
+  'invalid_rating',
+  'empty_rating',
+  // Attachments (embedUploadUrls).
+  'unsupported_type',
+  'file_too_large',
+  // Video (embedConsultJoin / embedAppointmentBeat).
+  'livekit_unconfigured',
+  'expired',
+  // Scheduled consultations (embedBookingSlots / embedBook / embedCancelBooking).
+  'booking_disabled',
+  'too_many_open_bookings',
+  'slot_taken',
+  'slot_unavailable',
+  'too_late_to_cancel',
+  'not_booked',
+  'already_started',
+  'wrong_modality',
+  'payment_check_failed',
 ]);
 
 // The embed ops' argument types, by name. Small and closed — the surface is
 // fixed by the contract, so a lookup beats threading types through every call.
+//
+// These MUST match the schema's declared scalar exactly: GraphQL only accepts
+// a variable whose type is the argument's own, so `startsAt` declared as
+// `a.datetime()` is `AWSDateTime!` on the wire and a `String!` variable is a
+// validation error before the resolver ever runs.
 const GQL_TYPES: Record<string, string> = {
   token: 'String!',
   ancestor: 'String',
@@ -177,6 +206,15 @@ const GQL_TYPES: Record<string, string> = {
   overallPhysicianRating: 'Int',
   communicationRating: 'Int',
   feedback: 'String',
+  // Waiting-room presence for a booked appointment (embedAppointmentBeat).
+  present: 'Boolean',
+  // Slot grid + booking (embedBookingSlots / embedBook). `timezone` is the
+  // viewer's zone; sent only when the caller passes one, never guessed.
+  from: 'String',
+  to: 'String',
+  timezone: 'String',
+  startsAt: 'AWSDateTime!',
+  practitionerId: 'ID',
 };
 const gqlTypeFor = (name: string): string => GQL_TYPES[name] ?? 'String';
 

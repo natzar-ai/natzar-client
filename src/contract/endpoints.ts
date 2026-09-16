@@ -20,6 +20,39 @@
  * rotation the previous key keeps working for a 24-hour grace period. A
  * missing/invalid/suspended key yields `401 unauthorized`.
  *
+ * ## Acting as a physician
+ *
+ * The key proves which APPLICATION is calling. Routes that act AS a clinician
+ * — replying on a thread, going on the video rota, taking a call — need to
+ * know which PERSON, and accept any ONE of three credentials, listed from
+ * strongest to weakest:
+ *
+ * | credential | how | attestation |
+ * |---|---|---|
+ * | Cognito ID token | `X-Natzar-Physician: <id token>` + your key | **proven** — the clinician signed in to us |
+ * | Physician session token | `Authorization: Bearer <session>` (INSTEAD of the key) | **session** — you exchanged your own login for it via `POST /v1/physicians/{id}/session`; browser-safe |
+ * | Asserted id | `X-Natzar-Physician-Id: <physician id>` + your key | **asserted** — your server vouches; refused with `403 forbidden` when your account has assertion switched off |
+ *
+ * A session token is what a clinician's BROWSER should hold: minted by your
+ * backend after your own authentication (single sign-on by token exchange),
+ * short-lived, invalidated by a key rotation, and restricted to the
+ * physician-side routes — the ones marked "physician session" below.
+ * Anything else answers `403 forbidden` to a session; keep the key on your
+ * server for those.
+ *
+ * Wherever a route takes `/v1/physicians/{id}/…` (and on
+ * `GET /v1/physicians/{id}`), `{id}` may be the literal `me`, resolving to
+ * the acting physician — `401 unauthorized` when no physician credential
+ * is present. Presence, heartbeat, availability and the session-scoped
+ * schedule/licence/specialty/language writes are SELF-ONLY: with a physician
+ * credential the addressed physician must be the acting one. The key alone
+ * (no physician credential) keeps its administrative reach over every
+ * physician of the tenant for schedule, licences, specialties and languages.
+ *
+ * A body `physicianId` on the older routes (`replies`, `claim`, `takeover`,
+ * `resolve`) is only a cross-check: it must equal the resolved actor or the
+ * request is `400 invalid_request`.
+ *
  * ## Idempotency
  *
  * - `POST /v1/patients` is an UPSERT keyed on `externalId`: repeating the
@@ -72,7 +105,9 @@ import type {
   Page,
   PartnerEventResource,
   PatientResource,
+  PhysicianPresence,
   PhysicianResource,
+  PhysicianWorkspace,
   TelehealthConsultResource,
   TelehealthStatus,
 } from './resources';
@@ -83,9 +118,12 @@ import type {
   CreateAsyncConsultRequest,
   CreateEmbedSessionRequest,
   CreatePhysicianRequest,
+  CreatePhysicianSessionRequest,
   CreateTelehealthConsultRequest,
   CreateAgentEmbedSessionRequest,
   CreateUploadUrlsRequest,
+  EndTelehealthConsultRequest,
+  EscalateAsyncConsultRequest,
   GetPatientStateQuery,
   JoinTelehealthConsultRequest,
   ListAgentMessagesQuery,
@@ -95,6 +133,8 @@ import type {
   ListPatientsQuery,
   ListPhysiciansQuery,
   ListTelehealthConsultsQuery,
+  PhysicianAgendaQuery,
+  PhysicianHeartbeatRequest,
   PostAgentMessageRequest,
   PostAsyncMessageRequest,
   PostAsyncReplyRequest,
@@ -103,10 +143,23 @@ import type {
   ResolveAsyncConsultRequest,
   RespondAsyncConsentRequest,
   SetPhysicianAvailabilityRequest,
+  SetPhysicianPresenceRequest,
+  SetPhysicianScheduleRequest,
+  UpdatePhysicianScheduleRequest,
+  PhysicianScheduleQuery,
+  SetPhysicianLicensesRequest,
+  SetPhysicianSpecialtiesRequest,
+  SetPhysicianLanguagesRequest,
+  PhysicianLicenseInput,
+  BookTelehealthConsultRequest,
+  ListTelehealthSlotsQuery,
   TakeoverAsyncConsultRequest,
+  TelehealthReadyRequest,
+  TelehealthRoomRequest,
   UpdatePatientRequest,
   UpsertPatientRequest,
 } from './schemas';
+import type {ResolvedDay, ScheduleException, ScheduleRule} from './schedule';
 
 // The request types are z.infer'd from ./schemas so the documented contract
 // and the runtime validation are one artifact; re-export them here so the
@@ -119,10 +172,22 @@ export type {
   CreateAsyncConsultRequest,
   CreateEmbedSessionRequest,
   CreatePhysicianRequest,
+  CreatePhysicianSessionRequest,
   CreateTelehealthConsultRequest,
   CreateUploadUrlsRequest,
+  EndTelehealthConsultRequest,
+  EscalateAsyncConsultRequest,
   GetPatientStateQuery,
   JoinTelehealthConsultRequest,
+  BookTelehealthConsultRequest,
+  ListTelehealthSlotsQuery,
+  SetPhysicianScheduleRequest,
+  UpdatePhysicianScheduleRequest,
+  PhysicianScheduleQuery,
+  SetPhysicianLicensesRequest,
+  SetPhysicianSpecialtiesRequest,
+  SetPhysicianLanguagesRequest,
+  PhysicianLicenseInput,
   ListAgentMessagesQuery,
   ListAsyncConsultsQuery,
   ListAsyncMessagesQuery,
@@ -130,6 +195,8 @@ export type {
   ListPatientsQuery,
   ListPhysiciansQuery,
   ListTelehealthConsultsQuery,
+  PhysicianAgendaQuery,
+  PhysicianHeartbeatRequest,
   PostAgentMessageRequest,
   PostAsyncMessageRequest,
   PostAsyncReplyRequest,
@@ -138,7 +205,10 @@ export type {
   ResolveAsyncConsultRequest,
   RespondAsyncConsentRequest,
   SetPhysicianAvailabilityRequest,
+  SetPhysicianPresenceRequest,
   TakeoverAsyncConsultRequest,
+  TelehealthReadyRequest,
+  TelehealthRoomRequest,
   UpdatePatientRequest,
   UpsertPatientRequest,
 };
@@ -208,19 +278,187 @@ export interface SetPhysicianAvailabilityResponse {
   physician: PhysicianResource;
 }
 
+/**
+ * `POST /v1/physicians/{id}/session` response — a physician session token
+ * and everything a browser client needs to use it. Hand the whole object to
+ * `connectPhysician` from `@natzar/client/physician` and it is
+ * self-configuring.
+ */
+export interface CreatePhysicianSessionResponse {
+  /**
+   * The session token: send it as `Authorization: Bearer <sessionToken>` on
+   * the physician-side routes. Browser-safe — it names one physician, expires,
+   * and can do nothing your key could not have let that physician do.
+   */
+  sessionToken: string;
+  /** When the token expires; re-mint before then (2 minutes early is plenty). */
+  expiresAt: IsoDateTime;
+  /**
+   * The base URL of THIS API (through `/v1`, no trailing slash) as seen from
+   * the request — returned per mint, like the embed mints return their
+   * transport, so a browser bundle never bakes in a host that may move.
+   */
+  apiUrl: string;
+  /** The physician the session was minted for. */
+  physician: PhysicianResource;
+}
+
+/**
+ * Response of `POST /v1/physicians/{id}/presence` and
+ * `POST /v1/physicians/{id}/heartbeat`: the presence after the write, plus
+ * the consult the physician is now on or being rung for — because going
+ * `ready` (and every beat while ready) retries the match, and a match is the
+ * thing the caller wants to hear about first.
+ */
+export interface PresenceResponse {
+  /** The physician's live-queue presence after the write. */
+  presence: PhysicianPresence;
+  /**
+   * This physician's `ringing` or `in_progress` consult after the match
+   * attempt, or null when idle. `in_progress` → call `/room` for the grant;
+   * `ringing` → keep polling the workspace until the patient confirms.
+   */
+  activeConsult: TelehealthConsultResource | null;
+}
+
+/** `GET /v1/physicians/{id}/workspace` response — see `PhysicianWorkspace`. */
+export type GetPhysicianWorkspaceResponse = PhysicianWorkspace;
+
+/** `GET /v1/physicians/{id}/agenda` response. */
+export interface GetPhysicianAgendaResponse {
+  /**
+   * The physician's booked appointments in the window, soonest first: rows
+   * that still hold a time (`scheduled`, `waiting`, `in_progress`) — a
+   * cancelled or missed appointment releases its slot and is no longer on
+   * the agenda. Each row's `scheduledAt` is an instant; render it in
+   * `timezone`, and show the patient's own clock from its `patientTimezone`
+   * when that differs.
+   */
+  appointments: TelehealthConsultResource[];
+  /**
+   * The zone to render this agenda in: the physician's calendar zone
+   * (`schedulingTimezone`, else the clinic's). Label the times with it.
+   */
+  timezone: string;
+}
+
+/** One of the tenant's specialties, as `GET /v1/specialties` lists them. */
+export interface SpecialtyResource {
+  /**
+   * Stable machine identifier, lowercase kebab — what goes on consults,
+   * physicians and the agent's triage. Never changes once in use; `name` is
+   * what gets renamed.
+   */
+  slug: string;
+  /** Display name. */
+  name: string;
+  /** Patient-facing one-liner, if the clinic wrote one. */
+  description?: string;
+  /**
+   * Soft-deleted specialties are `false`: no longer offered to the agent or
+   * to new bookings, still named on old consults. Absent means active.
+   */
+  active?: boolean;
+  /**
+   * THE catch-all: a physician holding it may take every consult of the
+   * clinic, whatever it was triaged to — the general practitioner, and the
+   * reason a clinic can route by specialty without stranding a patient whose
+   * complaint fits no box.
+   */
+  catchAll?: boolean;
+}
+
+/** `GET /v1/specialties` response. */
+export interface ListSpecialtiesResponse {
+  /** The tenant's specialty catalogue, in the clinic's display order. */
+  specialties: SpecialtyResource[];
+}
+
+/** `PUT /v1/physicians/{id}/specialties` response. */
+export interface SetPhysicianSpecialtiesResponse {
+  /** The physician after the replace — read `specialties` for what stuck. */
+  physician: PhysicianResource;
+}
+
+/** `PUT /v1/physicians/{id}/languages` response. */
+export interface SetPhysicianLanguagesResponse {
+  /** The physician after the replace — `languages` is the list as stored. */
+  physician: PhysicianResource;
+}
+
 // ---------------------------------------------------------------------------
 // Patient state
 // ---------------------------------------------------------------------------
 
 /**
+ * One modality's switches, as they apply to YOUR key on THIS tenant.
+ *
+ * Two questions, deliberately separated:
+ *
+ * - `live` / `book` — WHAT the clinic runs. `live` is a clinician engaging
+ *   now (the video queue; a messaging thread picked up straight away);
+ *   `book` is an appointment at a chosen time. A scenario the clinic doesn't
+ *   run cannot be reached by anyone, in any way.
+ * - `onDemand` — WHO may start it. With it off, the scenario exists but only
+ *   the AI agent (or a clinician) offers it, on clinical judgement; a direct
+ *   request — yours over REST, or the patient's in the embed — is refused
+ *   with `on_demand_disabled`. With it on, the patient may ask.
+ *
+ * So `onDemandLive` / `onDemandBook` are the fields to branch on when the
+ * question is "may I create one right now": they are already the AND of the
+ * mode and the initiator switch.
+ */
+export interface ModalityCapabilities {
+  /** A clinician engages now. Always false for `in_person`. */
+  live: boolean;
+  /** An appointment at a chosen time, from published availability. */
+  book: boolean;
+  /** The patient (or you, on their behalf) may ask for this unprompted. */
+  onDemand: boolean;
+  /** `live && onDemand` — a `live` create would be accepted. */
+  onDemandLive: boolean;
+  /** `book && onDemand` — a `book`/`scheduled` create would be accepted. */
+  onDemandBook: boolean;
+  /** `live || book` — the modality is reachable at all. */
+  enabled: boolean;
+}
+
+/**
  * What this tenant is allowed to offer, so your UI can hide what isn't
  * enabled instead of discovering it through a `409 feature_disabled`.
+ *
+ * Always the EFFECTIVE answer: the tenant's own configuration AND your API
+ * key's, ANDed together. A key can only narrow its tenant, never widen it,
+ * so nothing here can claim more than a create would actually allow.
  */
 export interface TenantCapabilities {
-  /** Whether async (messaging) consults can be created. */
+  /**
+   * Whether async (messaging) consults exist on this tenant for this key —
+   * i.e. `modalities.async.enabled`. This is the flag `feature_disabled`
+   * answers to; whether YOU may create one on demand is
+   * `modalities.async.onDemandLive`.
+   */
   asyncEnabled: boolean;
-  /** Whether telehealth (video) consults can be created. */
+  /**
+   * Whether telehealth (video) consults exist on this tenant for this key —
+   * i.e. `modalities.telehealth.enabled`. As above: `onDemandLive` (queue) and
+   * `onDemandBook` (scheduled) are what a create is gated on.
+   */
   telehealthEnabled: boolean;
+  /**
+   * The full matrix, per modality. Added after the two booleans above, which
+   * remain present and correct — `/v1` only ever grows.
+   *
+   * `in_person` is the third modality (a real appointment at a clinic). It
+   * has no `live` mode by definition and no creation endpoint on `/v1` yet;
+   * it is published so a UI can already tell a patient the clinic sees people
+   * in person.
+   */
+  modalities: {
+    async: ModalityCapabilities;
+    telehealth: ModalityCapabilities;
+    in_person: ModalityCapabilities;
+  };
 }
 
 /**
@@ -395,6 +633,21 @@ export interface RespondAsyncConsentResponse {
   consult: AsyncConsultResource;
 }
 
+/**
+ * `POST /v1/async-consults/{id}/escalate` response. The thread is closed
+ * (`closedReason: 'escalated'`) and a telehealth consult now exists for the
+ * same patient; the patient has been sent their join link.
+ */
+export interface EscalateAsyncConsultResponse {
+  /** The thread after closing. */
+  consult: AsyncConsultResource;
+  /**
+   * The telehealth consult opened for the patient — `invited` until they
+   * follow the link. Go `ready` on the live queue to take it when they do.
+   */
+  telehealthConsultId: string;
+}
+
 /** `POST /v1/async-consults/{id}/rate` response. */
 export interface RateAsyncConsultResponse {
   /** The consult, now carrying `rating` and with `rateable: false`. */
@@ -527,6 +780,298 @@ export interface RateTelehealthConsultResponse {
   alreadyRated: boolean;
 }
 
+// -- Physician side of a call -----------------------------------------------
+
+/**
+ * `POST /v1/telehealth-consults/{id}/room` response — the physician's way
+ * into their call, keyed on the consult's state.
+ *
+ * - `'in_progress'` — `livekit` is present: connect and render the room.
+ * - `'ringing'` — no grant yet; the patient's client is confirming. Keep
+ *   polling the workspace (`telehealth.active`) and call again when it reads
+ *   `in_progress`.
+ * - terminal (`completed` / `cancelled` / `no_show`) — the call is over.
+ */
+export interface TelehealthRoomResponse {
+  /** The consult's state as of this call. */
+  status: TelehealthStatus;
+  /** Room credentials. Present only when `status` is `'in_progress'`. */
+  livekit?: LiveKitGrant;
+  /** The consult, for the call panel's header. */
+  consult: TelehealthConsultResource;
+}
+
+/**
+ * `POST /v1/telehealth-consults/{id}/end` response. Ending puts the
+ * physician straight back on the rota (unless `goOffline`) and re-runs the
+ * match, so the NEXT patient can already be ringing by the time this returns.
+ */
+export interface EndTelehealthConsultResponse {
+  /** The consult after ending (`status: 'completed'`, or unchanged if it already had). */
+  consult: TelehealthConsultResource;
+  /**
+   * The consult now `ringing` for this physician, if the re-match found a
+   * waiting patient; null otherwise (including whenever `goOffline` was set).
+   */
+  next: TelehealthConsultResource | null;
+}
+
+/**
+ * Where a BOOKED appointment stands for the physician who opened it — the
+ * `state` of `POST /v1/telehealth-consults/{id}/ready`. Discriminate on
+ * `phase`; "the other side" is the patient.
+ *
+ * - `early` — the waiting room has not opened yet (it does at `opensAt`).
+ * - `waiting` — the physician is present, the patient is not yet.
+ * - `connecting` — both sides present; the call is being activated (the next
+ *   read is `in_progress` with a grant).
+ * - `in_progress` — the call is live.
+ * - `missed` — the appointment window closed without a call.
+ * - `closed` — the consult is in a terminal state (`status` says which).
+ */
+export type TelehealthAppointmentState =
+  | {phase: 'early'; opensAt: IsoDateTime; startsAt: IsoDateTime}
+  | {phase: 'waiting'; startsAt: IsoDateTime; otherSidePresent: false}
+  | {phase: 'connecting'; startsAt: IsoDateTime; otherSidePresent: true}
+  | {phase: 'in_progress'; startsAt: IsoDateTime | null}
+  | {phase: 'missed'; startsAt: IsoDateTime}
+  | {phase: 'closed'; status: TelehealthStatus};
+
+/**
+ * `POST /v1/telehealth-consults/{id}/ready` response — the appointment's
+ * state after recording the physician's presence, plus the grant once the
+ * call is live. Poll it every ~10 s while the physician is in the waiting
+ * room; the moment `livekit` appears, connect.
+ */
+export interface TelehealthReadyResponse {
+  /** Where the appointment stands. */
+  state: TelehealthAppointmentState;
+  /** Room credentials. Present once the call is `in_progress`. */
+  livekit?: LiveKitGrant;
+}
+
+// -- Scheduled consultations (docs/SCHEDULED-CONSULTS.md) -------------------
+
+/** One offerable appointment start. */
+export interface TelehealthSlot {
+  /** ISO instant of the start. This is the identity of a slot everywhere. */
+  startsAt: IsoDateTime;
+  /** ISO instant of the consultation's end, WITHOUT the tenant's buffer. */
+  endsAt: IsoDateTime;
+  /**
+   * Local date in the response's `timezone` (the `timezone` you asked for,
+   * else the clinic's) — the grouping key for a day grid. Never recompute it
+   * from `startsAt`: a start near midnight files under a different day in a
+   * different zone, and this one is already in the zone the grid is drawn in.
+   */
+  localDate: string;
+  /**
+   * Physicians who published this start and cover the consult's specialty.
+   * Pass one back as `practitionerId` to pin it; omit and the platform picks
+   * the least-loaded within the language tier — the patient's language
+   * first, then English — which is what you want unless the patient chose a
+   * person.
+   */
+  practitionerIds: string[];
+  /**
+   * Every language at least one of those physicians consults in, as base
+   * codes in catalogue order (`./languages`) — so a grid can badge the times
+   * that come with a French speaker. Absent when none of them has recorded
+   * any. Which of them actually gets the booking is decided at `book` time
+   * (the patient's language first, then English, then least loaded), never
+   * by this list.
+   */
+  languages?: string[];
+}
+
+/**
+ * A booked appointment, as every surface renders it. The instants are
+ * absolute; the four zone fields say whose clock to show them on.
+ */
+export interface TelehealthAppointment {
+  consultId: string;
+  startsAt: IsoDateTime;
+  endsAt: IsoDateTime;
+  practitionerId?: string | null;
+  practitionerName?: string | null;
+  status: TelehealthStatus;
+  /** Both sides may enter the waiting room from this instant. */
+  waitingRoomOpensAt: IsoDateTime;
+  /** Past this instant the PATIENT may no longer cancel; the clinic still can. */
+  cancellableUntil: IsoDateTime;
+  /**
+   * The VIEWER's zone — the `timezone` (or `patientTimezone`) the request
+   * carried, else the clinic's. Render `startsAt` in this one and label it;
+   * an unlabelled appointment time is a support call.
+   */
+  timezone: string;
+  /** The clinic's zone. */
+  clinicTimezone: string;
+  /**
+   * The physician's calendar zone, once a physician is assigned; null before.
+   * When its offset at `startsAt` differs from `timezone`'s, show the
+   * physician's clock as a second line ("08:00 CEST for Dr Morin") — the
+   * confirmation notices do the same.
+   */
+  physicianTimezone: string | null;
+  /**
+   * The zone the PATIENT booked from (`patientTimezone` on the booking call,
+   * or the device zone of the booking surface), or null when none was sent —
+   * notices then fall back to the clinic's zone.
+   */
+  patientTimezone: string | null;
+}
+
+/**
+ * `GET /v1/telehealth-consults/{id}/slots` response. Three things to render:
+ * group `slots` by `localDate`, label the grid with `timezone`, and — when it
+ * is not the clinic's — say so with `clinicTimezone`.
+ */
+export interface ListTelehealthSlotsResponse {
+  slots: TelehealthSlot[];
+  /**
+   * The zone this payload is expressed in: the `timezone` you asked for,
+   * else the clinic's. Every `localDate`, and `nextFrom`, are in it. Show
+   * it: an unlabelled appointment time is a support call.
+   */
+  timezone: string;
+  /** The clinic's zone, for a "the clinic is in …" note when it differs from `timezone`. */
+  clinicTimezone: string;
+  /**
+   * True when the window held more offers than one response carries and the
+   * tail was dropped. Page: request again with `from = nextFrom`.
+   */
+  truncated: boolean;
+  /**
+   * When `truncated`, the local date (in `timezone`) of the first offer that
+   * was dropped — the `from` of the next page. Null otherwise.
+   */
+  nextFrom: string | null;
+  /** Length of one consultation, in minutes. */
+  slotMinutes: number;
+  /** How far ahead this tenant lets patients book. */
+  bookingHorizonDays: number;
+  /** Minutes before the start after which the patient may no longer cancel. */
+  cancellationWindowMinutes: number;
+  /** Minutes before the start at which the waiting room opens. */
+  waitingRoomOpensMinutes: number;
+  /** This consult's current appointment, when it already has one. */
+  appointment?: TelehealthAppointment | null;
+  /** The specialty this consult was routed to, if any. */
+  specialty?: {slug: string; name: string; description?: string | null} | null;
+  /**
+   * The patient's language this grid was ranked for, as a base code (`fr`),
+   * or null when unknown. With each slot's `languages`, what lets a grid say
+   * "with a French-speaking physician" on the times where that is true. Says
+   * nothing about who will be chosen — `book` ranks that.
+   */
+  patientLang: string | null;
+  /**
+   * True when NOBODY in the tenant covers this consult's specialty. Distinct
+   * from an empty `slots`: that means "nothing published in this window", this
+   * means "no amount of waiting will help" — say so rather than showing an
+   * empty calendar.
+   */
+  noEligiblePhysicians: boolean;
+}
+
+/** `POST /v1/telehealth-consults/{id}/book` response. */
+export interface BookTelehealthConsultResponse {
+  /** The consult after booking. */
+  consult: TelehealthConsultResource;
+  /** The appointment just created (or moved). */
+  appointment: TelehealthAppointment;
+  /** True when this replaced an earlier time on the same consult. */
+  rescheduled: boolean;
+}
+
+/**
+ * One recurring availability window, as stored — {@link ScheduleRule} with
+ * its server `id`. `weekday` is 0 = Sunday … 6 = Saturday in the schedule's
+ * `timezone` (the physician's calendar zone); minutes are from local
+ * midnight; `intervalWeeks` > 1 repeats every N weeks from the first
+ * `weekday` on or after `effectiveFrom`.
+ */
+export type PhysicianScheduleRule = ScheduleRule & {id: string};
+
+/**
+ * One dated exception, as stored — {@link ScheduleException} with its server
+ * `id`. `date`..`endDate` (inclusive) is the range it covers; both minute
+ * fields absent = the whole of each day.
+ */
+export type PhysicianScheduleException = ScheduleException & {id: string};
+
+/** `GET`/`PUT /v1/physicians/{id}/licenses` response. */
+export interface GetPhysicianLicensesResponse {
+  physicianId: string;
+  licenses: PhysicianLicenseInput[];
+  /**
+   * Licences lapsing within 60 days. Surface these: an expired licence removes
+   * a physician from the rota with no error anywhere, and the first symptom is
+   * a patient being told nobody can see them.
+   */
+  expiringSoon: PhysicianLicenseInput[];
+  /** Whether this tenant actually enforces licensure. False = recorded only. */
+  licenseEnforcement: boolean;
+}
+
+/**
+ * `GET`/`PUT`/`PATCH /v1/physicians/{id}/schedule` response: the stored
+ * document plus its reading over the requested range.
+ *
+ * `rules` are always the physician's WHOLE rota. `exceptions` and `days` are
+ * only those touching `from`..`to` (the query's range, clamped to
+ * `MAX_SCHEDULE_RANGE_DAYS`; default today → `requiredThrough`) — page by
+ * range to look further ahead. `days` is the engine's resolution of rules +
+ * exceptions for every date of the range (`resolveDays` in `./schedule`), so
+ * a surface can draw the calendar without running the engine itself.
+ */
+export interface GetPhysicianScheduleResponse {
+  physicianId: string;
+  rules: PhysicianScheduleRule[];
+  exceptions: PhysicianScheduleException[];
+  /** Resolved availability for each date of `from`..`to`. */
+  days: ResolvedDay[];
+  /** The range `exceptions` and `days` describe, inclusive local dates in `timezone`. */
+  from: string;
+  to: string;
+  /** Today's local date in `timezone` — what "today" means on this calendar. */
+  today: string;
+  /**
+   * The physician's EFFECTIVE calendar zone — `schedulingTimezone` when set,
+   * else `clinicTimezone`. Every rule, exception, `day`, `from`/`to` and
+   * `today` here is read in it; draw the calendar in it and label it.
+   */
+  timezone: string;
+  /** The clinic's zone — what `timezone` falls back to. */
+  clinicTimezone: string;
+  /**
+   * The zone this physician chose for their calendar, or null when they
+   * follow the clinic (`timezone === clinicTimezone`). Set or clear it with
+   * `timezone` on `PATCH /schedule` (`null` clears).
+   */
+  schedulingTimezone: string | null;
+  /**
+   * How many booked appointments this physician has ahead of them. For the
+   * confirmation before a zone change: their rules keep their clock times,
+   * these keep their instants and move to the new zone's clock on the
+   * calendar — say so with the number.
+   */
+  upcomingAppointments: number;
+  /** Consultation length, so a calendar can show how many appointments a window holds. */
+  slotMinutes: number;
+  /** How far ahead the tenant asks its physicians to publish. */
+  scheduleHorizonDays: number;
+  /** The date that horizon lands on. */
+  requiredThrough: string;
+  /**
+   * The last date this physician actually covers without a gap, or null when
+   * nothing is published. Compare with `requiredThrough` to tell a physician
+   * their rota is short — the one number that matters to them.
+   */
+  coveredThrough: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Events
 // ---------------------------------------------------------------------------
@@ -584,15 +1129,69 @@ export interface Endpoints {
   'POST /v1/physicians': {request: CreatePhysicianRequest; response: CreatePhysicianResponse};
   /** List physicians, or look one up by `?externalId=`. */
   'GET /v1/physicians': {request: ListPhysiciansQuery; response: ListPhysiciansResponse};
-  /** Fetch one physician by our id. */
+  /** Fetch one physician by our id, or `me` for the acting one. Physician session: `me` only. */
   'GET /v1/physicians/{id}': {request: undefined; response: GetPhysicianResponse};
   /** (Re-)send the portal invitation email. */
   'POST /v1/physicians/{id}/portal-invite': {request: undefined; response: SendPortalInviteResponse};
-  /** Toggle async auto-assignment eligibility. */
+  /** Toggle async auto-assignment eligibility. Self-only with a physician credential. Physician session. */
   'POST /v1/physicians/{id}/availability': {
     request: SetPhysicianAvailabilityRequest;
     response: SetPhysicianAvailabilityResponse;
   };
+  /**
+   * Mint a physician SESSION token for browser-direct calls (see "Acting as a
+   * physician"). Tenant key only — a session may not mint another (`403
+   * forbidden`).
+   */
+  'POST /v1/physicians/{id}/session': {
+    request: CreatePhysicianSessionRequest | undefined;
+    response: CreatePhysicianSessionResponse;
+  };
+  /**
+   * Go on/off the live video queue; `ready: true` matches immediately. Self-only.
+   * Physician session.
+   */
+  'POST /v1/physicians/{id}/presence': {
+    request: SetPhysicianPresenceRequest;
+    response: PresenceResponse;
+  };
+  /**
+   * Keep a `ready` physician on the rota — every 15 s, TTL 45 s. Self-only.
+   * Physician session.
+   */
+  'POST /v1/physicians/{id}/heartbeat': {
+    request: PhysicianHeartbeatRequest | undefined;
+    response: PresenceResponse;
+  };
+  /**
+   * The whole clinician screen in one read: presence, live queue, active
+   * call, upcoming appointments, inbox. The polling target. Physician session.
+   */
+  'GET /v1/physicians/{id}/workspace': {request: undefined; response: GetPhysicianWorkspaceResponse};
+  /** Booked appointments in a window (default now → +7 d, max 31 d). Physician session. */
+  'GET /v1/physicians/{id}/agenda': {request: PhysicianAgendaQuery; response: GetPhysicianAgendaResponse};
+  /**
+   * Replace the specialties a physician covers (slugs from `GET /v1/specialties`;
+   * unknown ones are dropped). Self-only with a physician credential. Physician
+   * session.
+   */
+  'PUT /v1/physicians/{id}/specialties': {
+    request: SetPhysicianSpecialtiesRequest;
+    response: SetPhysicianSpecialtiesResponse;
+  };
+  /**
+   * Replace the languages a physician consults in (base codes from
+   * `./languages`; a full locale such as `fr_CH` is `400 invalid_request`).
+   * A ranked routing preference, never a filter — a physician with none
+   * recorded still receives consults, last. Self-only with a physician
+   * credential. Physician session.
+   */
+  'PUT /v1/physicians/{id}/languages': {
+    request: SetPhysicianLanguagesRequest;
+    response: SetPhysicianLanguagesResponse;
+  };
+  /** The tenant's specialty catalogue. Physician session. */
+  'GET /v1/specialties': {request: undefined; response: ListSpecialtiesResponse};
 
   // -- Agent chat ----------------------------------------------------------
   /**
@@ -612,44 +1211,59 @@ export interface Endpoints {
   // -- Async consults ------------------------------------------------------
   /** Start an async consult. `409 has_open_thread` / `feature_disabled`. */
   'POST /v1/async-consults': {request: CreateAsyncConsultRequest; response: CreateAsyncConsultResponse};
-  /** List async consults, most recently active first. */
+  /**
+   * List async consults, most recently active first. `assignee=me|unassigned|<id>`
+   * and `origin` filter the physician's view. Physician session.
+   */
   'GET /v1/async-consults': {request: ListAsyncConsultsQuery; response: ListAsyncConsultsResponse};
-  /** Fetch one async consult. */
+  /** Fetch one async consult. Tenant-scoped with a physician credential. Physician session. */
   'GET /v1/async-consults/{id}': {request: undefined; response: GetAsyncConsultResponse};
-  /** Page the consult transcript, oldest first. */
+  /** Page the consult transcript, oldest first. Physician session. */
   'GET /v1/async-consults/{id}/messages': {
     request: ListAsyncMessagesQuery;
     response: ListAsyncMessagesResponse;
   };
-  /** Post a patient message (202, FIFO-enqueued). */
+  /** Post a patient message (202, FIFO-enqueued). Tenant key only — not a physician-session route. */
   'POST /v1/async-consults/{id}/messages': {
     request: PostAsyncMessageRequest;
     response: PostAsyncMessageResponse;
   };
-  /** Post the assigned physician's reply (202, FIFO-enqueued). */
+  /** Post the assigned physician's reply (202, FIFO-enqueued). Physician credential required. Physician session. */
   'POST /v1/async-consults/{id}/replies': {
     request: PostAsyncReplyRequest;
     response: PostAsyncReplyResponse;
   };
-  /** Assign a queued consult to a specific physician. */
+  /** Assign a queued consult to the acting physician. Physician session. */
   'POST /v1/async-consults/{id}/claim': {
     request: ClaimAsyncConsultRequest;
     response: ClaimAsyncConsultResponse;
   };
-  /** Reassign an active consult after an SLA breach. `409 sla_not_overdue` before. */
+  /** Reassign an active consult after an SLA breach. `409 sla_not_overdue` before. Physician session. */
   'POST /v1/async-consults/{id}/takeover': {
     request: TakeoverAsyncConsultRequest;
     response: TakeoverAsyncConsultResponse;
   };
-  /** Mark the consult resolved (assignee only). */
+  /** Mark the consult resolved (assignee only). Physician session. */
   'POST /v1/async-consults/{id}/resolve': {
     request: ResolveAsyncConsultRequest;
     response: ResolveAsyncConsultResponse;
   };
-  /** Close an open consult — administratively, or on the patient's behalf. */
+  /**
+   * Close an open consult — administratively, or on the patient's behalf.
+   * With a physician credential: assignee only, tenant-scoped. Physician session.
+   */
   'POST /v1/async-consults/{id}/close': {
     request: CloseAsyncConsultRequest | undefined;
     response: CloseAsyncConsultResponse;
+  };
+  /**
+   * The assignee turns the thread into a live video consult: closes it as
+   * `escalated`, opens a telehealth consult for the patient, sends them the
+   * link. Physician session.
+   */
+  'POST /v1/async-consults/{id}/escalate': {
+    request: EscalateAsyncConsultRequest | undefined;
+    response: EscalateAsyncConsultResponse;
   };
   /** Record the PATIENT's consent answer to an invite (accept or decline). */
   'POST /v1/async-consults/{id}/consent': {
@@ -678,22 +1292,56 @@ export interface Endpoints {
     request: CreateTelehealthConsultRequest;
     response: CreateTelehealthConsultResponse;
   };
-  /** List telehealth consults, newest first. */
+  /**
+   * List telehealth consults, newest first. `status`, `practitionerId` (`me`),
+   * `mode` and `origin` filter the physician's view. Physician session.
+   */
   'GET /v1/telehealth-consults': {
     request: ListTelehealthConsultsQuery;
     response: ListTelehealthConsultsResponse;
   };
-  /** Fetch one telehealth consult (fresh `recordingUrl` when available). */
+  /** Fetch one telehealth consult (fresh `recordingUrl` when available). Physician session. */
   'GET /v1/telehealth-consults/{id}': {request: undefined; response: GetTelehealthConsultResponse};
   /** Mint an embed session token for the video widget. */
   'POST /v1/telehealth-consults/{id}/embed-session': {
     request: CreateEmbedSessionRequest | undefined;
     response: CreateEmbedSessionResponse;
   };
-  /** Cancel before the call starts (`invited`/`waiting` only). */
+  /**
+   * Cancel before the call starts (`invited`/`scheduled`/`waiting` only). With a
+   * physician credential on a booked consult: the clinician cancels their own
+   * appointment and the patient is told (`reason` relayed). Physician session.
+   */
   'POST /v1/telehealth-consults/{id}/cancel': {
     request: CancelTelehealthConsultRequest | undefined;
     response: CancelTelehealthConsultResponse;
+  };
+  /**
+   * The PHYSICIAN's way into their call: the LiveKit grant once `in_progress`.
+   * Requires a physician credential naming the practitioner (`409
+   * not_assigned`). Physician session.
+   */
+  'POST /v1/telehealth-consults/{id}/room': {
+    request: TelehealthRoomRequest | undefined;
+    response: TelehealthRoomResponse;
+  };
+  /**
+   * Hang up. The physician goes back to `ready` (or `offline` with
+   * `goOffline`) and the queue is re-matched at once — `next` is the patient
+   * now ringing. Idempotent once completed. Physician session.
+   */
+  'POST /v1/telehealth-consults/{id}/end': {
+    request: EndTelehealthConsultRequest | undefined;
+    response: EndTelehealthConsultResponse;
+  };
+  /**
+   * The booked physician's waiting-room presence for a `scheduled` consult
+   * (the twin of the patient's `/join`); call every ~10 s. Starts the call
+   * when both sides are present in the window. Physician session.
+   */
+  'POST /v1/telehealth-consults/{id}/ready': {
+    request: TelehealthReadyRequest | undefined;
+    response: TelehealthReadyResponse;
   };
   /**
    * The patient's waiting-room heartbeat AND read: enters/holds the queue
@@ -709,6 +1357,85 @@ export interface Endpoints {
     request: RateTelehealthConsultRequest;
     response: RateTelehealthConsultResponse;
   };
+
+  // -- Scheduled consultations (docs/SCHEDULED-CONSULTS.md) ----------------
+  /**
+   * The bookable times for a `scheduled` consult: every published availability
+   * window of every physician who covers its specialty, minus what is already
+   * taken, clipped to the tenant's lead time and booking horizon.
+   *
+   * Identical starts from different physicians collapse into ONE offer. That is
+   * deliberate: the patient picks a TIME, not a person, and `book` chooses the
+   * least-loaded eligible physician within the language tier — the patient's
+   * language first, then English, then anyone. `practitionerIds` is exposed
+   * so a surface that genuinely needs to pin one can, not so every surface
+   * should; each offer's `languages` and the response's `patientLang` let a
+   * grid badge the times a French speaker is preferred for.
+   */
+  'GET /v1/telehealth-consults/{id}/slots': {
+    request: ListTelehealthSlotsQuery;
+    response: ListTelehealthSlotsResponse;
+  };
+  /**
+   * Take one of the offered slots. ATOMIC: the reservation is a conditional
+   * write, so two requests for the same start cannot both succeed — the loser
+   * gets `409 slot_taken` with a fresh `slots` array attached, ready to render.
+   *
+   * Calling this on a consult that is ALREADY booked reschedules it: same
+   * consult, same id, same embed session, a different time.
+   */
+  'POST /v1/telehealth-consults/{id}/book': {
+    request: BookTelehealthConsultRequest;
+    response: BookTelehealthConsultResponse;
+  };
+  /**
+   * Replace a physician's WHOLE schedule — every rule and every exception,
+   * whatever its date — with the one sent: the availability patients book
+   * against. A replace, not a merge, for a caller that owns the rota (an HR or
+   * rostering system): send the schedule you want to exist, and it becomes
+   * the schedule. Calendar-style edits use PATCH instead. Self-only with a
+   * physician credential. Physician session. Query: `from`/`to` shape the
+   * response range.
+   */
+  'PUT /v1/physicians/{id}/schedule': {
+    request: SetPhysicianScheduleRequest;
+    response: GetPhysicianScheduleResponse;
+  };
+  /**
+   * Apply a CHANGE SET to a physician's schedule — create, update and delete
+   * individual rules and exceptions by id, leaving everything else exactly as
+   * it was however far ahead it lies. The way a calendar edits: "block the
+   * 14th", "end this pattern in March", "extra hours next Saturday" are each
+   * one small PATCH. `diffSchedule` in `./schedule` produces the body from an
+   * edited document. Self-only with a physician credential. Physician
+   * session. Query: `from`/`to` shape the response range.
+   */
+  'PATCH /v1/physicians/{id}/schedule': {
+    request: UpdatePhysicianScheduleRequest;
+    response: GetPhysicianScheduleResponse;
+  };
+  /**
+   * Read a physician's schedule: the whole rota, the exceptions and the
+   * resolved days over `from`..`to` (query; default today → the planning
+   * horizon), plus how far the tenant asks them to publish. Physician session.
+   */
+  'GET /v1/physicians/{id}/schedule': {request: PhysicianScheduleQuery; response: GetPhysicianScheduleResponse};
+  /**
+   * Replace a physician's STATE LICENCES — the jurisdictions they may practise
+   * in. A whole-list replace, like the schedule.
+   *
+   * Only consulted by tenants with licence enforcement switched on; for
+   * everyone else these are recorded and ignored. With it on the constraint is
+   * hard in both directions: no licence for the patient's state means the
+   * physician is not offered the consult, and no licences at all means they are
+   * offered nothing. Self-only with a physician credential. Physician session.
+   */
+  'PUT /v1/physicians/{id}/licenses': {
+    request: SetPhysicianLicensesRequest;
+    response: GetPhysicianLicensesResponse;
+  };
+  /** Read a physician's licences, with the ones lapsing soon called out. Physician session. */
+  'GET /v1/physicians/{id}/licenses': {request: undefined; response: GetPhysicianLicensesResponse};
 
   // -- Events --------------------------------------------------------------
   /** Page the durable webhook replay log, oldest first. */

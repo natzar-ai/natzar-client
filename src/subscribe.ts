@@ -157,8 +157,22 @@ export function watch<T>(
     timer = setTimeout(() => void tick(), ms);
   };
 
+  // ONE read at a time. A `refresh()` (or a visibility return) that lands
+  // while a read is still in flight must not start a second tick beside it:
+  // every tick schedules the next, so two concurrent ticks become two poll
+  // chains for the life of the subscription — double the requests, and one of
+  // them un-cancellable by `stop()` because only the last timer is tracked.
+  // Instead the request is noted and honoured the moment the current read
+  // settles, which is at least as fresh as a parallel read would have been.
+  let inFlight = false;
+  let refreshRequested = false;
+
   const tick = async (args: {force?: boolean} = {}): Promise<void> => {
     if (stopped) return;
+    if (inFlight) {
+      refreshRequested = refreshRequested || !!args.force;
+      return;
+    }
     // A hidden tab costs nothing: skip the read and re-arm. The
     // visibilitychange listener reads immediately on return, so the first
     // thing a returning user sees is fresh.
@@ -171,6 +185,20 @@ export function watch<T>(
     // gating exists to prevent.
     if (!args.force && last !== undefined && pauseWhenHidden && isBrowser() && document.hidden) return schedule(interval);
 
+    inFlight = true;
+    try {
+      await run();
+    } finally {
+      inFlight = false;
+      if (refreshRequested && !stopped) {
+        refreshRequested = false;
+        if (timer) clearTimeout(timer);
+        void tick({force: true});
+      }
+    }
+  };
+
+  const run = async (): Promise<void> => {
     try {
       const value = await source.read(controller.signal);
       if (stopped) return;

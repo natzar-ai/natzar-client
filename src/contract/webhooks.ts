@@ -193,6 +193,19 @@ export interface TelehealthEventData {
   consult: TelehealthConsultResource;
 }
 
+/**
+ * Payload of `telehealth.ringing` — a physician has been reserved for the
+ * waiting patient and their client is being asked to confirm it is still
+ * there. Not yet a call: an unanswered ring returns the consult to `waiting`
+ * (no event of its own — the next `telehealth.in_progress` or a later ring
+ * tells you what happened). Useful for a partner portal that wants to show
+ * "Dr. Chen is connecting…" before the video starts.
+ */
+export interface TelehealthRingingData extends TelehealthEventData {
+  /** Our id of the physician being rung for (= `consult.practitioner.id`). */
+  practitionerId: string;
+}
+
 /** Payload of `telehealth.rated`. */
 export interface TelehealthRatedData extends TelehealthEventData {
   /** The rating just recorded. */
@@ -251,6 +264,8 @@ interface Event<TType extends string, TData> {
  * Telehealth lifecycle:
  * - `telehealth.created` — consult created via the API.
  * - `telehealth.waiting` — the patient entered the waiting room.
+ * - `telehealth.ringing` — a physician was reserved; the patient's client is
+ *   confirming (`data.practitionerId`). Not yet a call.
  * - `telehealth.in_progress` — a physician joined; the call is live.
  * - `telehealth.completed` — the call ended.
  * - `telehealth.cancelled` — cancelled before/without a call.
@@ -286,6 +301,7 @@ export type WebhookEvent =
   | Event<'async_consult.rated', AsyncConsultRatedData>
   | Event<'telehealth.created', TelehealthEventData>
   | Event<'telehealth.waiting', TelehealthEventData>
+  | Event<'telehealth.ringing', TelehealthRingingData>
   | Event<'telehealth.in_progress', TelehealthEventData>
   | Event<'telehealth.completed', TelehealthEventData>
   | Event<'telehealth.cancelled', TelehealthEventData>
@@ -314,6 +330,7 @@ export const WEBHOOK_EVENT_TYPES = [
   'async_consult.rated',
   'telehealth.created',
   'telehealth.waiting',
+  'telehealth.ringing',
   'telehealth.in_progress',
   'telehealth.completed',
   'telehealth.cancelled',

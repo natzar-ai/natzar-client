@@ -40,25 +40,38 @@
  * - The whole contract (`./contract`): resource shapes, request schemas, error
  *   codes, webhook payloads, embed element types — re-exported here.
  *
+ * The two BROWSER entry points live beside this one: `@natzar/client/patient`
+ * (a patient's care conversation, on an embed session) and
+ * `@natzar/client/physician` (a clinician's workspace, on a physician session
+ * minted with `physicians.session`). Neither needs an API key.
+ *
  * @packageDocumentation
  */
 
 export {NatzarClient} from './client';
 export type {CallOptions, NatzarClientOptions} from './client';
 
+// Thrown by both browser entry points when a session is unusable before any
+// request is made. Exported here too so a server-rendered app that imports
+// only the root can still recognise it in one `catch`.
+export {NatzarSessionError} from './session-error';
+
 export {
   DEFAULT_ENVIRONMENT,
+  DEFAULT_ZONE,
   NATZAR_ENDPOINTS,
   NATZAR_ENVIRONMENTS,
+  NATZAR_ZONES,
   isNatzarEnvironment,
+  isNatzarZone,
   normalizeBaseUrl,
   resolveEndpoints,
 } from './environments';
-export type {EndpointOverrides, NatzarEndpoints, NatzarEnvironment} from './environments';
+export type {EndpointOverrides, NatzarEndpoints, NatzarEnvironment, NatzarZone} from './environments';
 
 export {NatzarApiError, isErrorCode, isNatzarApiError, isRetryable} from './errors';
 
-export type {FetchLike, HttpConfig, RequestArgs} from './http';
+export type {CredentialKind, FetchLike, HttpConfig, RequestArgs} from './http';
 
 export {
   DEFAULT_TOLERANCE_SECONDS,

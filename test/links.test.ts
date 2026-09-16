@@ -46,7 +46,7 @@ test('linkIdsIn collects every referenced consult, deduplicated', () => {
 });
 
 test('the async action follows the consult state, not the URL', () => {
-  const base = {id: 't_1', patientId: 'p', createdAt: '', rateable: false, origin: 'partner'} as const;
+  const base = {id: 't_1', patientId: 'p', createdAt: '', rateable: false, overdue: false, origin: 'partner'} as const;
   assert.equal(asyncActionFor({...base, status: 'invited'}), 'consent');
   assert.equal(asyncActionFor({...base, status: 'queued'}), 'open');
   assert.equal(asyncActionFor({...base, status: 'active'}), 'open');
@@ -68,6 +68,7 @@ test('a declined invite offers nothing to rate', () => {
     status: 'closed',
     closedReason: 'declined',
     rateable: false,
+    overdue: false,
   } as const;
   assert.equal(asyncActionFor(declined), 'ended');
   assert.equal(isActionable(asyncActionFor(declined)), false);

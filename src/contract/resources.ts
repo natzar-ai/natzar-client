@@ -23,6 +23,8 @@
  * @packageDocumentation
  */
 
+import type {PhysicianLanguage} from './languages';
+
 /** ISO-8601 UTC timestamp string, e.g. `2026-08-13T09:30:00.000Z`. */
 export type IsoDateTime = string;
 
@@ -87,8 +89,12 @@ export type AsyncClosedReason =
  * `ConsultStatus` enum in `amplify/data/resource.ts`.
  *
  * - `invited` — consult created; the patient hasn't opened the embed yet.
+ * - `scheduled` — a `mode: 'scheduled'` consult with a booked time
+ *   (`scheduledAt`) whose waiting room has not opened yet.
  * - `waiting` — the patient is in the waiting room (embed open, presence
  *   heartbeating).
+ * - `ringing` — a physician has been reserved; the patient's client is
+ *   confirming it is still there.
  * - `in_progress` — a physician claimed it; the video call is live.
  * - `completed` — the call ended. A recording/transcript may follow
  *   (`telehealth.recording_ready` webhook).
@@ -97,6 +103,13 @@ export type AsyncClosedReason =
  */
 export type TelehealthStatus =
   | 'invited'
+  /**
+   * Booked, not yet due: a `scheduled`-mode consult holding a slot. It moves
+   * to `waiting` when either side enters the waiting room (which opens
+   * `waitingRoomOpensMinutes` before `scheduledAt`), and is what a
+   * physician's `upcoming` appointments read until then.
+   */
+  | 'scheduled'
   | 'waiting'
   /**
    * A physician has been reserved and the patient's client is being asked to
@@ -225,7 +238,109 @@ export interface PatientResource {
   /** When the patient record was created. */
   createdAt: IsoDateTime;
   /** When the patient record was last modified. */
-  updatedAt: IsoDateTime;
+  updatedAt: IsoDateTime;  /**
+   * STATE LICENSURE (docs/SCHEDULED-CONSULTS.md): where this patient is, as an
+   * ISO 3166-2 subdivision code without the country prefix, plus its country.
+   * Recorded for every tenant; only consulted by those that enforce licensure.
+   */
+  state?: string;
+  country?: string;
+}
+
+/**
+ * The patient as a CLINICIAN'S screen needs them — the header of a queue row,
+ * an inbox thread, a call panel. Embedded on consult resources when the read
+ * is made with a physician credential, so a physician-facing UI can render a
+ * list of consults without one `GET /v1/patients/{id}` per row.
+ *
+ * Deliberately a subset of {@link PatientResource}: no phone, no email, no
+ * channel — a physician working a queue needs to know WHO is next, not how
+ * to reach them outside the consult. Every field but `id` is optional
+ * because the platform's own patients (those our agent opened consults for)
+ * are not always provisioned with the full record your `POST /v1/patients`
+ * requires.
+ */
+export interface PatientSummary {
+  /** Our id of the patient — the same value as `patientId` on the consult. */
+  id: string;
+  /** Your id of the patient, when API-provisioned. */
+  externalId?: string;
+  /** Given (first) name, if known. */
+  givenName?: string;
+  /** Family (last) name, if known. */
+  familyName?: string;
+  /** Date of birth, `YYYY-MM-DD`, if known. */
+  birthdate?: IsoDate;
+  /** Biological sex, if known. */
+  sex?: PatientSex;
+  /** Locale of the patient's messages and notices, if set. */
+  lang?: PatientLang;
+  /**
+   * Where the patient is (ISO 3166-2 subdivision, no country prefix), if
+   * recorded — the jurisdiction licensure routing was decided against.
+   */
+  state?: string;
+}
+
+/**
+ * How long a physician's live-queue `ready` flag survives without a heartbeat,
+ * in seconds. Past this the matcher treats them as `offline` and their
+ * {@link PhysicianPresence} reads `stale: true`.
+ *
+ * A COPY of the matcher's own constant, kept here because this package ships
+ * to partners without the server code: a client that budgets its heartbeat
+ * against this number stays on the rota, and the server-side test suite pins
+ * the two values together.
+ */
+export const PHYSICIAN_PRESENCE_TTL_SECONDS = 45;
+
+/**
+ * How often a `ready` physician client should call
+ * `POST /v1/physicians/{id}/heartbeat`, in seconds. A third of the TTL: two
+ * consecutive beats may be lost to a flaky network before the physician
+ * drops off the rota, which is the difference between a blip and a patient
+ * being told nobody is available.
+ */
+export const PHYSICIAN_HEARTBEAT_INTERVAL_SECONDS = 15;
+
+/**
+ * A physician's LIVE-QUEUE presence — whether the telehealth matcher may hand
+ * them a waiting patient right now. Independent of `asyncAvailable` (the
+ * messaging inbox) and of the booked-appointment rota: a physician can be
+ * off the live queue and still receive async threads or keep appointments.
+ *
+ * Presence is a HEARTBEAT: `ready` holds only while heartbeats keep arriving.
+ * The TTL is {@link PHYSICIAN_PRESENCE_TTL_SECONDS} (45 s); beat every
+ * {@link PHYSICIAN_HEARTBEAT_INTERVAL_SECONDS} (15 s) via
+ * `POST /v1/physicians/{id}/heartbeat`, and a client that simply stops beating
+ * drops to `offline` on its own — a closed laptop never keeps a physician on
+ * the rota.
+ */
+export interface PhysicianPresence {
+  /**
+   * - `ready` — accepting live patients; the matcher may ring them. Requires
+   *   a fresh heartbeat (within the TTL) on top of the stored flag.
+   * - `busy` — on a call, or explicitly paused; the matcher skips them.
+   * - `offline` — not on the live queue, OR `ready` whose heartbeat lapsed
+   *   (then `stale` is true so a UI can say "you were signed off" rather than
+   *   "you are off").
+   */
+  status: 'ready' | 'busy' | 'offline';
+  /** When they last went `ready`. Cleared on `busy`/`offline`. */
+  readyAt?: IsoDateTime;
+  /** Their last heartbeat, whatever the status. */
+  lastSeenAt?: IsoDateTime;
+  /**
+   * The telehealth consult they are currently on (or being rung for) — the
+   * id to feed `POST /v1/telehealth-consults/{id}/room`. Absent when idle.
+   */
+  activeConsultId?: string;
+  /**
+   * True when the stored flag says `ready` but the heartbeat is older than the
+   * TTL, so the platform treats them as `offline`. Resume by posting presence
+   * `{ready: true}` again (a heartbeat alone does not revive a stale row).
+   */
+  stale?: boolean;
 }
 
 /**
@@ -249,6 +364,33 @@ export interface PhysicianResource {
   givenName?: string;
   /** Family (last) name, if set. */
   familyName?: string;
+  /** Honorific the physician signs with (`Dr.`, `Prof.`), if set. */
+  title?: string;
+  /** Credential suffix (`MD`, `DO`), if set. */
+  suffix?: string;
+  /**
+   * The physician's SIGNATURE — `title givenName familyName, suffix` (e.g.
+   * `Dr. Sarah Chen, MD`), exactly the string frozen onto their replies as
+   * {@link MessageResource.signature} and shown to patients as the caller
+   * name. Absent while the profile has no name at all. Render THIS as the
+   * physician's name rather than assembling one: it applies the same
+   * honorific fallback our own surfaces use when `title` is unset.
+   */
+  displayName?: string;
+  /**
+   * The ONE zone this physician's calendar is drawn and booked in — every
+   * rule and exception of their `/schedule` is read in it. Absent means the
+   * clinic's zone. Set it with `PATCH /v1/physicians/{id}/schedule
+   * {timezone}` (`null` clears); `GET /schedule` reports the effective zone
+   * as `timezone` either way.
+   */
+  schedulingTimezone?: string;
+  /**
+   * Live-queue presence — see {@link PhysicianPresence}. Always present: a
+   * physician who has never touched the live queue reads `{status:
+   * 'offline'}`.
+   */
+  presence: PhysicianPresence;
   /**
    * Whether the automatic async-assignment engine may assign new consults to
    * this physician. Defaults to true at creation; toggle via
@@ -256,6 +398,33 @@ export interface PhysicianResource {
    * drain queued consults to this physician.
    */
   asyncAvailable: boolean;
+  /**
+   * Specialty slugs this clinician covers. Empty means they cover EVERYTHING —
+   * the permissive default that lets a tenant enable specialty routing without
+   * emptying its rota (docs/SCHEDULED-CONSULTS.md).
+   */
+  specialties?: string[];
+  /** Explicit "takes every specialty", independent of the list above. */
+  acceptsAllSpecialties?: boolean;
+  /**
+   * Jurisdictions this clinician is licensed in — the OPPOSITE default to
+   * `specialties`: empty means licensed NOWHERE, and under a tenant with
+   * licence enforcement on they are offered no patients at all. Manage with
+   * `PUT /v1/physicians/{id}/licenses`.
+   */
+  licensedStates?: string[];
+  /**
+   * The languages this clinician consults in, as base codes (`fr`, never
+   * `fr_CH`), in the order they were declared. A RANKED PREFERENCE, never a
+   * filter: among the physicians a consult may go to, one who speaks the
+   * patient's language is offered it first, then one who speaks English,
+   * then anyone — so no value here can ever exclude a physician from a
+   * patient, and a rota cannot be emptied by it. Absent or empty means
+   * nothing recorded, which ranks LAST (never assumed English). Manage with
+   * `PUT /v1/physicians/{id}/languages`; the codes are `./languages`'
+   * {@link PhysicianLanguage}.
+   */
+  languages?: PhysicianLanguage[];
   /** When the physician record was created. */
   createdAt: IsoDateTime;
 }
@@ -271,11 +440,17 @@ export interface PhysicianResource {
  *   still their consult.
  *
  * The distinction is about PROVENANCE, not permission. Everything a patient
- * can do — consent, rate, join, read the transcript — works on both. The
- * management operations (`claim`, `takeover`, `resolve`, `replies`) are
- * partner-origin only: a platform-origin thread is routed and answered by our
- * own clinicians, and reassigning it from outside would leave the patient with
- * a physician nobody told.
+ * can do — consent, rate, join, read the transcript — works on both. What
+ * origin gates is the scope of a call made with the TENANT KEY ALONE: the
+ * management operations (`claim`, `takeover`, `resolve`, `replies`, `close`)
+ * and the default of the list filters are partner-origin only, because an
+ * application credential reassigning a thread our own clinicians are working
+ * would leave the patient with a physician nobody told.
+ *
+ * A PHYSICIAN credential (see `./endpoints`, "Acting as a physician") is
+ * scoped to the whole tenant instead — every consult of the clinic, whichever
+ * surface opened it — since that physician IS one of the clinicians the
+ * platform routes to. Their list reads default to `origin=any`.
  */
 export type ConsultOrigin = 'partner' | 'platform';
 
@@ -306,6 +481,12 @@ export interface AsyncConsultResource {
   patientId: string;
   /** Your id of the patient, when the patient was API-provisioned. */
   externalPatientId?: string;
+  /**
+   * The patient's header card — see {@link PatientSummary}. Present on reads
+   * made with a physician credential (the inbox needs a name per row);
+   * absent on key-only reads, which already know their own patients.
+   */
+  patient?: PatientSummary;
   /** Current lifecycle state. */
   status: AsyncConsultStatus;
   /** Why the consult closed. Present exactly when `status === 'closed'`. */
@@ -315,6 +496,33 @@ export interface AsyncConsultResource {
    * to the physician as the handoff summary.
    */
   context?: string;
+  /**
+   * The tenant specialty slug the thread was routed to, if any. Governs who
+   * auto-assignment may hand it to; a physician outside it may still `claim`.
+   */
+  specialty?: string;
+  /**
+   * Where the patient is (ISO 3166-2 subdivision, no country prefix), as
+   * recorded for licensure routing. Absent when never captured.
+   */
+  patientState?: string;
+  /**
+   * The patient's locale as it was when this consult was minted — the value
+   * language routing ranked the physicians against (their base language
+   * first, then English, then anyone; see `./languages`). FROZEN on the row,
+   * so it is the routing truth for this thread and can differ from
+   * `patient.lang`, which is the patient's CURRENT setting and moves with
+   * every `PATCH /v1/patients/{id}`. Absent on threads minted before the
+   * language was recorded.
+   */
+  patientLang?: PatientLang;
+  /**
+   * Which async modality this is (mirrors `AsyncConsultMode`): `live` — a
+   * thread picked up as soon as a clinician has capacity (the default, and
+   * every thread created before booking existed); `scheduled` — a thread
+   * booked for a chosen time. Absent means `live`.
+   */
+  mode?: 'live' | 'scheduled';
   /**
    * Our id of the currently assigned physician (or the last assignee on a
    * closed thread). Absent before first assignment.
@@ -344,6 +552,45 @@ export interface AsyncConsultResource {
    * emergency response; this flags the thread for clinical attention.
    */
   emergencyFlaggedAt?: IsoDateTime;
+  /**
+   * Since when the ball has been in the physician's court: set when a patient
+   * message lands (or the thread is assigned with one waiting), cleared by the
+   * physician's reply. Absent means nothing is waiting on the clinician. The
+   * inbox sorts on it — oldest waiting first.
+   */
+  awaitingPhysicianSince?: IsoDateTime;
+  /**
+   * `awaitingPhysicianSince` + the response SLA (4 hours). Present exactly
+   * when `awaitingPhysicianSince` is; the instant the thread becomes eligible
+   * for `takeover` by another physician, and what a "due in …" badge counts
+   * down to.
+   */
+  responseDueAt?: IsoDateTime;
+  /**
+   * True when `responseDueAt` has passed and the thread is still awaiting the
+   * assignee — the takeover condition, evaluated server-side at read time so a
+   * client never has to compare clocks. Always present (false when nothing
+   * is waiting).
+   */
+  overdue: boolean;
+  /** When the patient last wrote on the thread. */
+  patientLastMessageAt?: IsoDateTime;
+  /** When the assigned physician last replied. */
+  physicianLastMessageAt?: IsoDateTime;
+  /**
+   * When the physician marked the thread resolved — the start of the patient's
+   * acceptance window. Present while `resolve_requested` and on threads that
+   * closed out of it.
+   */
+  resolveRequestedAt?: IsoDateTime;
+  /** The note the physician attached to the resolve, if any. */
+  resolutionNote?: string;
+  /**
+   * How many times the SLA sweep moved this thread to another physician
+   * without anyone asking. A thread that keeps bouncing is the signal to look
+   * at the rota, not the thread.
+   */
+  autoReassignments?: number;
   /**
    * Whether the patient may (still) rate this consult. Server-owned: true
    * only for closed threads whose close reason earns a rating prompt and
@@ -503,8 +750,10 @@ export interface TelehealthRating {
 /**
  * A live (video) telehealth consult.
  *
- * The patient joins exclusively through the `<natzar-telehealth>` embed; the
- * physician takes the call in the Natzar portal. Once the call completes, a
+ * The patient joins through the `<natzar-telehealth>` embed (or the
+ * `/join` route of a headless integration); the physician takes the call in
+ * the Natzar portal, or in YOUR portal through the physician-side routes
+ * (`/room` hands them the LiveKit grant). Once the call completes, a
  * composite recording and (for English calls) a transcript are produced
  * asynchronously — the `telehealth.recording_ready` webhook fires when they
  * are available.
@@ -516,10 +765,28 @@ export interface TelehealthConsultResource {
   patientId: string;
   /** Your id of the patient, when API-provisioned. */
   externalPatientId?: string;
+  /**
+   * The patient's header card — see {@link PatientSummary}. Present on reads
+   * made with a physician credential; absent on key-only reads.
+   */
+  patient?: PatientSummary;
   /** Current lifecycle state. */
   status: TelehealthStatus;
   /** Clinical context you supplied at creation — the physician's handoff summary. */
   context?: string;
+  /**
+   * Where the patient is (ISO 3166-2 subdivision, no country prefix), as
+   * recorded for licensure routing. Absent when never captured.
+   */
+  patientState?: string;
+  /**
+   * The patient's locale as it was when this consult was minted — what the
+   * live-queue matcher and `book` rank the physicians against (see
+   * `./languages`). FROZEN on the row, distinct from `patient.lang` (the
+   * patient's CURRENT setting): the routing truth for THIS consult. Absent
+   * on consults minted before the language was recorded.
+   */
+  patientLang?: PatientLang;
   /** The physician who took (or is on) the call. Absent until claimed. */
   practitioner?: {
     /** Our physician id. */
@@ -529,6 +796,36 @@ export interface TelehealthConsultResource {
     /** Display name, if their profile has one. */
     name?: string;
   };
+  /**
+   * The physician's last heartbeat on THIS consult (booked appointments
+   * only — the live queue tracks presence on the physician, not the row).
+   * How a waiting room knows the clinician is on their way.
+   */
+  practitionerLastSeenAt?: IsoDateTime;
+  /**
+   * When the patient entered the live queue (`mode: 'queue'`). Cleared once
+   * the consult leaves `waiting`, so it is the honest "waiting since" for a
+   * queue display and the source of {@link TelehealthQueueEntry.waitedSeconds}.
+   */
+  enqueuedAt?: IsoDateTime;
+  /**
+   * When the current ring started — a physician was reserved and the patient's
+   * client is being asked to confirm. Present while `ringing`; cleared when
+   * the call starts or the ring times out back to `waiting`.
+   */
+  ringingAt?: IsoDateTime;
+  /**
+   * 1-based place in the live queue. Present only while `status === 'waiting'`
+   * on reads made with a physician credential (the same number the patient's
+   * `/join` reports to them).
+   */
+  position?: number;
+  /**
+   * True when the in-call chat was used — either side sent a message while
+   * the room was open. Set once, never cleared; `end` reads it to decide
+   * whether the patient needs telling what their conversation goes back to.
+   */
+  messagedDuringCall?: boolean;
   /** When the consult was created. */
   createdAt: IsoDateTime;
   /** When the invite went out (creation time for API-origin consults). */
@@ -548,6 +845,27 @@ export interface TelehealthConsultResource {
    * silently stops working is exactly the thing that reads as broken.
    */
   joinableUntil?: IsoDateTime;
+  /**
+   * Which live modality this consult is (docs/SCHEDULED-CONSULTS.md):
+   * `queue` — the on-demand waiting room, matched to the first eligible
+   * physician who is ready; `scheduled` — a booked appointment at a fixed time
+   * with a named physician. Absent means `queue`, which is every consult
+   * created before scheduled booking existed.
+   */
+  mode?: 'queue' | 'scheduled';
+  /** The tenant specialty slug this consult was routed to, if any. */
+  specialty?: string;
+  /** The booked start, for `mode: 'scheduled'` once a slot has been taken. */
+  scheduledAt?: IsoDateTime;
+  /** The booked end (the consultation, without the tenant's buffer). */
+  scheduledEndAt?: IsoDateTime;
+  /**
+   * The IANA zone the PATIENT booked from — `patientTimezone` on the booking
+   * call, or the device zone of the surface they booked on. Absent when the
+   * booking sent none (notices then use the clinic's zone). On an agenda,
+   * show the patient's clock from it when it differs from the physician's.
+   */
+  patientTimezone?: string;
   /** When the call went live (physician joined). */
   startedAt?: IsoDateTime;
   /** When the call ended. */
@@ -565,6 +883,125 @@ export interface TelehealthConsultResource {
   rating?: TelehealthRating;
   /** Who opened it — see {@link ConsultOrigin}. */
   origin: ConsultOrigin;
+}
+
+/**
+ * One patient in the tenant's live telehealth queue, as the clinician's board
+ * shows them — position order, oldest wait first. A projection of the
+ * `waiting` consult plus the numbers a queue row needs precomputed, so a
+ * board of forty patients is forty rows, not forty clock subtractions.
+ */
+export interface TelehealthQueueEntry {
+  /** The waiting consult — the id `/room` will take once it is matched to you. */
+  consultId: string;
+  /** 1-based place in the queue. */
+  position: number;
+  /** When the patient entered the queue. */
+  enqueuedAt: IsoDateTime;
+  /** Seconds waited so far, as of the workspace's `generatedAt`. */
+  waitedSeconds: number;
+  /** The tenant specialty slug the consult was routed to, if any. */
+  specialty?: string;
+  /** The patient's jurisdiction (ISO 3166-2 subdivision), if recorded. */
+  patientState?: string;
+  /**
+   * The patient's locale frozen on the consult at mint — what the matcher
+   * ranks the ready physicians against, so a board can badge the rows a
+   * French speaker is preferred for. See {@link TelehealthConsultResource.patientLang}.
+   */
+  patientLang?: PatientLang;
+  /** Who is waiting. */
+  patient: PatientSummary;
+  /** The handoff summary supplied at creation, if any. */
+  context?: string;
+}
+
+/**
+ * The lists a {@link PhysicianWorkspace} carries, named the way a client
+ * would path to them — the vocabulary of {@link PhysicianWorkspace.truncated}.
+ */
+export type PhysicianWorkspaceList =
+  | 'telehealth.queue'
+  | 'telehealth.upcoming'
+  | 'async.queued'
+  | 'async.mine'
+  | 'async.overdue';
+
+/**
+ * Maximum rows in any one {@link PhysicianWorkspace} list. A workspace is
+ * polled every few seconds by every signed-in clinician, so it must stay one
+ * cheap read; a list that hit the cap is named in `truncated` rather than
+ * silently shortened.
+ */
+export const PHYSICIAN_WORKSPACE_LIST_CAP = 50;
+
+/**
+ * Everything a clinician's screen needs, in ONE call — the polling target of
+ * `GET /v1/physicians/{id}/workspace`.
+ *
+ * Built for the integration this API is meant to make easy: a physician
+ * opens your portal and needs their presence, the live queue, the call they
+ * are on, today's appointments and their messaging inbox, refreshed every
+ * few seconds. Rather than fanning out across six reads and diffing, ask for
+ * the workspace and render it. Lists are capped at
+ * {@link PHYSICIAN_WORKSPACE_LIST_CAP}; `truncated` names any that were cut.
+ */
+export interface PhysicianWorkspace {
+  /** The acting physician, including their live-queue `presence`. */
+  physician: PhysicianResource;
+  /** The live video queue and the physician's own calls. */
+  telehealth: {
+    /** Patients waiting in the tenant's live queue right now. */
+    waiting: number;
+    /** Physicians of the tenant currently `ready` (fresh heartbeat). */
+    readyPhysicians: number;
+    /**
+     * Whether THIS physician currently counts among `readyPhysicians` — i.e.
+     * their `ready` is fresh enough for the matcher to see. False while
+     * `busy`/`offline`, and the tell-tale of a heartbeat that stopped.
+     */
+    visible: boolean;
+    /** The waiting patients, in position order. */
+    queue: TelehealthQueueEntry[];
+    /**
+     * The consult this physician is on or being rung for (`ringing` or
+     * `in_progress`), or null when idle. When `in_progress`, call `/room` for
+     * the LiveKit grant; when `ringing`, keep polling — the patient's client
+     * is confirming.
+     */
+    active: TelehealthConsultResource | null;
+    /**
+     * This physician's booked appointments from now through the next 7 days,
+     * soonest first. The full agenda with a chosen window is
+     * `GET /v1/physicians/{id}/agenda`.
+     */
+    upcoming: TelehealthConsultResource[];
+  };
+  /** The messaging inbox. */
+  async: {
+    /** Whether auto-assignment may hand this physician new threads (`asyncAvailable`). */
+    available: boolean;
+    /** Tenant threads waiting for a clinician (`queued`) — claimable. Oldest first. */
+    queued: AsyncConsultResource[];
+    /**
+     * This physician's open threads (`active` / `resolve_requested`), the ones
+     * awaiting their reply first (then by last activity).
+     */
+    mine: AsyncConsultResource[];
+    /**
+     * Tenant threads held by SOMEONE ELSE whose response SLA has lapsed —
+     * `takeover` candidates. Empty when the rota is keeping up.
+     */
+    overdue: AsyncConsultResource[];
+  };
+  /**
+   * Lists that hit {@link PHYSICIAN_WORKSPACE_LIST_CAP} and were cut. Absent
+   * when every list is complete — the normal case; a clinic that fills one is
+   * a clinic that should page the corresponding list endpoint instead.
+   */
+  truncated?: PhysicianWorkspaceList[];
+  /** When this snapshot was taken — the clock `waitedSeconds` is relative to. */
+  generatedAt: IsoDateTime;
 }
 
 /**
