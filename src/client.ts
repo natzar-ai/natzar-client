@@ -31,6 +31,7 @@ import {
   type HttpConfig,
   type RequestArgs,
 } from './http';
+import {NatzarApiError} from './errors';
 import type {
   CancelTelehealthConsultRequest,
   CancelTelehealthConsultResponse,
@@ -62,8 +63,18 @@ import type {
   GetPhysicianResponse,
   GetPhysicianWorkspaceResponse,
   GetTelehealthConsultResponse,
+  JoinTelehealthConsultRequest,
   JoinTelehealthConsultResponse,
   ListSpecialtiesResponse,
+  BillingCatalogResponse,
+  BillingPaymentsResponse,
+  BillingCustomersResponse,
+  BillingMembershipsResponse,
+  BillingCheckoutResponse,
+  MembershipCheckoutResponse,
+  BillingPaymentResponse,
+  VisitBillingCheckoutRequest,
+  MembershipBillingCheckoutRequest,
   PhysicianAgendaQuery,
   PresenceResponse,
   SetPhysicianPresenceRequest,
@@ -121,6 +132,21 @@ import type {
   UpdatePatientResponse,
   UpsertPatientRequest,
   UpsertPatientResponse,
+  GetPrescriptionResponse,
+  ListPharmaciesQuery,
+  ListPharmaciesResponse,
+  ChoosePharmacyRequest,
+  ChoosePharmacyResponse,
+  SetHomeLocationRequest,
+  SetHomeLocationResponse,
+  AddPharmacyRequest,
+  AddPharmacyResponse,
+  GetReferralResponse,
+  IssueReferralRequest,
+  IssueReferralResponse,
+  ListAsyncConsultReferralsResponse,
+  IssuePrescriptionRequest,
+  IssuePrescriptionResponse,
 } from './contract/endpoints';
 
 /**
@@ -200,6 +226,28 @@ export interface CallOptions {
 }
 
 const enc = encodeURIComponent;
+
+// The keys only CallOptions has — how `telehealth.join(id, opts)` (0.15) is
+// told apart from `join(id, body, opts)`. A body is `{paymentId?}`; an empty
+// object is both and harmlessly read as a body.
+const CALL_OPTION_KEYS = ['signal', 'physicianToken', 'physicianId'] as const;
+const isCallOptions = (value: object): boolean =>
+  !('paymentId' in value) && CALL_OPTION_KEYS.some((key) => key in value);
+
+// A wait that an abort cuts short — billing.waitForPayment's poll gap.
+const pause = (ms: number, signal?: AbortSignal): Promise<void> =>
+  new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason ?? new Error('aborted'));
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason ?? new Error('aborted'));
+    };
+    signal?.addEventListener('abort', onAbort, {once: true});
+  });
 
 // A retried message post is only SAFE when the caller pinned an
 // idempotencyKey: the platform dedupes delivery on it, so the retry collapses
@@ -525,6 +573,69 @@ export class NatzarClient {
     list: (opts?: CallOptions): Promise<ListSpecialtiesResponse> => this.get('/specialties', undefined, opts),
   };
 
+  /** Organization-scoped billing catalog and Stripe reconciliation ids. */
+  readonly billing = {
+    catalog: (opts?: CallOptions): Promise<BillingCatalogResponse> => this.get('/billing/catalog', undefined, opts),
+    payments: (query: {limit?: number; cursor?: string} = {}, opts?: CallOptions): Promise<BillingPaymentsResponse> =>
+      this.get('/billing/payments', query as RequestArgs['query'], opts),
+    customers: (query: {limit?: number; cursor?: string} = {}, opts?: CallOptions): Promise<BillingCustomersResponse> =>
+      this.get('/billing/customers', query as RequestArgs['query'], opts),
+    memberships: (query: {limit?: number; cursor?: string} = {}, opts?: CallOptions): Promise<BillingMembershipsResponse> =>
+      this.get('/billing/memberships', query as RequestArgs['query'], opts),
+    /**
+     * Start (or resume) payment for a visit. Name the CONSULT —
+     * `{asyncConsultId}` / `{telehealthConsultId}` — for an invite: the
+     * platform prices it, refuses one that can no longer be taken, and binds
+     * the checkout to it (a repeat call hands back the one in progress;
+     * `alreadyPaid` when a payment already covers it; the consent / join /
+     * book that follows adopts the paid row without its id). Or name the
+     * scenario — `{patientId, modality, mode}` — for a payment bound to
+     * nothing until spent. Answers `ok: false` in-band (HTTP 200) when no
+     * checkout could start; see `BillingCheckoutResponse`.
+     */
+    visitCheckout: (body: VisitBillingCheckoutRequest, opts?: CallOptions): Promise<BillingCheckoutResponse> =>
+      this.post('/billing/visit-checkout', body, opts),
+    membershipCheckout: (body: MembershipBillingCheckoutRequest, opts?: CallOptions): Promise<MembershipCheckoutResponse> =>
+      this.post('/billing/membership-checkout', body, opts),
+    payment: (id: string, opts?: CallOptions): Promise<BillingPaymentResponse> =>
+      this.get(`/billing/payments/${encodeURIComponent(id)}`, undefined, opts),
+    /**
+     * Poll `payment(id)` until the platform confirms it `paid` — the step
+     * between Stripe's form completing and repeating the consent / join /
+     * book. Stripe.js's `onComplete` (or a return-page visit) is NOT proof:
+     * the platform marks a payment paid from Stripe's signed webhook alone,
+     * usually within seconds.
+     *
+     * Rejects `payment_invalid` (`details.reason: 'payment_not_completed'`,
+     * with `paymentId` and the last `status`) when the payment can no longer
+     * be paid (`failed` / `expired` / `refunded`) or `timeoutMs` elapses
+     * (`details.timedOut`). A timeout is resumable: the payment may still
+     * land, and a checkout bound to a consult is adopted once it does.
+     */
+    waitForPayment: async (
+      id: string,
+      options: {timeoutMs?: number; intervalMs?: number; signal?: AbortSignal} = {},
+    ): Promise<BillingPaymentResponse> => {
+      const interval = options.intervalMs ?? 2000;
+      const deadline = Date.now() + (options.timeoutMs ?? 120_000);
+      for (;;) {
+        const payment = await this.billing.payment(id, options.signal ? {signal: options.signal} : undefined);
+        if (payment.paid) return payment;
+        const dead = payment.status === 'failed' || payment.status === 'expired' || payment.status === 'refunded';
+        if (dead || Date.now() >= deadline) {
+          throw new NatzarApiError({
+            code: 'payment_invalid',
+            status: 402,
+            message: dead ? `The payment ${payment.status}` : 'The payment was not confirmed in time',
+            route: 'GET /billing/payments/{id}',
+            details: {reason: 'payment_not_completed', paymentId: id, status: payment.status, ...(dead ? {} : {timedOut: true})},
+          });
+        }
+        await pause(interval, options.signal);
+      }
+    },
+  };
+
   // -------------------------------------------------------------------------
   // Agent chat
   // -------------------------------------------------------------------------
@@ -563,6 +674,12 @@ export class NatzarClient {
      * Start an async consult. `409 has_open_thread` when the patient already
      * has one open — one open thread per patient is an invariant, so treat
      * that code as "reuse the existing one" rather than as an error.
+     *
+     * A `kind: 'referral_request'` may carry `suggestedReferrals` (1–5
+     * drafts, from 0.13.0): they pre-fill the physician's "Generate
+     * referrals" step, and the physician reviews, may edit, and signs. Each
+     * draft is validated like a signing request (`400 invalid_request`
+     * naming the one that fails); refused on a conversation.
      */
     create: (body: CreateAsyncConsultRequest, opts?: CallOptions): Promise<CreateAsyncConsultResponse> =>
       this.post('/async-consults', body, opts),
@@ -592,6 +709,30 @@ export class NatzarClient {
     /** Post the assigned PHYSICIAN's reply (202, FIFO-enqueued, deduplicated). */
     postReply: (id: string, body: PostAsyncReplyRequest, opts?: CallOptions): Promise<PostAsyncReplyResponse> =>
       this.post(`/async-consults/${enc(id)}/replies`, body, {...opts, idempotent: hasIdempotencyKey(body)}),
+
+    /**
+     * Issue the assigned physician's signed specialist, laboratory or imaging
+     * requisition. This is intentionally not retried: a referral is a durable
+     * clinical document, so an ambiguous timeout must be reconciled from the
+     * thread before another one is signed.
+     */
+    issueReferral: (id: string, body: IssueReferralRequest, opts?: CallOptions): Promise<IssueReferralResponse> =>
+      this.post(`/async-consults/${enc(id)}/referrals`, body, opts),
+
+    /**
+     * The referrals issued on this consult, newest first — one entry per
+     * issue, a multi-document issue once as its lead with `files[]`. How you
+     * follow a `referral_request` to its requisitions. Each `document.url` is
+     * minted on THIS read and expires in minutes: read again right before
+     * opening. Tenant-key only (a physician session gets `403 forbidden`);
+     * `404 not_found` for a consult that is not yours. From 0.13.0.
+     */
+    referrals: (id: string, opts?: CallOptions): Promise<ListAsyncConsultReferralsResponse> =>
+      this.get(`/async-consults/${enc(id)}/referrals`, undefined, opts),
+
+    /** Sign and send a prescription (fax jurisdictions). Never auto-retried. */
+    issuePrescription: (id: string, body: IssuePrescriptionRequest, opts?: CallOptions): Promise<IssuePrescriptionResponse> =>
+      this.post(`/async-consults/${enc(id)}/prescriptions`, body, opts),
 
     claim: (id: string, body: ClaimAsyncConsultRequest, opts?: CallOptions): Promise<ClaimAsyncConsultResponse> =>
       this.post(`/async-consults/${enc(id)}/claim`, body, opts),
@@ -628,7 +769,13 @@ export class NatzarClient {
      *
      * This is what lets you render the consent prompt in your OWN UI: create
      * the consult with `consent: 'embed'`, show your screen, post the answer
-     * here. `accept: false` closes the consult with `closedReason: 'declined'`.
+     * here. `accept: false` closes the consult with `closedReason: 'declined'`
+     * — unless money is bound to the invite: a paid one rejects with
+     * `thread_not_active` (`details.reason: 'payment_settled'` — accept it
+     * instead), one whose checkout is still payable with `payment_invalid`
+     * (`payment_not_completed`), and an unverifiable one with
+     * `payment_invalid` (`payment_check_failed`, retry). The invite stays
+     * `invited` in all three.
      */
     consent: (
       id: string,
@@ -834,9 +981,29 @@ export class NatzarClient {
      * watch: it enters/holds the queue and returns their position, then the
      * LiveKit credentials the moment a physician picks up. STOP calling it when
      * they navigate away — continuing holds a queue slot nobody is watching.
+     *
+     * On a tenant that charges for on-demand video the first join of an
+     * unpaid consult rejects `payment_required` (402) and queues nobody. Pay
+     * (`billing.visitCheckout({telehealthConsultId})`), wait for `paid`, then
+     * join again — with `{paymentId}`, or without it: a payment bound to the
+     * consult is adopted. Later beats need nothing.
+     *
+     * The 0.15 form `join(id, opts)` still works: a second argument without
+     * `paymentId` that looks like call options is read as them.
      */
-    join: (id: string, opts?: CallOptions): Promise<JoinTelehealthConsultResponse> =>
-      this.post(`/telehealth-consults/${enc(id)}/join`, {}, {...opts, idempotent: true}),
+    join: ((id: string, bodyOrOpts?: JoinTelehealthConsultRequest | CallOptions, opts?: CallOptions) => {
+      const isBody = !!bodyOrOpts && !isCallOptions(bodyOrOpts);
+      const body = isBody ? (bodyOrOpts as JoinTelehealthConsultRequest) : {};
+      const callOpts = isBody ? opts : ((bodyOrOpts as CallOptions | undefined) ?? opts);
+      // Idempotent-retried as before: the payment claim is a conditional
+      // write keyed on the consult, so a replayed join with the same
+      // paymentId is the same join.
+      return this.post<JoinTelehealthConsultResponse>(`/telehealth-consults/${enc(id)}/join`, body, {...callOpts, idempotent: true});
+    }) as {
+      (id: string, body?: JoinTelehealthConsultRequest, opts?: CallOptions): Promise<JoinTelehealthConsultResponse>;
+      /** The 0.15 signature — prefer `join(id, body, opts)`. */
+      (id: string, opts?: CallOptions): Promise<JoinTelehealthConsultResponse>;
+    },
 
     /** Record the PATIENT's post-call rating. Write-once, like the async one. */
     rate: (
@@ -885,6 +1052,89 @@ export class NatzarClient {
       // land on a slot the first attempt already took, and the honest answer to
       // "did that work?" is to read `slots` again.
       this.post(`/telehealth-consults/${enc(id)}/book`, body, opts),
+  };
+
+  // -------------------------------------------------------------------------
+  // Prescriptions
+  // -------------------------------------------------------------------------
+
+  readonly prescriptions = {
+    /**
+     * One prescription, as the patient's surface may see it: status, the
+     * 24-hour pharmacy-link window, the chosen pharmacy, and `action` — what
+     * the "choose your pharmacy" button should do (`pharmacyActionFor`
+     * recomputes it against your own clock). Patient-side: the prescription
+     * is visible only when this tenant provisioned the patient it was
+     * written for; anything else is `404 not_found`. Tenant-key only: a
+     * physician session gets `403 forbidden` on every prescription route
+     * (`resolveLinkActions` tolerates that and leaves the link unresolved).
+     */
+    get: (id: string, opts?: CallOptions): Promise<GetPrescriptionResponse> =>
+      this.get(`/prescriptions/${enc(id)}`, undefined, opts),
+
+    /**
+     * The pharmacy picker's list, sorted by distance from the origin you
+     * pass (`lat`/`lng` + `source`) — else from the patient's cached home,
+     * else unranked with `homeAddress` for you to geocode. A prescription
+     * past choosing answers an EMPTY list with its status, never an error, so
+     * a picker settles on one read. A read: safe to repeat.
+     */
+    pharmacies: (id: string, query: ListPharmaciesQuery = {}, opts?: CallOptions): Promise<ListPharmaciesResponse> =>
+      this.get(`/prescriptions/${enc(id)}/pharmacies`, query as RequestArgs['query'], opts),
+
+    /**
+     * Send the prescription to one of the listed pharmacies. `404
+     * pharmacy_not_found`; `409 prescription_not_choosable` when it is no
+     * longer waiting for one (the body's `status` says where it is now —
+     * re-read and render that); `409 pharmacy_unreachable` in a fax zone
+     * when the row has no verified fax line.
+     *
+     * NOT retried on a transport fault: the platform records exactly one
+     * choice, and a replay after an ambiguous failure is answered by `get`,
+     * not by a second post.
+     */
+    choosePharmacy: (id: string, body: ChoosePharmacyRequest, opts?: CallOptions): Promise<ChoosePharmacyResponse> =>
+      this.post(`/prescriptions/${enc(id)}/pharmacy`, body, opts),
+
+    /**
+     * Cache the patient's home point once you have geocoded `homeAddress`,
+     * so every later picker for them starts ranked. `422 invalid_location`
+     * for a point off the map. Idempotent: a repeat writes the same point.
+     */
+    setHomeLocation: (id: string, body: SetHomeLocationRequest, opts?: CallOptions): Promise<SetHomeLocationResponse> =>
+      this.post(`/prescriptions/${enc(id)}/home-location`, body, {...opts, idempotent: true}),
+
+    /**
+     * Add a pharmacy no directory covers — fax zones only (`409
+     * pharmacy_add_unavailable` elsewhere). The row is `pending_verification`
+     * until a one-page probe fax is delivered, and a delivered probe chooses
+     * it for this prescription on its own: after `probe: 'sent'`, poll `get`
+     * until `action` leaves `choose`. `422 invalid_pharmacy` (with `code`)
+     * for a refused field; `409 prescription_not_choosable` past choosing.
+     */
+    addPharmacy: (id: string, body: AddPharmacyRequest, opts?: CallOptions): Promise<AddPharmacyResponse> =>
+      this.post(`/prescriptions/${enc(id)}/pharmacies`, body, opts),
+  };
+
+  // -------------------------------------------------------------------------
+  // Referrals
+  // -------------------------------------------------------------------------
+
+  readonly referrals = {
+    /**
+     * One referral, as the patient's surface may see it: what the file
+     * card's button does (`action`), the document's title and signer, and —
+     * while `issued` — `document`, a short-lived URL to the signed PDF minted
+     * on THIS read. Open it at once or read again; never store it. Never
+     * `expired` for a referral of yours (the 30-day window is the anonymous
+     * web page's alone). Patient-side: visible only when this tenant
+     * provisioned the patient it was written for; anything else is
+     * `404 not_found`. Tenant-key only: a physician session gets
+     * `403 forbidden` (`resolveLinkActions` tolerates that and leaves the
+     * link unresolved).
+     */
+    get: (id: string, opts?: CallOptions): Promise<GetReferralResponse> =>
+      this.get(`/referrals/${enc(id)}`, undefined, opts),
   };
 
   // -------------------------------------------------------------------------

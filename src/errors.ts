@@ -9,6 +9,19 @@
  */
 
 import type {ApiError, ErrorCode} from './contract/errors';
+import type {PatientSurfaceErrorCode} from './patient/codes';
+import type {PhysicianSurfaceErrorCode} from './physician/codes';
+
+/**
+ * Every code a {@link NatzarApiError} can carry: the REST contract's
+ * {@link ErrorCode} from the server half, plus the patient surface's own
+ * vocabulary ({@link PatientSurfaceErrorCode}) from `@natzar/client/patient`,
+ * which reports refusals in the embed plane's spelling (`not_choosable`, not
+ * `prescription_not_choosable`), plus the few refusals the physician surface
+ * raises before any request ({@link PhysicianSurfaceErrorCode}). One union so
+ * `isErrorCode(e, 'lost_race')` typechecks wherever the error came from.
+ */
+export type NatzarErrorCode = ErrorCode | PatientSurfaceErrorCode | PhysicianSurfaceErrorCode;
 
 /**
  * A non-2xx response from the Natzar API.
@@ -17,13 +30,19 @@ import type {ApiError, ErrorCode} from './contract/errors';
  * When it did not — a gateway 502, an HTML error page, a throttle that never
  * reached the application — the code is inferred from the HTTP class
  * (`rate_limited` for 429, `internal_error` for 5xx, `invalid_request`
- * otherwise) so callers always have exactly one thing to switch on.
+ * otherwise) so callers always have exactly one thing to switch on. The
+ * patient surface throws the same class with its own {@link
+ * PatientSurfaceErrorCode} spellings.
  */
 export class NatzarApiError extends Error {
   readonly name = 'NatzarApiError';
   /** Stable machine-readable code. */
-  readonly code: ErrorCode;
-  /** HTTP status of the response. */
+  readonly code: NatzarErrorCode;
+  /**
+   * HTTP status of the response. A patient-surface refusal arrives in-band
+   * on a 200, so there it is the status the REST contract assigns the code
+   * (409 for the embed-only ones) — `code` is the contract-stable field.
+   */
   readonly status: number;
   /** Structured context: validation issues, conflicting ids… */
   readonly details?: unknown;
@@ -33,7 +52,7 @@ export class NatzarApiError extends Error {
   readonly rawBody?: string;
 
   constructor(args: {
-    code: ErrorCode;
+    code: NatzarErrorCode;
     status: number;
     message: string;
     route: string;
@@ -55,7 +74,7 @@ export function isNatzarApiError(e: unknown): e is NatzarApiError {
 }
 
 /** True when this error is that specific code — the common branch, spelled once. */
-export function isErrorCode(e: unknown, code: ErrorCode): boolean {
+export function isErrorCode(e: unknown, code: NatzarErrorCode): boolean {
   return isNatzarApiError(e) && e.code === code;
 }
 
@@ -64,7 +83,7 @@ export function isErrorCode(e: unknown, code: ErrorCode): boolean {
  * caller's request (fix it) or a state conflict (re-read, then decide) — both
  * of which a blind retry only makes slower.
  */
-const RETRYABLE = new Set<ErrorCode>(['rate_limited', 'internal_error']);
+const RETRYABLE = new Set<NatzarErrorCode>(['rate_limited', 'internal_error']);
 
 /** Whether the client's built-in retry should re-issue this request. */
 export function isRetryable(e: unknown): boolean {

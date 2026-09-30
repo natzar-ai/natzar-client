@@ -1,7 +1,7 @@
 {
   "name": "@natzar/client",
-  "version": "0.7.0",
-  "description": "Official TypeScript client for the Natzar Partner API \u2014 AI health-assistant chat, async physician consults, live video consults, a browser-side patient surface and physician workspace, and webhook signature verification.",
+  "version": "0.17.0",
+  "description": "Official TypeScript client for the Natzar Partner API \u2014 AI health-assistant chat, async physician consults, live video consults, prescriptions with an in-app pharmacy picker, referrals as signed PDF requisitions, non-blocking referral requests, a browser-side patient surface and physician workspace, and webhook signature verification.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -62,6 +62,14 @@
   },
   "dependencies": {
     "zod": "^3.25.17"
+  },
+  "peerDependencies": {
+    "livekit-client": "^2.22.0"
+  },
+  "peerDependenciesMeta": {
+    "livekit-client": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

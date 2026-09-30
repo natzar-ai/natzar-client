@@ -38,6 +38,11 @@
 // * EXPIRY IS ONE CALLBACK. Sessions are short-lived. The first `401` flips the
 //   client into a parked state — no polling, no beats — and calls `onExpired`
 //   once; `refresh(session)` with a re-mint resumes everything where it was.
+//
+// * A DISCONNECT IS NEVER AN END. The platform may retire a call's room and
+//   open a new one; `ROOM_DELETED` means "pull `room()` / `ready()` again",
+//   and only `telehealth.end()` ends the consult. `connectPhysicianRoom` runs
+//   a LiveKit `Room` you construct by those rules.
 
 import {NatzarClient} from '../client';
 import {isNatzarApiError, NatzarApiError} from '../errors';
@@ -57,20 +62,38 @@ import type {
   CloseAsyncConsultRequest,
   EndTelehealthConsultResponse,
   EscalateAsyncConsultResponse,
+  IssueReferralResponse,
+  IssuePrescriptionResponse,
   PhysicianAgendaQuery,
   PresenceResponse,
   SpecialtyResource,
   TelehealthReadyResponse,
   TelehealthRoomResponse,
 } from '../contract/endpoints';
-import type {PhysicianLanguage} from '../contract/languages';
+import {baseLanguageOf, type PhysicianLanguage} from '../contract/languages';
+import type {ReferralDraft, ReferralLanguage} from '../contract/referrals';
+import type {IssuePrescriptionRequest} from '../contract/schemas';
+import {
+  parseRoomMetadata,
+  roomCarriesNonce,
+  startRoomSession,
+  type RoomPull,
+  type RoomSession,
+  type RoomSessionOptions,
+  type RoomSessionState,
+} from '../room';
 
 export type {SyncState, Unsubscribe, WatchOptions, FetchLike};
 export {NatzarSessionError};
+export {DISCONNECT_REASON, NO_RECONNECT_POLICY, parseRoomMetadata, roomCarriesNonce, roomOptions} from '../room';
+export type {LiveKitRoomLike, ReconnectPolicyLike, RepullReason, RoomPull, RoomSession, RoomSessionState} from '../room';
+export type {PhysicianSurfaceErrorCode} from './codes';
 export type {
   AsyncConsultResource,
   EndTelehealthConsultResponse,
   EscalateAsyncConsultResponse,
+  IssueReferralResponse,
+  IssuePrescriptionResponse,
   MessageResource,
   PhysicianAgendaQuery,
   PhysicianLanguage,
@@ -83,6 +106,8 @@ export type {
   TelehealthReadyResponse,
   TelehealthRoomResponse,
 };
+export type {ReferralDraft, ReferralLanguage};
+export type {IssuePrescriptionRequest};
 
 /**
  * Everything the browser needs to talk to the physician surface — exactly the
@@ -247,6 +272,49 @@ export interface PhysicianClient {
      * Go `ready` to take it when they follow it.
      */
     escalate(consultId: string, signal?: AbortSignal): Promise<EscalateAsyncConsultResponse>;
+    /**
+     * Sign and send a specialist, laboratory or imaging requisition. On a
+     * `referral_request` thread, delivering it fulfils and closes the request;
+     * on a normal conversation, the thread stays open for follow-up care.
+     */
+    issueReferral(
+      consultId: string,
+      input: {draft: ReferralDraft; lang?: ReferralLanguage},
+      signal?: AbortSignal,
+    ): Promise<IssueReferralResponse['referral']>;
+    /** Sign up to five requisitions in one operation and send one patient link. */
+    issueReferrals(consultId: string, input: {drafts: ReferralDraft[]; lang?: ReferralLanguage}, signal?: AbortSignal): Promise<IssueReferralResponse>;
+    /**
+     * The referral drafts the partner suggested on a `referral_request`
+     * (`consult.suggestedReferrals`), read fresh — `[]` when there are none.
+     * What a "Generate referrals" dialog pre-fills; the physician reviews and
+     * may edit them before {@link generateReferrals}. From 0.13.0.
+     */
+    suggestedReferrals(consultId: string, signal?: AbortSignal): Promise<ReferralDraft[]>;
+    /**
+     * "Generate referrals" in one call: signs `input.drafts` — or, when
+     * `drafts` is omitted, the consult's `suggestedReferrals` read fresh — as
+     * one bundle (one PDF each, one patient link), exactly like
+     * {@link issueReferrals}. An explicit empty `drafts` (the physician
+     * unchecked every card) signs NOTHING: it is refused, never read as
+     * "use the suggestions". Signing the suggestions without a `lang` prints
+     * them in the patient's language (`consult.patientLang`, e.g. `fr_CH` →
+     * `fr`) — the language the partner wrote their text in — rather than the
+     * platform default; pass `lang` to choose. A consult still `queued` is
+     * claimed first: the physician asked to answer it. Throws a
+     * {@link NatzarApiError} with code `no_suggested_referrals` (before any
+     * request) for an empty `drafts`, or (before any write) when the consult
+     * carries nothing to sign — open the blank composer instead. Refreshes
+     * the thread and the workspace like `issueReferrals`. From 0.13.0;
+     * empty-list refusal and patient-language default from 0.13.1.
+     */
+    generateReferrals(
+      consultId: string,
+      input?: {drafts?: ReferralDraft[]; lang?: ReferralLanguage},
+      signal?: AbortSignal,
+    ): Promise<IssueReferralResponse>;
+    /** Sign and send a prescription using the jurisdiction's fax workflow. */
+    issuePrescription(consultId: string, input: IssuePrescriptionRequest, signal?: AbortSignal): Promise<IssuePrescriptionResponse['prescription']>;
     /**
      * Post the physician's reply. Resolves when the platform has ACCEPTED it
      * — it appears on the thread subscription once delivered, typically
@@ -712,6 +780,81 @@ export function connectPhysician(session: PhysicianSession, options: ConnectOpti
         return res;
       },
 
+      issueReferral: async (consultId, input, signal) => {
+        const {referral} = await call((c) =>
+          c.asyncConsults.issueReferral(
+            consultId,
+            input,
+            {...(signal ? {signal} : {})},
+          ),
+        );
+        refreshThread(consultId);
+        refreshNow();
+        return referral;
+      },
+
+      issueReferrals: async (consultId, input, signal) => {
+        const response = await call((c) => c.asyncConsults.issueReferral(consultId, input, {...(signal ? {signal} : {})}));
+        refreshThread(consultId);
+        refreshNow();
+        return response;
+      },
+
+      suggestedReferrals: async (consultId, signal) => {
+        const {consult} = await call((c) => c.asyncConsults.get(consultId, {...(signal ? {signal} : {})}));
+        return consult.suggestedReferrals ?? [];
+      },
+
+      generateReferrals: async (consultId, input = {}, signal) => {
+        const opts = {...(signal ? {signal} : {})};
+        const route = `POST /async-consults/${encodeURIComponent(consultId)}/referrals`;
+        // `drafts: []` is a selection with nothing in it — never "not given".
+        // Falling back would sign and send every suggestion the physician
+        // just deselected.
+        if (input.drafts !== undefined && input.drafts.length === 0) {
+          throw new NatzarApiError({code: 'no_suggested_referrals', status: 409, message: 'No drafts selected; nothing to sign', route});
+        }
+        // Read fresh even when drafts are given: the status decides whether to
+        // claim, and the suggestions must be the ones on the row NOW.
+        const {consult} = await call((c) => c.asyncConsults.get(consultId, opts));
+        const suggested = input.drafts === undefined;
+        const drafts = input.drafts ?? consult.suggestedReferrals ?? [];
+        if (!drafts.length) {
+          throw new NatzarApiError({
+            code: 'no_suggested_referrals',
+            status: 409,
+            message: 'This consult carries no suggested referrals; pass drafts, or open the composer',
+            route,
+          });
+        }
+        // The partner wrote the suggestions' free text (reason, indication…)
+        // in the patient's language; print the document's own labels in the
+        // same one unless the caller chose. An unknown language is left to
+        // the platform's default rather than guessed.
+        const lang = input.lang ?? (suggested ? baseLanguageOf(consult.patientLang) : null);
+        if (consult.status === 'queued') {
+          await call((c) => c.asyncConsults.claim(consultId, {}, opts));
+          refreshNow();
+        }
+        const response = await call((c) =>
+          c.asyncConsults.issueReferral(
+            consultId,
+            {drafts, ...(lang ? {lang} : {})},
+            opts,
+          ),
+        );
+        refreshThread(consultId);
+        refreshNow();
+        return response;
+      },
+
+      issuePrescription: async (consultId, input, signal) => {
+        const {prescription} = await call((c) => c.asyncConsults.issuePrescription(consultId, input, {...(signal ? {signal} : {})}));
+        refreshThread(consultId);
+        refreshNow();
+        return prescription;
+      },
+
       reply: async (consultId, input, signal) => {
         const text = input.text.trim();
         if (!text) throw new Error('reply() needs text');
@@ -869,6 +1012,113 @@ export function connectPhysician(session: PhysicianSession, options: ConnectOpti
   };
 
   return desk;
+}
+
+// --- the video room ----------------------------------------------------------
+
+/** A physician's room credentials, as `room()` / `ready()` return them. */
+export interface PhysicianRoomGrant {
+  token: string;
+  url: string;
+  roomName: string;
+  /** Checked against the room's metadata when present (see the contract's `LiveKitGrant`). */
+  roomNonce?: string;
+}
+
+/** Options for {@link connectPhysicianRoom}. */
+export type PhysicianRoomOptions = RoomSessionOptions<PhysicianRoomGrant, RoomSessionState>;
+
+/**
+ * Run a physician's LiveKit room by the platform's rules, from the grant
+ * `telehealth.room()` (or `telehealth.ready()`) returned:
+ *
+ * - `ROOM_DELETED`, a network drop, or a room that is not a platform room
+ *   (its metadata is not `{"v":1,"n":…}`, or not the grant's `roomNonce`
+ *   when it carries one) → pulls again and reconnects. A pull that says the
+ *   call is over reports `ended`; this helper NEVER ends the consult — only
+ *   your own `telehealth.end()` does.
+ * - `DUPLICATE_IDENTITY` (the same physician joined from another window or
+ *   the provider embed) → `displaced`: show "in use in another window" with a
+ *   "Use here" button that calls `session.resume()`. Never automatic — the
+ *   two would displace each other forever.
+ * - `PARTICIPANT_REMOVED` → `removed`, with a rejoin button (`resume()`).
+ * - never lets LiveKit reconnect on its own: build the `Room` with
+ *   {@link roomOptions}, or this throws.
+ *
+ * Your device controls (mic/camera switches, `ControlBar`, `TrackToggle`)
+ * are mounted only while `call.phase === 'live'`; `connecting` and
+ * `repulling` render a placeholder. livekit-client queues a device switched
+ * on while the room is not connected and publishes it as soon as the next
+ * connection's signal is up, before the room check.
+ *
+ * ```ts
+ * const room = new Room(roomOptions());
+ * const {livekit} = await desk.telehealth.room(consultId);
+ * const session = connectPhysicianRoom({
+ *   room,
+ *   grant: livekit!,
+ *   pull: (signal) => desk.telehealth.room(consultId, signal).then(physicianPullFromRoom),
+ *   onState: (s) => setCall(s),
+ * });
+ * // render the call and its device controls only when call.phase === 'live'
+ * ```
+ */
+export function connectPhysicianRoom(options: PhysicianRoomOptions): RoomSession {
+  return startRoomSession<PhysicianRoomGrant>(options, {
+    label: 'connectPhysicianRoom',
+    usable: (grant): grant is PhysicianRoomGrant =>
+      !!grant && typeof grant.token === 'string' && !!grant.token && typeof grant.url === 'string' && !!grant.url,
+    verify: (metadata, grant) =>
+      typeof grant.roomNonce === 'string' && grant.roomNonce ? roomCarriesNonce(metadata, grant.roomNonce) : parseRoomMetadata(metadata) !== null,
+    removed: 'manual',
+  });
+}
+
+export type PhysicianGrantLike = {token?: string | null; url?: string | null; roomName?: string | null; roomNonce?: string | null};
+
+function toPhysicianGrant(raw: PhysicianGrantLike | null | undefined): PhysicianRoomGrant | undefined {
+  if (!raw?.token || !raw.url) return undefined;
+  return {
+    token: String(raw.token),
+    url: String(raw.url),
+    roomName: String(raw.roomName ?? ''),
+    ...(typeof raw.roomNonce === 'string' && raw.roomNonce ? {roomNonce: raw.roomNonce} : {}),
+  };
+}
+
+/**
+ * Map a `telehealth.room()` answer for {@link connectPhysicianRoom}:
+ * `in_progress` with a grant → `live`, without one → `retry`; any other
+ * status → `ended` with it (the call is no longer this physician's live call —
+ * render from the workspace; nothing is ended on your behalf).
+ */
+export function physicianPullFromRoom(
+  res: {status?: string | null; livekit?: PhysicianGrantLike | null} | null | undefined,
+): RoomPull<PhysicianRoomGrant> {
+  const status = String(res?.status ?? '');
+  if (status === 'in_progress') {
+    const grant = toPhysicianGrant(res?.livekit);
+    return grant ? {kind: 'live', grant} : {kind: 'retry'};
+  }
+  return {kind: 'ended', status};
+}
+
+/**
+ * Map a `telehealth.ready()` answer for {@link connectPhysicianRoom}: a grant
+ * → `live`; `in_progress` without one → `retry`; `missed` / `closed` →
+ * `ended`; `early` / `waiting` / `connecting` (and anything unknown) →
+ * `waiting` — back to the appointment's waiting room and its ~10 s beat.
+ */
+export function physicianPullFromReady(
+  res: {state?: {phase?: string | null; status?: string | null} | null; livekit?: PhysicianGrantLike | null} | null | undefined,
+): RoomPull<PhysicianRoomGrant> {
+  const grant = toPhysicianGrant(res?.livekit);
+  if (grant) return {kind: 'live', grant};
+  const phase = String(res?.state?.phase ?? '');
+  if (phase === 'in_progress') return {kind: 'retry'};
+  if (phase === 'missed') return {kind: 'ended', status: 'missed'};
+  if (phase === 'closed') return {kind: 'ended', status: String(res?.state?.status ?? 'completed')};
+  return {kind: 'waiting'};
 }
 
 // --- helpers -----------------------------------------------------------------

@@ -31,6 +31,7 @@
  */
 
 import {z} from 'zod';
+import {ASYNC_REQUEST_SUBJECT_MAX} from './resources';
 import {
   MAX_EXCEPTIONS_PER_WRITE,
   MAX_EXCEPTION_REASON_LENGTH,
@@ -39,6 +40,77 @@ import {
 } from './schedule';
 import {IANA_ZONE_REGEX, MAX_ZONE_ID_LENGTH} from './timezones';
 import {MAX_PHYSICIAN_LANGUAGES, PHYSICIAN_LANGUAGES} from './languages';
+import {PHARMACY_SEARCH_RADII_KM} from './prescriptions';
+
+// The fields every visit-checkout body shares, whichever way it names the
+// visit. A plain shape (not a schema) so each variant below stays its own
+// `.strict()` object — a key belonging to the OTHER variant is then an
+// unknown key, and exactly one variant can ever match.
+const visitCheckoutCommon = {
+  successUrl: z.string().url().optional(),
+  cancelUrl: z.string().url().optional(),
+  /**
+   * `'embedded'` answers a `clientSecret` + `publishableKey` to mount Stripe's
+   * card form inside your own page (Stripe.js `createEmbeddedCheckoutPage`)
+   * instead of a `checkoutUrl` to send the patient to. There is no redirect:
+   * the form's completion callback is your cue to check `billing.payment(id)`
+   * — it is NOT proof of payment; only the platform's `paid` is.
+   * Default `'hosted'`.
+   */
+  uiMode: z.enum(['hosted', 'embedded']).optional(),
+};
+
+/**
+ * Body of `POST /v1/billing/visit-checkout`, in one of three shapes:
+ *
+ * - **By consult** (recommended for an invite): `{asyncConsultId}` or
+ *   `{telehealthConsultId}`. The platform loads the consult, checks it is
+ *   this tenant's and its patient one you provisioned, refuses a consult
+ *   that can no longer be paid for (`409 thread_not_active` — not `invited`,
+ *   or its link expired), works out the scenario itself, and BINDS the
+ *   checkout to that consult: a second call for the same consult hands back
+ *   the checkout already in progress instead of minting another, a consult
+ *   already paid for answers `alreadyPaid`, and the consent / join / book
+ *   that follows adopts the paid row even without a `paymentId`.
+ * - **By scenario** (the original shape): `{patientId, modality, mode}` —
+ *   a payment for "a visit of this kind", bound to nothing until a consent,
+ *   join or booking spends it.
+ *
+ * The three are mutually exclusive: every variant is `.strict()`, so a body
+ * mixing `asyncConsultId` with `patientId` (or with `telehealthConsultId`) is
+ * `400 invalid_request`.
+ */
+export const visitBillingCheckoutSchema = z.union([
+  z.object({
+    patientId: z.string().min(1),
+    modality: z.enum(['async', 'telehealth', 'in_person']),
+    mode: z.enum(['live', 'book']),
+    ...visitCheckoutCommon,
+  }).strict(),
+  z.object({
+    /** An async consult invite (`status: 'invited'`) — pays for consenting to it. */
+    asyncConsultId: z.string().min(1).max(128),
+    ...visitCheckoutCommon,
+  }).strict(),
+  z.object({
+    /**
+     * A video consult: an on-demand one still `invited`/`waiting` (pays for
+     * joining the queue) or a `scheduled` one not yet booked (pays for the
+     * booking).
+     */
+    telehealthConsultId: z.string().min(1).max(128),
+    ...visitCheckoutCommon,
+  }).strict(),
+]);
+export type VisitBillingCheckoutRequest = z.infer<typeof visitBillingCheckoutSchema>;
+
+export const membershipBillingCheckoutSchema = z.object({
+  patientId: z.string().min(1),
+  interval: z.enum(['month', 'year']),
+  successUrl: z.string().url().optional(),
+  cancelUrl: z.string().url().optional(),
+}).strict();
+export type MembershipBillingCheckoutRequest = z.infer<typeof membershipBillingCheckoutSchema>;
 
 // ---------------------------------------------------------------------------
 // Primitives & limits
@@ -603,6 +675,54 @@ export const listAgentMessagesQuerySchema = z
 // Async consults
 // ---------------------------------------------------------------------------
 
+// Referral drafts. Defined ahead of the async-consult schemas because a
+// referral_request carries them as `suggestedReferrals`, and a referral is
+// issued ON a physician-owned thread. The document core validates again
+// before signing; this boundary schema rejects malformed API input before it
+// can reach PHI reads or the PDF renderer.
+const referralOptionalFields = {
+  healthCardNumber: z.string().max(40).optional(),
+  healthCardExpiry: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).optional(),
+};
+const referralPrioritySchema = z.enum(['routine', 'semi_urgent', 'urgent']);
+const referralLanguageSchema = z.enum(['en', 'es', 'de', 'fr', 'it']);
+/**
+ * One referral draft — specialist, laboratory or imaging requisition. Used by
+ * the issue body below and by `suggestedReferrals` on a `referral_request`.
+ */
+export const referralDraftSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('specialist'),
+    specialty: z.string().min(1).max(120),
+    priority: referralPrioritySchema,
+    reason: z.string().min(1).max(2000),
+    clinicalInfo: z.string().max(2000).optional(),
+    ...referralOptionalFields,
+  }).strict(),
+  z.object({
+    kind: z.literal('laboratory'),
+    tests: z.array(z.enum([
+      'cbc', 'fasting_glucose', 'hba1c', 'creatinine_egfr', 'electrolytes', 'lipid_panel', 'alt_ast', 'tsh', 'ferritin',
+      'vitamin_b12', 'urinalysis', 'urine_acr', 'inr', 'psa', 'hcg_serum', 'urine_culture', 'throat_swab',
+    ])).max(17),
+    otherTests: z.string().max(2000).optional(),
+    clinicalInfo: z.string().max(2000).optional(),
+    priority: z.enum(['routine', 'urgent']),
+    fasting: z.boolean().optional(),
+    ...referralOptionalFields,
+  }).strict(),
+  z.object({
+    kind: z.literal('imaging'),
+    modality: z.enum(['xray', 'ultrasound', 'ct', 'mri', 'mammography', 'other']),
+    otherModality: z.string().max(120).optional(),
+    examination: z.string().min(1).max(2000),
+    clinicalIndication: z.string().min(1).max(2000),
+    priority: referralPrioritySchema,
+    contrast: z.boolean().optional(),
+    ...referralOptionalFields,
+  }).strict(),
+]);
+
 /**
  * Body of `POST /v1/async-consults`.
  *
@@ -619,13 +739,54 @@ export const createAsyncConsultSchema = z
     patientId: idSchema.optional(),
     /** Your patient id. Provide this OR `patientId`. */
     externalPatientId: externalIdSchema.optional(),
-    /** Clinical context — the physician's handoff summary ("why they're here"). */
+    /**
+     * Clinical context — the physician's handoff summary ("why they're
+     * here"). For a `referral_request` it is REQUIRED and it is the ask
+     * itself: what the physician reads before issuing the referral.
+     */
     context: z.string().min(1).max(MAX_CONTEXT_LENGTH).optional(),
     /** Consent mode — see the schema description. */
     consent: z.enum(['collected', 'embed']),
+    /**
+     * Which kind of thread to open — see `AsyncConsultKind` in `./resources`.
+     * Default `conversation`: the assistant goes silent, the patient's
+     * messages reach the physician, one open thread per patient.
+     * `referral_request` opens a NON-BLOCKING request instead: a
+     * self-contained ask (`context`) labelled by `subject`, answered by one
+     * referral document posted into the same conversation, that never
+     * silences the assistant, may sit beside an open consultation (and
+     * beside other requests), and closes `fulfilled` when the document is
+     * delivered. Requires `consent: "collected"`, `subject` and `context`.
+     */
+    kind: z.enum(['conversation', 'referral_request']).optional(),
+    /**
+     * `referral_request` only: the one-line label of the ask ("Lipid panel
+     * (cholesterol)"), 1–120 characters. Every notice the patient receives
+     * about the request names it, since several may be open at once.
+     */
+    subject: z.string().min(1).max(ASYNC_REQUEST_SUBJECT_MAX).optional(),
+    /**
+     * The Payment row that bought this consult, when the tenant charges for it
+     * (`payment_required` says so, with the amount). Must be `paid`, for this
+     * patient and this scenario, and not yet spent on another visit; the
+     * entitlement is asserted inside the same write that opens the thread (`consent: "collected"` only — with `"embed"` the widget presents it at consent).
+     * Omit on a free scenario — it is ignored there.
+     */
+    paymentId: idSchema.optional(),
+    /**
+     * `referral_request` only: up to five referral drafts you suggest for the
+     * ask (the same shape `POST /v1/async-consults/{id}/referrals` takes).
+     * They pre-fill the physician's "Generate referrals" step — the physician
+     * reviews them, may edit them, and signs. Refused on a conversation.
+     */
+    suggestedReferrals: z.array(referralDraftSchema).min(1).max(5).optional(),
   })
   .strict()
-  .refine(exactlyOnePatientRef, {message: patientRefMessage});
+  .refine(exactlyOnePatientRef, {message: patientRefMessage})
+  .refine((data) => data.suggestedReferrals === undefined || data.kind === 'referral_request', {
+    message: 'suggestedReferrals is only accepted with kind "referral_request"',
+    path: ['suggestedReferrals'],
+  });
 
 /**
  * Which consults a list read covers, by who opened them (see `ConsultOrigin`
@@ -748,6 +909,44 @@ export const postAsyncReplySchema = z
   })
   .strict();
 
+// ---------------------------------------------------------------------------
+// Referrals
+// ---------------------------------------------------------------------------
+
+/**
+ * Body of `POST /v1/async-consults/{id}/referrals` — issue the assignee's
+ * signed specialist, laboratory or imaging requisition. Physician session.
+ */
+export const issueReferralSchema = z.object({
+  draft: referralDraftSchema,
+  lang: referralLanguageSchema.optional(),
+}).strict().or(z.object({
+  drafts: z.array(referralDraftSchema).min(1).max(5),
+  lang: referralLanguageSchema.optional(),
+}).strict());
+
+/** Signed prescription in a physician session (fax jurisdictions only). */
+export const issuePrescriptionSchema = z.object({
+  draft: z.object({
+    items: z.array(z.object({
+      medication: z.string().min(1).max(120),
+      strength: z.string().max(120).optional(),
+      form: z.string().max(120).optional(),
+      dose: z.string().min(1).max(120),
+      route: z.enum(['oral', 'sublingual', 'topical', 'inhaled', 'nasal', 'ophthalmic', 'otic', 'rectal', 'vaginal', 'subcutaneous', 'intramuscular', 'other']),
+      frequency: z.enum(['once', 'daily', 'bid', 'tid', 'qid', 'q4h', 'q6h', 'q8h', 'q12h', 'qhs', 'qam', 'weekly', 'prn', 'other']),
+      durationDays: z.number().int().min(0).optional(),
+      quantity: z.string().min(1).max(120),
+      refills: z.number().int().min(0).max(11),
+      noSubstitution: z.boolean().optional(),
+      instructions: z.string().max(500).optional(),
+      catalogRef: z.string().max(120).optional(),
+    }).strict()).min(1).max(8),
+    pharmacistNote: z.string().max(500).optional(),
+    indication: z.string().max(500).optional(),
+  }).strict(),
+}).strict();
+
 /**
  * Body of `POST /v1/async-consults/{id}/claim` — assign a queued consult to
  * a specific physician (instead of waiting for auto-assignment).
@@ -858,6 +1057,17 @@ export const respondAsyncConsentSchema = z
   .object({
     /** True to consent and enter the queue; false to decline and close. */
     accept: z.boolean(),
+    /**
+     * The Payment row that bought this consult, when the tenant charges for it
+     * (`payment_required` says so, with the amount). Must be `paid`, for this
+     * patient and this scenario, and not yet spent on another visit; the
+     * entitlement is asserted inside the same write that opens the thread.
+     * Omit on a free scenario — it is ignored there — and when the patient
+     * paid through a checkout started for THIS consult
+     * (`POST /v1/billing/visit-checkout {asyncConsultId}`): that payment is
+     * bound to the consult and adopted without its id.
+     */
+    paymentId: idSchema.optional(),
   })
   .strict();
 
@@ -1034,6 +1244,18 @@ export const bookTelehealthConsultSchema = z
      * Also the zone the returned `appointment` is expressed in.
      */
     patientTimezone: ianaZoneSchema.optional(),
+    /**
+     * The Payment row that bought this visit, when the tenant charges for it
+     * (`payment_required` says so, with the amount). Must be `paid`, for this
+     * patient and this scenario, and not yet spent on another visit; the
+     * entitlement is asserted inside the same write that books the slot.
+     * Omit on a free scenario — it is ignored there — and when the patient
+     * paid through a checkout started for THIS consult
+     * (`POST /v1/billing/visit-checkout {telehealthConsultId}`): that payment
+     * is bound to the consult and adopted without its id. A slot lost after
+     * paying (`409 slot_taken`) keeps the payment: book another time.
+     */
+    paymentId: idSchema.optional(),
   })
   .strict();
 
@@ -1213,8 +1435,28 @@ export const listTelehealthConsultsQuerySchema = z
  * STOP calling it when the patient backgrounds the screen; continuing to
  * heartbeat for a patient who isn't watching holds a queue slot they can't
  * use.
+ *
+ * PAYMENT: when the tenant charges for on-demand video, the FIRST join of an
+ * unpaid consult answers `402 payment_required` (with the amount and
+ * scenario) instead of queueing the patient. Pay, then join again — with the
+ * `paymentId`, or without it when the checkout was started for this consult
+ * (`POST /v1/billing/visit-checkout {telehealthConsultId}`): a paid payment
+ * bound to the consult is adopted. Once a payment is attached, later joins
+ * need nothing.
  */
-export const joinTelehealthConsultSchema = z.object({}).strict();
+export const joinTelehealthConsultSchema = z
+  .object({
+    /**
+     * The Payment row that pays for this call, when the tenant charges for
+     * it. Must be `paid`, for this patient and the telehealth `live`
+     * scenario, and not spent on another visit; it is attached to the
+     * consult by a conditional write before the patient is queued. Omit on a
+     * free scenario, on a consult already paid for, or when a checkout bound
+     * to this consult was paid (it is adopted).
+     */
+    paymentId: idSchema.optional(),
+  })
+  .strict();
 
 /**
  * Body of `POST /v1/telehealth-consults/{id}/rate` — the patient's
@@ -1311,6 +1553,103 @@ export const telehealthReadySchema = z
   .strict();
 
 // ---------------------------------------------------------------------------
+// Prescriptions (./prescriptions)
+// ---------------------------------------------------------------------------
+
+/**
+ * A coordinate as the platform's own pickers send it: a finite number. Only
+ * the SHAPE is checked here — a latitude of 200 passes the schema and is
+ * refused by the route as `422 invalid_location`, because "not a place on
+ * Earth" is a fact about the values, not about the request being well-formed.
+ *
+ * The query form parses a decimal string itself rather than `z.coerce`,
+ * which would read an empty `?lat=` as 0 (a real latitude) instead of a
+ * malformed one.
+ */
+const coordinateSchema = z.number().finite();
+const coordinateQuerySchema = z
+  .string()
+  .regex(/^-?\d+(\.\d+)?$/, 'must be a decimal number')
+  .transform(Number);
+
+/**
+ * Query of `GET /v1/prescriptions/{id}/pharmacies` — the picker's list.
+ *
+ * Pass the origin you resolved (`lat`/`lng`, with `source` saying how) and
+ * the list comes back ranked by distance from it; without one the server
+ * ranks by the patient's cached home location, and without THAT it answers
+ * `homeAddress` for you to geocode (then store with `POST …/home-location`
+ * so the next search needs no geocoding). `query` filters by name, city or
+ * postal code; `radiusKm` widens the search in the steps of
+ * `PHARMACY_SEARCH_RADII_KM`.
+ */
+export const listPharmaciesQuerySchema = z
+  .object({
+    /** Origin latitude, with `lng`. Both or neither. */
+    lat: coordinateQuerySchema.optional(),
+    /** Origin longitude, with `lat`. Both or neither. */
+    lng: coordinateQuerySchema.optional(),
+    /** How the origin was arrived at; defaults to `manual`. See `PharmacySearchOrigin`. */
+    source: z.enum(['address', 'device', 'ip', 'manual']).optional(),
+    /** Human label of the origin, echoed back ("Home", "Near Toronto"). */
+    label: z.string().min(1).max(80).optional(),
+    /** Name / city / postal-code filter. */
+    query: z.string().min(1).max(120).optional(),
+    /** Search radius, km — one of `PHARMACY_SEARCH_RADII_KM`. Default: the smallest. */
+    radiusKm: z.coerce
+      .number()
+      .refine((n) => (PHARMACY_SEARCH_RADII_KM as readonly number[]).includes(n), {
+        message: `must be one of ${PHARMACY_SEARCH_RADII_KM.join(', ')}`,
+      })
+      .optional(),
+  })
+  .strict()
+  .refine((q) => (q.lat === undefined) === (q.lng === undefined), {
+    message: 'lat and lng must be provided together',
+    path: ['lat'],
+  });
+
+/** Body of `POST /v1/prescriptions/{id}/pharmacy` — the patient's choice. */
+export const choosePharmacySchema = z
+  .object({
+    /** `directoryId` of a pharmacy from `GET …/pharmacies`. */
+    directoryId: idSchema,
+  })
+  .strict();
+
+/**
+ * Body of `POST /v1/prescriptions/{id}/home-location` — the patient's home,
+ * geocoded on your side, cached on their record so every later pharmacy
+ * search (yours, the app's, the widget's) starts from it.
+ */
+export const setHomeLocationSchema = z
+  .object({
+    lat: coordinateSchema,
+    lng: coordinateSchema,
+  })
+  .strict();
+
+/**
+ * Body of `POST /v1/prescriptions/{id}/pharmacies` — a pharmacy the
+ * directory does not list (fax deployments only). Name and address are what
+ * places it; the fax line is optional, and until it is verified the row is
+ * `reachable: false`. The platform's directory normaliser bounds the lengths
+ * further and decides the province.
+ */
+export const addPharmacySchema = z
+  .object({
+    name: z.string().min(1).max(120),
+    address: z.string().min(1).max(200),
+    city: z.string().min(1).max(80).optional(),
+    /** Province / state code or name; defaults to the patient's. */
+    region: z.string().min(1).max(40).optional(),
+    postalCode: z.string().min(1).max(12).optional(),
+    /** The pharmacy's fax line, as printed — normalised server-side. */
+    fax: z.string().min(1).max(40).optional(),
+  })
+  .strict();
+
+// ---------------------------------------------------------------------------
 // Events
 // ---------------------------------------------------------------------------
 
@@ -1391,6 +1730,9 @@ export type ListAsyncMessagesQuery = z.infer<typeof listAsyncMessagesQuerySchema
 export type PostAsyncMessageRequest = z.infer<typeof postAsyncMessageSchema>;
 /** Inferred body of `POST /v1/async-consults/{id}/replies`. See {@link postAsyncReplySchema}. */
 export type PostAsyncReplyRequest = z.infer<typeof postAsyncReplySchema>;
+/** Inferred body of `POST /v1/async-consults/{id}/referrals`. See {@link issueReferralSchema}. */
+export type IssueReferralRequest = z.infer<typeof issueReferralSchema>;
+export type IssuePrescriptionRequest = z.infer<typeof issuePrescriptionSchema>;
 /** Inferred body of `POST /v1/async-consults/{id}/claim`. See {@link claimAsyncConsultSchema}. */
 export type ClaimAsyncConsultRequest = z.infer<typeof claimAsyncConsultSchema>;
 /** Inferred body of `POST /v1/async-consults/{id}/takeover`. See {@link takeoverAsyncConsultSchema}. */
@@ -1425,3 +1767,15 @@ export type SetPhysicianLicensesRequest = z.infer<typeof setPhysicianLicensesSch
 export type PhysicianLicenseInput = z.infer<typeof physicianLicenseSchema>;
 /** Inferred query of `GET /v1/events`. See {@link listEventsQuerySchema}. */
 export type ListEventsQuery = z.infer<typeof listEventsQuerySchema>;
+
+/** Inferred query of `GET /v1/prescriptions/{id}/pharmacies`. See {@link listPharmaciesQuerySchema}. */
+export type ListPharmaciesQuery = z.infer<typeof listPharmaciesQuerySchema>;
+
+/** Inferred body of `POST /v1/prescriptions/{id}/pharmacy`. See {@link choosePharmacySchema}. */
+export type ChoosePharmacyRequest = z.infer<typeof choosePharmacySchema>;
+
+/** Inferred body of `POST /v1/prescriptions/{id}/home-location`. See {@link setHomeLocationSchema}. */
+export type SetHomeLocationRequest = z.infer<typeof setHomeLocationSchema>;
+
+/** Inferred body of `POST /v1/prescriptions/{id}/pharmacies`. See {@link addPharmacySchema}. */
+export type AddPharmacyRequest = z.infer<typeof addPharmacySchema>;

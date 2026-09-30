@@ -138,6 +138,8 @@ import type {
   PostAgentMessageRequest,
   PostAsyncMessageRequest,
   PostAsyncReplyRequest,
+  IssueReferralRequest,
+  IssuePrescriptionRequest,
   RateAsyncConsultRequest,
   RateTelehealthConsultRequest,
   ResolveAsyncConsultRequest,
@@ -158,8 +160,19 @@ import type {
   TelehealthRoomRequest,
   UpdatePatientRequest,
   UpsertPatientRequest,
+  ListPharmaciesQuery,
+  ChoosePharmacyRequest,
+  SetHomeLocationRequest,
+  AddPharmacyRequest,
+  VisitBillingCheckoutRequest,
+  MembershipBillingCheckoutRequest,
 } from './schemas';
 import type {ResolvedDay, ScheduleException, ScheduleRule} from './schedule';
+import type {PharmacyResource, PharmacySearchOrigin, PrescriptionResource, IssuePrescriptionResponse} from './prescriptions';
+import type {IssueReferralResponse, ReferralResource} from './referrals';
+export type {IssueReferralResponse} from './referrals';
+export type {IssuePrescriptionResponse} from './prescriptions';
+export type {VisitBillingCheckoutRequest, MembershipBillingCheckoutRequest} from './schemas';
 
 // The request types are z.infer'd from ./schemas so the documented contract
 // and the runtime validation are one artifact; re-export them here so the
@@ -200,6 +213,8 @@ export type {
   PostAgentMessageRequest,
   PostAsyncMessageRequest,
   PostAsyncReplyRequest,
+  IssueReferralRequest,
+  IssuePrescriptionRequest,
   RateAsyncConsultRequest,
   RateTelehealthConsultRequest,
   ResolveAsyncConsultRequest,
@@ -211,6 +226,10 @@ export type {
   TelehealthRoomRequest,
   UpdatePatientRequest,
   UpsertPatientRequest,
+  ListPharmaciesQuery,
+  ChoosePharmacyRequest,
+  SetHomeLocationRequest,
+  AddPharmacyRequest,
 };
 
 // ---------------------------------------------------------------------------
@@ -374,6 +393,106 @@ export interface ListSpecialtiesResponse {
   specialties: SpecialtyResource[];
 }
 
+/** Prices and Stripe catalog ids for this partner's organization. Amounts are minor units. */
+export interface BillingCatalogResponse {
+  enabled: boolean;
+  currency: string;
+  visits: Array<{modality: 'async' | 'telehealth' | 'in_person'; mode: 'live' | 'book'; amountCents: number; currency: string; productId: string | null; priceId: string | null}>;
+  membership: {monthlyCents: number; annualCents: number; productId: string | null; monthlyPriceId: string | null; annualPriceId: string | null};
+}
+
+export interface BillingPaymentsResponse {
+  payments: Array<{id: string; patientId?: string | null; consultId?: string | null; modality: string; mode: string; status: string; amountCents: number; currency: string; createdAt?: string | null; paidAt?: string | null; stripeCustomerId?: string | null; stripeProductId?: string | null; stripePriceId?: string | null; stripeSessionId?: string | null; stripePaymentIntentId?: string | null}>;
+  nextCursor: string | null;
+}
+
+export interface BillingCustomersResponse {
+  customers: Array<{patientId: string; stripeCustomerId: string; createdAt?: string | null}>;
+  nextCursor: string | null;
+}
+
+export interface BillingMembershipsResponse {
+  memberships: Array<{patientId: string; stripeCustomerId: string; stripeProductId: string; stripePriceId: string; stripeSubscriptionId?: string | null; status: string; interval: string; amountCents: number; currentPeriodEnd?: string | null; createdAt?: string | null; updatedAt?: string | null}>;
+  nextCursor: string | null;
+}
+
+/**
+ * `POST /v1/billing/visit-checkout` response. Always HTTP 200 once the body
+ * validated and the patient / consult resolved; read `ok` and then which
+ * fields are set:
+ *
+ * - **Pay** — `ok: true`, `paymentId`, and the destination: `checkoutUrl`
+ *   for a hosted checkout; for `uiMode: 'embedded'`, `clientSecret` and the
+ *   `publishableKey` of the Stripe account that minted it (the two go to
+ *   Stripe.js together) and an empty `checkoutUrl`. `reused: true` when a
+ *   consult-keyed call handed back the checkout already in progress for that
+ *   consult (a double click, a reload) instead of minting a second one.
+ * - **Nothing to pay** — `ok: true, free: true, paymentId: null`: the
+ *   scenario is free (or, for a consult-keyed async invite, consenting would
+ *   join the patient's already-open consult at no charge). Go straight to the
+ *   action.
+ * - **Already paid** (consult-keyed only) — `ok: true, alreadyPaid: true`,
+ *   `paymentId`: a paid payment is already bound to this consult; repeat the
+ *   consent / join / book. With `settling: true` the patient has completed
+ *   Stripe's form but the platform has not confirmed it yet — poll
+ *   `GET /v1/billing/payments/{id}` until `paid`, then act.
+ * - **Refused** — `ok: false`, `error`: `payments_unavailable` (the price
+ *   list could not be read, or no Stripe account — never read as free),
+ *   `scenario_not_priced`, or `stripe_error` (retryable).
+ *
+ * `consultId` echoes the consult a consult-keyed call was bound to.
+ */
+export type BillingCheckoutResponse = {
+  ok: boolean;
+  free?: boolean;
+  paymentId?: string | null;
+  checkoutUrl?: string;
+  clientSecret?: string;
+  publishableKey?: string;
+  amountCents?: number;
+  currency?: string;
+  error?: string;
+  /** With `error`: a human-readable line for logs, never for branching. */
+  message?: string;
+  /** Consult-keyed calls: the async or telehealth consult the checkout is bound to. */
+  consultId?: string;
+  /** Consult-keyed calls: a paid (or settling) payment already covers this consult. */
+  alreadyPaid?: boolean;
+  /** With `alreadyPaid`: paid at Stripe, not confirmed yet — poll, then act. */
+  settling?: boolean;
+  /** Consult-keyed calls: the consult's checkout in progress was handed back, not a new one. */
+  reused?: boolean;
+};
+export type MembershipCheckoutResponse = {ok: boolean; active?: boolean; membershipId?: string; checkoutUrl?: string; error?: string};
+/**
+ * `GET /v1/billing/payments/{id}` response. `paid` is the ONLY proof of
+ * payment — Stripe.js's `onComplete` and a return-page visit are not; the
+ * platform moves a payment to `paid` from Stripe's signed webhook alone.
+ */
+export type BillingPaymentResponse = {
+  id: string;
+  patientId: string;
+  status: string;
+  paid: boolean;
+  amountCents: number;
+  currency: string;
+  stripeCustomerId?: string | null;
+  stripePriceId?: string | null;
+  stripeSessionId?: string | null;
+  stripePaymentIntentId?: string | null;
+  /**
+   * The consult this payment is for: the one a consult-keyed checkout was
+   * bound to, or — for a scenario checkout — the visit it bought, once spent.
+   * Null while an unbound payment is unspent.
+   */
+  consultId?: string | null;
+  /** The visit scenario paid for. */
+  modality?: string | null;
+  mode?: string | null;
+  /** When the platform confirmed the payment (Stripe's signed webhook). */
+  paidAt?: string | null;
+};
+
 /** `PUT /v1/physicians/{id}/specialties` response. */
 export interface SetPhysicianSpecialtiesResponse {
   /** The physician after the replace — read `specialties` for what stuck. */
@@ -486,6 +605,15 @@ export interface GetPatientStateResponse {
    * when the patient has no conversation yet.
    */
   agentCursor?: string;
+  /**
+   * The prescription waiting for the patient's pharmacy choice, if any — the
+   * newest one whose `action` is `choose`. Present so a screen that opens
+   * cold can offer the picker without first scanning the transcript for the
+   * link; absent when nothing is waiting (a sent, revoked or expired
+   * prescription is not surfaced here — the transcript already said so).
+   * Added after the fields above; `/v1` only ever grows.
+   */
+  prescription?: PrescriptionResource;
   /** What this tenant can offer. */
   capabilities: TenantCapabilities;
 }
@@ -734,14 +862,71 @@ export interface CancelTelehealthConsultResponse {
   consult: TelehealthConsultResource;
 }
 
-/** The credentials for joining the video room. Present only while `in_progress`. */
+/**
+ * The credentials for joining the video room. Present only while `in_progress`.
+ *
+ * A grant names ONE room, and a room is single-use. When the platform retires
+ * it (a clinician's access was revoked mid-call, or the room had to be
+ * replaced), everyone in it is disconnected with LiveKit's `ROOM_DELETED`
+ * reason. On a LiveKit server that does not create rooms on join, every token
+ * for that room is refused from then on. On one that does (LiveKit Cloud is
+ * not yet verified either way), an old token can recreate the room EMPTY —
+ * which is why you must never reconnect with an old token and must check the
+ * room's nonce before publishing. A retirement is never the end of the call:
+ * call the same route again for a grant to the consult's new room. Only the
+ * consult's status says the call is over. See the video-calls guide for the
+ * full set of disconnect rules.
+ *
+ * Connect with automatic reconnection OFF (a LiveKit `reconnectPolicy` whose
+ * `nextRetryDelayInMs` returns `null`): a reconnect replays the old token
+ * into the old room name, which the next pull replaces anyway.
+ *
+ * Mount no control that can turn on a microphone, camera or screen share
+ * until the room has passed that check. livekit-client queues a device
+ * switched on while the room is not connected and publishes it the moment
+ * the next connection's signal is up — before `connect()` resolves, and so
+ * before any check of `room.metadata` your code can make.
+ */
 export interface LiveKitGrant {
-  /** Short-lived room access token. */
+  /**
+   * Room access token. Use it to CONNECT; it is not meant to be kept. A
+   * patient's is valid for 3 hours, a physician's (`/room`, `/ready`) for 10
+   * minutes: pull a fresh grant for every (re)connection. Once connected, the
+   * connection itself is not bounded by this lifetime.
+   */
   token: string;
   /** LiveKit server URL to connect to. */
   url: string;
   /** The room to join. */
   roomName: string;
+  /**
+   * The nonce the room carries in its metadata (`{"v":1,"n":"<roomNonce>"}`).
+   * Always present on the patient's grant ({@link PatientLiveKitGrant}); on a
+   * physician grant it may be absent. When present, check it after
+   * connecting exactly as the patient's grant documents; when absent, a room
+   * whose metadata is not `{"v":1,"n":"…"}` at all is not a platform room —
+   * disconnect and pull again.
+   */
+  roomNonce?: string;
+}
+
+/**
+ * The PATIENT's room credentials (`POST /v1/telehealth-consults/{id}/join`).
+ *
+ * The patient's client must NOT publish its microphone or camera until it
+ * has connected (with audio and video off) and checked that the room's
+ * metadata parses to exactly `{"v":1,"n":roomNonce}`. Any other metadata —
+ * none at all included — means the room is not the consult's current room
+ * (it was retired, or an old token recreated it empty on a server that
+ * creates rooms on join): disconnect and call `/join` again, never publish.
+ * Until the check passes, render no control that can turn a device on (see
+ * {@link LiveKitGrant}). `connectPatientRoom` in `@natzar/client/patient`
+ * implements the check and the disconnect rules for a LiveKit `Room` you
+ * construct; which controls you mount stays yours.
+ */
+export interface PatientLiveKitGrant extends LiveKitGrant {
+  /** The nonce the room's metadata must carry before the patient publishes. Never empty. */
+  roomNonce: string;
 }
 
 /**
@@ -750,11 +935,30 @@ export interface LiveKitGrant {
  *
  * Drive your waiting-room screen entirely from `status`:
  * - `'waiting'` — show `position` / `estimatedMinutes` and keep heartbeating.
- * - `'in_progress'` — connect to `livekit.url` with `livekit.token`.
+ *   Also the answer after a disconnect when the consult went back to the
+ *   queue: show the waiting room again — never the rating prompt, and never
+ *   a reconnect.
+ * - `'in_progress'` — connect to `livekit.url` with `livekit.token`, audio
+ *   and video off, and publish only once the room's metadata carries
+ *   `livekit.roomNonce` ({@link PatientLiveKitGrant}). A disconnect other
+ *   than your own hang-up (`ROOM_DELETED` above all) is NOT the end of the
+ *   call: join again and connect to the grant it returns. The one exception
+ *   is `DUPLICATE_IDENTITY` (the same patient opened the call on another
+ *   device or tab): show "open elsewhere" with a manual resume button, and
+ *   never re-join automatically — two screens re-joining each other loop
+ *   forever.
  * - `'completed'` / `'cancelled'` / `'no_show'` — the call is over; show the
  *   rating prompt when `rateable` is true.
  * - `'expired'` — the invite is no longer usable; ask your backend to create
- *   a new consult.
+ *   a new consult. (A consult a paid payment is bound to is never answered
+ *   `'expired'`: the patient paid while the invite was live, so the join
+ *   goes through and the link's window restarts.)
+ *
+ * On a tenant that charges for on-demand video, a join of an unpaid consult
+ * is refused with `402 payment_required` (`details`: `amountCents`,
+ * `currency`, `modality: 'telehealth'`, `mode: 'live'`) BEFORE the patient
+ * is queued, and a presented payment that does not entitle the call with
+ * `402 payment_invalid`. See docs/partner-api/guides/payments.md.
  */
 export interface JoinTelehealthConsultResponse {
   /**
@@ -766,8 +970,11 @@ export interface JoinTelehealthConsultResponse {
   position?: number;
   /** Rough wait in minutes, derived from `position`. Present while `waiting`. */
   estimatedMinutes?: number;
-  /** Room credentials. Present only when `status` is `'in_progress'`. */
-  livekit?: LiveKitGrant;
+  /**
+   * Room credentials. Present only when `status` is `'in_progress'`; an
+   * `'in_progress'` answer without them is transient — join again shortly.
+   */
+  livekit?: PatientLiveKitGrant;
   /** Whether a rating can still be submitted for this consult. */
   rateable?: boolean;
 }
@@ -791,6 +998,19 @@ export interface RateTelehealthConsultResponse {
  *   polling the workspace (`telehealth.active`) and call again when it reads
  *   `in_progress`.
  * - terminal (`completed` / `cancelled` / `no_show`) — the call is over.
+ *
+ * Call it again — not `/end` — whenever the physician's connection drops for
+ * any reason other than their own hang-up: `ROOM_DELETED` means the room was
+ * replaced and this route hands out the new one. `DUPLICATE_IDENTITY` (the
+ * same physician joined from another window or the provider embed) and
+ * `PARTICIPANT_REMOVED` are the exceptions: show "in use elsewhere" /
+ * "removed" with a manual rejoin, never an automatic one. A disconnect never
+ * ends the consult; only `/end` does.
+ *
+ * The grant's token only has to CONNECT (10 minutes). A connected physician
+ * stays connected for as long as the connection holds: revoking the
+ * physician afterwards (their account, their key or the session) does not
+ * disconnect them — it only refuses their next pull.
  */
 export interface TelehealthRoomResponse {
   /** The consult's state as of this call. */
@@ -841,7 +1061,9 @@ export type TelehealthAppointmentState =
  * `POST /v1/telehealth-consults/{id}/ready` response — the appointment's
  * state after recording the physician's presence, plus the grant once the
  * call is live. Poll it every ~10 s while the physician is in the waiting
- * room; the moment `livekit` appears, connect.
+ * room; the moment `livekit` appears, connect. After a disconnect, call it
+ * again for the new room under the same rules as
+ * {@link TelehealthRoomResponse}.
  */
 export interface TelehealthReadyResponse {
   /** Where the appointment stands. */
@@ -1083,6 +1305,99 @@ export interface GetPhysicianScheduleResponse {
 export type ListEventsResponse = Page<PartnerEventResource>;
 
 // ---------------------------------------------------------------------------
+// Prescriptions (./prescriptions)
+// ---------------------------------------------------------------------------
+
+/** `GET /v1/prescriptions/{id}` response. */
+export interface GetPrescriptionResponse {
+  prescription: PrescriptionResource;
+}
+
+/**
+ * `GET /v1/prescriptions/{id}/pharmacies` response — the picker's list,
+ * framed by the prescription's state so a client can settle on it.
+ *
+ * When the prescription is no longer choosable (`prescription.action !==
+ * 'choose'`) the list is EMPTY and the resource says why — render its
+ * `action` instead of an empty picker. Otherwise `pharmacies` is ranked by
+ * distance from `origin` when one was used; without any origin (none passed,
+ * none cached) it is unranked and `homeAddress` invites you to geocode the
+ * patient's home and store it with `POST …/home-location`.
+ */
+export interface ListPharmaciesResponse {
+  /** The prescription as of this read (its effective status and action). */
+  prescription: PrescriptionResource;
+  /** The origin the list was ranked by — yours, else the patient's cached home. Absent when neither exists. */
+  origin?: PharmacySearchOrigin;
+  /** The patient's one-line home address, offered ONLY when no origin exists, for you to geocode. */
+  homeAddress?: string;
+  /** The pharmacies, nearest first when an origin exists; empty when the prescription is not choosable. */
+  pharmacies: PharmacyResource[];
+}
+
+/**
+ * `POST /v1/prescriptions/{id}/pharmacy` response. The prescription is now
+ * `transmitting` with `pharmacyName` set and `action: 'sent'`; poll
+ * `GET /v1/prescriptions/{id}` (or watch the transcript for
+ * `prescription_sent` / `prescription_failed`) for the outcome.
+ */
+export interface ChoosePharmacyResponse {
+  prescription: PrescriptionResource;
+}
+
+/** `POST /v1/prescriptions/{id}/home-location` response. */
+export interface SetHomeLocationResponse {
+  ok: true;
+}
+
+/**
+ * `201` response of `POST /v1/prescriptions/{id}/pharmacies`. The pharmacy
+ * now exists in the directory (`reachable: false`) and will appear in
+ * searches at once; the prescription is NOT chosen for it yet — it stays
+ * choosable, and the platform chooses this pharmacy for it automatically the
+ * moment its fax line is verified (a physician or administrator verifies it
+ * from the portal; `probe` says whether the platform could send the
+ * verification fax itself).
+ */
+export interface AddPharmacyResponse {
+  /** The pharmacy as it now appears in the directory. */
+  pharmacy: PharmacyResource;
+  /** Always `pending_verification`: nothing can be faxed to it until its line answers. */
+  status: 'pending_verification';
+  /**
+   * `sent` when a verification fax went out to the line you gave; `not_sent`
+   * when no fax was given, the line was refused (see `faxIssue`), or this
+   * surface cannot send one (verification then happens from the portal).
+   */
+  probe: 'sent' | 'not_sent';
+  /** Why the fax line as typed was refused (`same_as_phone`, `toll_free`, `invalid`), else null. */
+  faxIssue: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Referrals (./referrals)
+// ---------------------------------------------------------------------------
+
+/**
+ * `GET /v1/referrals/{id}` response. `referral.document` (the presigned
+ * PDF URL) is minted on this read and expires in minutes — open it at once
+ * or read again.
+ */
+export interface GetReferralResponse {
+  referral: ReferralResource;
+}
+
+/**
+ * `GET /v1/async-consults/{id}/referrals` response: the referrals issued on
+ * that thread, newest first, one entry per issue — a multi-document issue
+ * appears once, as its lead referral with `files[]`. Same presigned-URL
+ * lifetime as `GET /v1/referrals/{id}`. Empty until the physician signs.
+ */
+export interface ListAsyncConsultReferralsResponse {
+  referrals: ReferralResource[];
+}
+
+// ---------------------------------------------------------------------------
 // The route table
 // ---------------------------------------------------------------------------
 
@@ -1192,6 +1507,21 @@ export interface Endpoints {
   };
   /** The tenant's specialty catalogue. Physician session. */
   'GET /v1/specialties': {request: undefined; response: ListSpecialtiesResponse};
+  'GET /v1/billing/catalog': {request: undefined; response: BillingCatalogResponse};
+  'GET /v1/billing/payments': {request: {limit?: number; cursor?: string} | undefined; response: BillingPaymentsResponse};
+  'GET /v1/billing/customers': {request: {limit?: number; cursor?: string} | undefined; response: BillingCustomersResponse};
+  'GET /v1/billing/memberships': {request: {limit?: number; cursor?: string} | undefined; response: BillingMembershipsResponse};
+  /**
+   * Start (or resume) payment for a visit: by CONSULT (`asyncConsultId` /
+   * `telehealthConsultId` — bound to that consult, reused on repeat, adopted
+   * by the consent / join / book that follows) or by scenario
+   * (`patientId` + `modality` + `mode`). Tenant key only. See
+   * docs/partner-api/guides/payments.md.
+   */
+  'POST /v1/billing/visit-checkout': {request: VisitBillingCheckoutRequest; response: BillingCheckoutResponse};
+  'POST /v1/billing/membership-checkout': {request: MembershipBillingCheckoutRequest; response: MembershipCheckoutResponse};
+  /** One payment's state. Poll it after Stripe's form completes: act once `paid` is true. */
+  'GET /v1/billing/payments/{id}': {request: undefined; response: BillingPaymentResponse};
 
   // -- Agent chat ----------------------------------------------------------
   /**
@@ -1232,6 +1562,23 @@ export interface Endpoints {
   'POST /v1/async-consults/{id}/replies': {
     request: PostAsyncReplyRequest;
     response: PostAsyncReplyResponse;
+  };
+  /** Issue a signed specialist, laboratory, or imaging requisition. Physician session. */
+  'POST /v1/async-consults/{id}/referrals': {
+    request: IssueReferralRequest;
+    response: IssueReferralResponse;
+  };
+  /**
+   * The referrals issued on this consult, newest first (a bundle once, as its
+   * lead with `files[]`) — how you follow a `referral_request` to its
+   * documents. Tenant key only — not a physician-session route. `404
+   * not_found` for a consult that is not yours.
+   */
+  'GET /v1/async-consults/{id}/referrals': {request: undefined; response: ListAsyncConsultReferralsResponse};
+  /** Sign and send a prescription. Physician session; available in fax jurisdictions. */
+  'POST /v1/async-consults/{id}/prescriptions': {
+    request: IssuePrescriptionRequest;
+    response: IssuePrescriptionResponse;
   };
   /** Assign a queued consult to the acting physician. Physician session. */
   'POST /v1/async-consults/{id}/claim': {
@@ -1346,7 +1693,10 @@ export interface Endpoints {
   /**
    * The patient's waiting-room heartbeat AND read: enters/holds the queue
    * and returns position, or the LiveKit credentials once the call starts.
-   * Call every ~10s while the patient is watching.
+   * Call every ~10s while the patient is watching. Payment-gated on a
+   * priced tenant: an unpaid first join is `402 payment_required` and
+   * queues nobody — pay, then join again (with `paymentId`, or without it
+   * after a checkout bound to this consult).
    */
   'POST /v1/telehealth-consults/{id}/join': {
     request: JoinTelehealthConsultRequest | undefined;
@@ -1371,6 +1721,12 @@ export interface Endpoints {
    * so a surface that genuinely needs to pin one can, not so every surface
    * should; each offer's `languages` and the response's `patientLang` let a
    * grid badge the times a French speaker is preferred for.
+   *
+   * Any scheduled consult of a patient you provisioned — including a booking
+   * invite a physician or the agent sent — not only the ones you created.
+   * Such an invite is open for its booking window (3 days): past it, still
+   * unbooked and not paid for, this answers `409 thread_not_active` with
+   * `details.status: 'expired'`.
    */
   'GET /v1/telehealth-consults/{id}/slots': {
     request: ListTelehealthSlotsQuery;
@@ -1383,6 +1739,12 @@ export interface Endpoints {
    *
    * Calling this on a consult that is ALREADY booked reschedules it: same
    * consult, same id, same embed session, a different time.
+   *
+   * Payment-gated on a priced tenant (`402 payment_required` / `payment_invalid`).
+   * Like `/slots`, open to every scheduled consult of a patient you
+   * provisioned, whoever sent the booking invite — and, like `/slots`, a
+   * physician- or agent-sent invite past its booking window with nothing paid
+   * answers `409 thread_not_active` (`details.status: 'expired'`).
    */
   'POST /v1/telehealth-consults/{id}/book': {
     request: BookTelehealthConsultRequest;
@@ -1436,6 +1798,53 @@ export interface Endpoints {
   };
   /** Read a physician's licences, with the ones lapsing soon called out. Physician session. */
   'GET /v1/physicians/{id}/licenses': {request: undefined; response: GetPhysicianLicensesResponse};
+
+  // -- Prescriptions (./prescriptions) --------------------------------------
+  /**
+   * Resolve a pharmacy link found on the transcript: the prescription's
+   * effective state and what its button does (`action`). Never a 404 for a
+   * prescription of yours that merely lapsed — that is `action: 'expired'`.
+   */
+  'GET /v1/prescriptions/{id}': {request: undefined; response: GetPrescriptionResponse};
+  /**
+   * The pharmacies the patient may choose from, nearest first when an origin
+   * is known. Empty (with the resource saying why) once the prescription is
+   * no longer choosable. `422 invalid_location` for a `lat`/`lng` pair that
+   * is not a place on Earth.
+   */
+  'GET /v1/prescriptions/{id}/pharmacies': {request: ListPharmaciesQuery; response: ListPharmaciesResponse};
+  /**
+   * The patient's choice. ATOMIC: one conditional transition, so two choices
+   * (yours and the widget's, say) cannot both succeed — the loser gets
+   * `409 prescription_not_choosable` with the effective `status` in
+   * `details`. `404 pharmacy_not_found` for an id no listing produced,
+   * `409 pharmacy_unreachable` for one the transport cannot deliver to.
+   */
+  'POST /v1/prescriptions/{id}/pharmacy': {request: ChoosePharmacyRequest; response: ChoosePharmacyResponse};
+  /**
+   * Cache the patient's geocoded home on their record, for every later
+   * pharmacy search to start from. `422 invalid_location` for coordinates
+   * that are not a place on Earth.
+   */
+  'POST /v1/prescriptions/{id}/home-location': {request: SetHomeLocationRequest; response: SetHomeLocationResponse};
+  /**
+   * Add a pharmacy the directory does not list (fax deployments only —
+   * `409 pharmacy_add_unavailable` elsewhere). `201` with the new row;
+   * `409 prescription_not_choosable` once the prescription is settled;
+   * `422 invalid_pharmacy` (with `details.code`) when it cannot be placed.
+   */
+  'POST /v1/prescriptions/{id}/pharmacies': {request: AddPharmacyRequest; response: AddPharmacyResponse};
+
+  // -- Referrals (./referrals) ----------------------------------------------
+  /**
+   * Resolve a referral link found on the transcript: what the file card's
+   * button does (`action`), the document's title and signer, and — while
+   * `issued` — a short-lived URL to the signed PDF, minted on every read.
+   * Never `expired` for a referral of yours: the 30-day window is the
+   * anonymous web page's alone. `404 not_found` for an id that is not a
+   * referral of this tenant (or of a patient you provisioned).
+   */
+  'GET /v1/referrals/{id}': {request: undefined; response: GetReferralResponse};
 
   // -- Events --------------------------------------------------------------
   /** Page the durable webhook replay log, oldest first. */

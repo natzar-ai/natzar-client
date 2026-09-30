@@ -23,7 +23,10 @@
  * partner is indistinguishable from a missing one (`not_found`), so ids are
  * not an existence oracle. The 403 codes are all about YOUR credential's
  * authority (`forbidden`, `key_capability_disabled`, `on_demand_disabled`,
- * `origin_not_allowed`), never about whether something exists.
+ * `origin_not_allowed`, and on the provider embed routes
+ * `provider_embed_disabled`, `delegation_not_allowed`,
+ * `clinician_unavailable`, `capability_not_granted`,
+ * `operation_not_available`), never about whether something exists.
  *
  * @packageDocumentation
  */
@@ -151,8 +154,33 @@ export type ErrorCode =
    * and it is not — e.g. posting a patient message to a thread that is
    * `closed` or still `invited` (unconsented). Re-read the consult for its
    * current status. HTTP 409.
+   *
+   * Also `POST /v1/billing/visit-checkout` keyed on a consult that can no
+   * longer be paid for — not an open invite any more, or its link expired
+   * (`details.status`, `"expired"` for the latter). Nothing was charged.
+   *
+   * Also `GET /v1/telehealth-consults/{id}/slots` and `…/book` on a booking
+   * invite a physician or the agent sent whose booking window lapsed before
+   * a time was chosen (`details.status: "expired"`) — the same answer the
+   * consult-keyed checkout gives it. A payment already made for that invite
+   * keeps it bookable. Consults you created carry no window.
+   *
+   * Also `POST /v1/async-consults/{id}/consent` with `accept: false` on an
+   * invite the patient has already PAID for (`details.reason:
+   * "payment_settled"`, `details.status: "invited"`): paying is consenting,
+   * so the decline is refused rather than leave the payment buying nothing.
+   * Send `accept: true` instead — the payment bound to the invite is adopted,
+   * no `paymentId` needed.
    */
   | 'thread_not_active'
+  /**
+   * The async consult is a non-blocking `referral_request` (see
+   * `AsyncConsultKind`), which carries no dialogue: neither the patient's
+   * messages (`POST …/messages`) nor a physician reply (`POST …/replies`)
+   * belong on it. The physician answers it with a referral, or converts it
+   * to a `conversation` first. HTTP 409.
+   */
+  | 'request_thread'
   /**
    * The acting physician is not the consult's current assignee — replies,
    * resolves, escalations and physician-side closes are restricted to the
@@ -218,6 +246,108 @@ export type ErrorCode =
    */
   | 'too_many_open_bookings'
   /**
+   * The tenant charges for this visit and the request carried no
+   * `paymentId` that entitles it. Returned by `POST /v1/async-consults`
+   * (`consent: "collected"`), `POST /v1/async-consults/{id}/consent`
+   * (`accept: true`), `POST /v1/telehealth-consults/{id}/join` (an unpaid
+   * on-demand video consult — nobody is queued) and
+   * `POST /v1/telehealth-consults/{id}/book` on a priced scenario.
+   * `details.amountCents` / `details.currency` say what is owed and
+   * `details.modality` / `details.mode` which scenario — exactly what
+   * `POST /v1/billing/visit-checkout` takes. A `paymentId` is the id of a
+   * Payment row in `paid` for THIS patient and THIS scenario — minted by
+   * `POST /v1/billing/visit-checkout` (preferably keyed on the consult:
+   * `{asyncConsultId}` / `{telehealthConsultId}`; then confirm `paid` with
+   * `GET /v1/billing/payments/{id}` before retrying) or by the platform's own
+   * checkout. A checkout keyed on the consult is BOUND to it: once paid, the
+   * retry is let in without the id. See docs/partner-api/guides/payments.md.
+   * HTTP 402.
+   */
+  | 'payment_required'
+  /**
+   * The `paymentId` you sent names a payment that does not entitle this
+   * visit: it is not `paid` yet (`details.reason: "payment_not_completed"`),
+   * belongs to another patient, tenant or scenario (`"payment_mismatch"`),
+   * or already bought a different visit (`"payment_already_used"`). Also
+   * returned, as `"payment_check_failed"`, when the payment could not be
+   * verified at all — that one is safe to retry. HTTP 402.
+   *
+   * `"payment_not_completed"` also answers an action sent WITHOUT a
+   * `paymentId` while a checkout bound to the consult is still in progress
+   * (the patient is on Stripe's form, or it just completed and the platform
+   * has not confirmed it yet): wait for `paid` rather than starting another
+   * checkout — `POST /v1/billing/visit-checkout` for the same consult hands
+   * the one in progress back. `details` carry `amountCents` / `currency`
+   * there too, and `modality` / `mode` whenever the route knows the
+   * scenario.
+   *
+   * A DECLINE (`POST /v1/async-consults/{id}/consent`, `accept: false`) can
+   * draw two of these reasons although it pays for nothing, because a
+   * decline must not strand a payment: `"payment_not_completed"` while a
+   * checkout bound to the invite is still in progress (let it settle — once
+   * `paid`, accept instead; a checkout that ends unpaid no longer blocks the
+   * decline), and `"payment_check_failed"` when the platform could not tell
+   * whether the invite was paid for (retry; the invite is left as it was).
+   * A decline of an invite already paid for is `409 thread_not_active`
+   * instead.
+   *
+   * On `POST /v1/async-consults`, `"payment_already_used"` carries
+   * `details.asyncConsultId` when the payment bought an async consult of the
+   * SAME patient — typically the create you are retrying, or a concurrent
+   * one that won the payment — so you can take that thread without
+   * listing. A `referral_request` create refused with `payment_invalid`
+   * (any reason) leaves no open thread behind: one refused after the mint
+   * (it lost a race for the payment) is closed before the refusal.
+   */
+  | 'payment_invalid'
+  /**
+   * `POST /v1/prescriptions/{id}/pharmacy`: no pharmacy answers to that
+   * `directoryId` — it is not from a `GET …/pharmacies` listing of THIS
+   * deployment, or the directory dropped it. A 404 on the pharmacy, not on
+   * the prescription (which resolved). Re-run the search and pick again.
+   * HTTP 404.
+   */
+  | 'pharmacy_not_found'
+  /**
+   * The prescription is not waiting for a pharmacy: it was already chosen
+   * (`transmitting`/`sent`), withdrawn (`revoked`), or its 24-hour link
+   * lapsed (`expired`) — including when somebody else chose a moment before
+   * you (the platform's own widget, the app, the web page). `details.status`
+   * is the effective status; re-read `GET /v1/prescriptions/{id}` and render
+   * its `action`. HTTP 409.
+   */
+  | 'prescription_not_choosable'
+  /**
+   * `POST /v1/prescriptions/{id}/pharmacy`: the chosen pharmacy cannot be
+   * reached by this deployment's transport — in a fax jurisdiction, no
+   * verified fax line on file. The listing said so (`reachable: false`);
+   * offer another pharmacy, or add the line with `POST …/pharmacies` and let
+   * it be verified. HTTP 409.
+   */
+  | 'pharmacy_unreachable'
+  /**
+   * `POST /v1/prescriptions/{id}/pharmacies`: adding a pharmacy by hand is
+   * not offered here — the prescription is e-prescribed (`transport: 'erx'`,
+   * the network already lists every pharmacy it can reach), or this
+   * deployment holds no directory to add it to. Never a transient condition;
+   * retrying will not help. HTTP 409.
+   */
+  | 'pharmacy_add_unavailable'
+  /**
+   * `POST /v1/prescriptions/{id}/home-location`: the coordinates are not a
+   * place on Earth (latitude outside ±90, longitude outside ±180, NaN).
+   * Distinct from `invalid_request` (the shape was fine; the values are not
+   * a location). HTTP 422.
+   */
+  | 'invalid_location'
+  /**
+   * `POST /v1/prescriptions/{id}/pharmacies`: the pharmacy as typed cannot
+   * be placed — `details.code` says why (`name_or_address_missing`, or the
+   * directory normaliser's reason, e.g. a province it cannot resolve).
+   * Distinct from `invalid_request` (the shape was fine). HTTP 422.
+   */
+  | 'invalid_pharmacy'
+  /**
    * Embed surface only: the session token failed verification (bad signature,
    * wrong shape, minted for a suspended partner, or invalidated by an API-key
    * rotation). Mint a fresh one via the `/embed-session` endpoint. HTTP 401.
@@ -260,7 +390,120 @@ export type ErrorCode =
    * (GETs, upserts); message posts are deduplicated per patient so a retry
    * after a 5xx will not double-deliver. HTTP 500.
    */
-  | 'internal_error';
+  | 'internal_error'
+  /**
+   * Provider embed routes only: the provider session credential is missing,
+   * malformed or unknown, its secret is wrong, it belongs to another
+   * environment or residency zone, or a legacy bearer credential (API key,
+   * physician session token, patient embed token) was presented instead.
+   * (An `X-Api-Key`, `X-Natzar-Physician` or `X-Natzar-Physician-Id` header
+   * on these routes is `invalid_request` with `details.reason`
+   * `'conflicting_credentials'` instead.) Mint a new session from your
+   * server. HTTP 401.
+   */
+  | 'provider_session_invalid'
+  /**
+   * Provider embed routes only: the access credential expired. Renew the
+   * SAME session from your server
+   * (`POST /v1/provider-embed/sessions/{sessionId}/renew`); the loader does
+   * this through your `getSession` callback. HTTP 401.
+   */
+  | 'provider_session_expired'
+  /**
+   * Provider embed routes only: the logical session reached its absolute
+   * lifetime. Renewal cannot extend it; mint a new session. HTTP 401.
+   */
+  | 'provider_session_ended'
+  /**
+   * Provider embed routes only: the session was revoked — by your server, by
+   * logout, or by a partner, policy or clinician change. Mint a new session
+   * only if the user is still entitled to one. HTTP 401.
+   */
+  | 'provider_session_revoked'
+  /**
+   * Provider embed routes only: the session locked after inactivity. Mint a
+   * new session after the user interacts again. HTTP 401.
+   */
+  | 'provider_session_locked'
+  /**
+   * Provider embed session routes only, verified mode: the clinician's
+   * Cognito ID token is invalid or expired, or its subject is not the named
+   * clinician. HTTP 401.
+   */
+  | 'clinician_proof_invalid'
+  /**
+   * The provider embed is disabled for your account: no or malformed
+   * provider embed policy, the policy is switched off, no parent origins are
+   * configured, or an operator switched it off. Retrying will not help.
+   * HTTP 403.
+   */
+  | 'provider_embed_disabled'
+  /**
+   * The authentication method of this mint or renewal (`delegated` or
+   * `verified`) is not permitted by your provider embed delegation policy.
+   * HTTP 403.
+   */
+  | 'delegation_not_allowed'
+  /**
+   * The clinician in your tenant cannot act: the account is not a physician
+   * or is disabled. HTTP 403.
+   */
+  | 'clinician_unavailable'
+  /**
+   * A required capability was not granted at mint, or is no longer allowed
+   * for the session. `details` names it. HTTP 403.
+   */
+  | 'capability_not_granted'
+  /**
+   * The operation is not available in this session's mode, for this
+   * consultation kind, or in this deployment. HTTP 403.
+   */
+  | 'operation_not_available'
+  /**
+   * The same `Idempotency-Key` was already used with a different request
+   * body. Use a new key for a new request. HTTP 409.
+   */
+  | 'idempotency_conflict'
+  /**
+   * A request with the same `Idempotency-Key` is still executing. Retry the
+   * same request after `Retry-After`. HTTP 409.
+   */
+  | 'idempotency_in_progress'
+  /**
+   * Presence or media ownership is held by another session of the same
+   * clinician. HTTP 409.
+   */
+  | 'lease_conflict'
+  /**
+   * A concurrent renewal of the same session won elsewhere. Use the grant
+   * that renewal returned. HTTP 409.
+   */
+  | 'renew_conflict'
+  /**
+   * The prescriber's licence does not cover the patient's jurisdiction under
+   * the tenant's licensure enforcement. HTTP 409.
+   */
+  | 'prescriber_not_eligible'
+  /**
+   * The cursor was tampered with, expired, or belongs to another session or
+   * query. Restart the listing without a cursor. HTTP 400.
+   */
+  | 'cursor_invalid'
+  /**
+   * The stored upload failed size, type or signature verification and was
+   * not accepted. HTTP 422.
+   */
+  | 'upload_rejected'
+  /**
+   * An authorization dependency failed, so the request was refused rather
+   * than allowed. Retry later with backoff. HTTP 503.
+   *
+   * On the video routes (`/join`, `/room`, `/ready`) it also means the
+   * platform could not confirm the consult's current room right now, so it
+   * handed out no grant rather than a possibly stale one. It is never "the
+   * call is over": pull again with backoff.
+   */
+  | 'dependency_unavailable';
 
 /**
  * The JSON body of every error response.
@@ -306,6 +549,7 @@ export const ERROR_HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
   external_id_conflict: 409,
   has_open_thread: 409,
   thread_not_active: 409,
+  request_thread: 409,
   not_assigned: 409,
   already_rated: 409,
   already_closed: 409,
@@ -314,8 +558,35 @@ export const ERROR_HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
   consult_not_cancellable: 409,
   slot_taken: 409,
   too_many_open_bookings: 409,
+  payment_required: 402,
+  payment_invalid: 402,
+  pharmacy_not_found: 404,
+  prescription_not_choosable: 409,
+  pharmacy_unreachable: 409,
+  pharmacy_add_unavailable: 409,
+  invalid_location: 422,
+  invalid_pharmacy: 422,
   rate_limited: 429,
   internal_error: 500,
+  provider_session_invalid: 401,
+  provider_session_expired: 401,
+  provider_session_ended: 401,
+  provider_session_revoked: 401,
+  provider_session_locked: 401,
+  clinician_proof_invalid: 401,
+  provider_embed_disabled: 403,
+  delegation_not_allowed: 403,
+  clinician_unavailable: 403,
+  capability_not_granted: 403,
+  operation_not_available: 403,
+  idempotency_conflict: 409,
+  idempotency_in_progress: 409,
+  lease_conflict: 409,
+  renew_conflict: 409,
+  prescriber_not_eligible: 409,
+  cursor_invalid: 400,
+  upload_rejected: 422,
+  dependency_unavailable: 503,
 };
 
 /**

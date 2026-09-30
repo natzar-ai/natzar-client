@@ -106,6 +106,7 @@ const workspace = (over: {
 const consult = (id: string, status = 'active') => ({
   id,
   patientId: `p_${id}`,
+  kind: 'conversation' as const,
   status,
   createdAt: '2026-08-19T09:00:00Z',
   overdue: false,
@@ -464,6 +465,153 @@ describe('connectPhysician — inbox', () => {
     assert.deepEqual(bodies['/async-consults/t_1/takeover'], {});
     assert.deepEqual(bodies['/async-consults/t_1/escalate'], {});
     assert.deepEqual(bodies['/telehealth-consults/tele_1/cancel'], {reason: 'Running late'});
+  });
+
+  it('issues a signed referral through the physician session surface', async () => {
+    const referral = {id: 'ref_1', kind: 'specialist', title: 'Specialist referral — Cardiology', issuedAt: '2026-09-22T09:00:00.000Z'};
+    const {calls, fetchLike} = stubApi({
+      'POST /async-consults/t_1/referrals': {referral},
+    });
+    const desk = connectPhysician(SESSION, {fetch: fetchLike});
+    const result = await desk.inbox.issueReferral('t_1', {
+      draft: {kind: 'specialist', specialty: 'Cardiology', priority: 'routine', reason: 'Exertional symptoms'},
+      lang: 'en',
+    });
+    assert.deepEqual(result, referral);
+    assert.deepEqual(calls[0].body, {
+      draft: {kind: 'specialist', specialty: 'Cardiology', priority: 'routine', reason: 'Exertional symptoms'},
+      lang: 'en',
+    });
+    assert.equal(calls[0].headers.Authorization, `Bearer ${TOKEN}`);
+  });
+
+  it('issues several referrals in one call and a prescription through the physician session', async () => {
+    const referral = {id: 'ref_1', kind: 'laboratory', title: 'Lab', issuedAt: '2026-09-22T09:00:00.000Z'};
+    const {calls, fetchLike} = stubApi({
+      'POST /async-consults/t_1/referrals': {referral, referrals: [referral, {...referral, id: 'ref_2', kind: 'imaging'}]},
+      'POST /async-consults/t_1/prescriptions': {prescription: {id: 'rx_1', issuedAt: referral.issuedAt, link: 'https://example.test/pharmacy?id=rx_1'}},
+    });
+    const desk = connectPhysician(SESSION, {fetch: fetchLike});
+    const drafts = [
+      {kind: 'laboratory' as const, tests: ['cbc' as const], priority: 'routine' as const},
+      {kind: 'imaging' as const, modality: 'mri' as const, examination: 'Spine', clinicalIndication: 'Pain', priority: 'routine' as const},
+    ];
+    assert.equal((await desk.inbox.issueReferrals('t_1', {drafts})).referrals?.length, 2);
+    assert.deepEqual(calls[0].body, {drafts});
+    const draft = {items: [{medication: 'Amoxicillin', dose: '500 mg', route: 'oral' as const, frequency: 'tid' as const, quantity: '21 capsules', refills: 0}]};
+    assert.equal((await desk.inbox.issuePrescription('t_1', {draft})).id, 'rx_1');
+    assert.deepEqual(calls[1].body, {draft});
+  });
+});
+
+describe('connectPhysician — suggested referrals (0.13.0)', () => {
+  const LAB = {kind: 'laboratory' as const, tests: ['lipid_panel' as const], priority: 'routine' as const};
+  const GASTRO = {kind: 'specialist' as const, specialty: 'Gastroenterology', priority: 'routine' as const, reason: 'Screening colonoscopy'};
+  const referral = {id: 'ref_1', kind: 'laboratory', title: 'Laboratory requisition', issuedAt: '2026-09-23T09:00:00.000Z'};
+  const request = (over: Record<string, unknown> = {}) => ({
+    consult: {id: 't_1', patientId: 'p_1', status: 'active', kind: 'referral_request', requestSubject: 'Requisitions', overdue: false, rateable: false, origin: 'partner', createdAt: '2026-09-23T08:00:00Z', suggestedReferrals: [LAB, GASTRO], ...over},
+  });
+
+  it('suggestedReferrals reads the consult fresh and answers [] when there are none', async () => {
+    const {fetchLike} = stubApi({
+      'GET /async-consults/t_1': request(),
+      'GET /async-consults/t_2': {consult: {...request().consult, id: 't_2', suggestedReferrals: undefined}},
+    });
+    const desk = connectPhysician(SESSION, {fetch: fetchLike});
+    assert.deepEqual(await desk.inbox.suggestedReferrals('t_1'), [LAB, GASTRO]);
+    assert.deepEqual(await desk.inbox.suggestedReferrals('t_2'), []);
+  });
+
+  it("generateReferrals signs the consult's suggestions as one bundle, with the language asked for", async () => {
+    const {calls, fetchLike, hitsFor} = stubApi({
+      'GET /async-consults/t_1': request(),
+      'POST /async-consults/t_1/referrals': {referral, referrals: [referral, {...referral, id: 'ref_2', kind: 'specialist'}]},
+    });
+    const desk = connectPhysician(SESSION, {fetch: fetchLike});
+    const result = await desk.inbox.generateReferrals('t_1', {lang: 'fr'});
+    assert.equal(result.referrals?.length, 2);
+    assert.equal(hitsFor('POST /async-consults/t_1/claim'), 0); // already the assignee's
+    assert.deepEqual(calls.find((c) => c.method === 'POST')?.body, {drafts: [LAB, GASTRO], lang: 'fr'});
+  });
+
+  it('edited drafts win over the suggestions', async () => {
+    const {calls, fetchLike} = stubApi({
+      'GET /async-consults/t_1': request(),
+      'POST /async-consults/t_1/referrals': {referral},
+    });
+    const desk = connectPhysician(SESSION, {fetch: fetchLike});
+    const edited = [{...LAB, fasting: true}];
+    await desk.inbox.generateReferrals('t_1', {drafts: edited});
+    assert.deepEqual(calls.find((c) => c.method === 'POST')?.body, {drafts: edited});
+  });
+
+  it('claims a queued request first — the physician asked to answer it', async () => {
+    const {calls, fetchLike} = stubApi({
+      'GET /async-consults/t_1': request({status: 'queued'}),
+      'POST /async-consults/t_1/claim': {consult: request({status: 'active', assignedPhysicianId: 'd_1'}).consult},
+      'POST /async-consults/t_1/referrals': {referral},
+    });
+    const desk = connectPhysician(SESSION, {fetch: fetchLike});
+    await desk.inbox.generateReferrals('t_1');
+    assert.deepEqual(
+      calls.filter((c) => c.method === 'POST').map((c) => c.path),
+      ['/async-consults/t_1/claim', '/async-consults/t_1/referrals'],
+    );
+  });
+
+  it('signs the suggestions in the patient\'s language when no lang is given — fr_CH → fr, unknown → the platform default', async () => {
+    const {calls, fetchLike} = stubApi({
+      'GET /async-consults/t_1': request({patientLang: 'fr_CH'}),
+      'GET /async-consults/t_2': {consult: {...request().consult, id: 't_2', patientLang: 'xx_YY'}},
+      'POST /async-consults/t_1/referrals': {referral},
+      'POST /async-consults/t_2/referrals': {referral},
+    });
+    const desk = connectPhysician(SESSION, {fetch: fetchLike});
+    await desk.inbox.generateReferrals('t_1');
+    await desk.inbox.generateReferrals('t_2');
+    const posts = calls.filter((c) => c.method === 'POST');
+    assert.deepEqual(posts[0].body, {drafts: [LAB, GASTRO], lang: 'fr'});
+    assert.deepEqual(posts[1].body, {drafts: [LAB, GASTRO]});
+  });
+
+  it("an explicit lang wins over the patient's, and edited drafts keep the platform's default", async () => {
+    const {calls, fetchLike} = stubApi({
+      'GET /async-consults/t_1': request({patientLang: 'fr_CH'}),
+      'POST /async-consults/t_1/referrals': {referral},
+    });
+    const desk = connectPhysician(SESSION, {fetch: fetchLike});
+    await desk.inbox.generateReferrals('t_1', {lang: 'de'});
+    await desk.inbox.generateReferrals('t_1', {drafts: [LAB]});
+    const posts = calls.filter((c) => c.method === 'POST');
+    assert.deepEqual(posts[0].body, {drafts: [LAB, GASTRO], lang: 'de'});
+    assert.deepEqual(posts[1].body, {drafts: [LAB]});
+  });
+
+  it('refuses an explicit empty selection — never falls back to signing every suggestion', async () => {
+    const {calls, fetchLike} = stubApi({
+      'GET /async-consults/t_1': request({status: 'queued'}),
+      'POST /async-consults/t_1/referrals': {referral},
+    });
+    const desk = connectPhysician(SESSION, {fetch: fetchLike});
+    await assert.rejects(desk.inbox.generateReferrals('t_1', {drafts: []}), (e: unknown) => {
+      assert.equal((e as {code?: string}).code, 'no_suggested_referrals');
+      return true;
+    });
+    // No claim, no signing — not even the read.
+    assert.equal(calls.filter((c) => c.path.startsWith('/async-consults/t_1')).length, 0);
+  });
+
+  it('refuses with no_suggested_referrals — before any write — when there is nothing to sign', async () => {
+    const {calls, fetchLike} = stubApi({
+      'GET /async-consults/t_1': request({suggestedReferrals: undefined, status: 'queued'}),
+    });
+    const desk = connectPhysician(SESSION, {fetch: fetchLike});
+    await assert.rejects(desk.inbox.generateReferrals('t_1'), (e: unknown) => {
+      assert.equal((e as {name?: string}).name, 'NatzarApiError');
+      assert.equal((e as {code?: string}).code, 'no_suggested_referrals');
+      return true;
+    });
+    assert.equal(calls.filter((c) => c.method === 'POST').length, 0);
   });
 });
 

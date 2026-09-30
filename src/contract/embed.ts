@@ -35,16 +35,23 @@
  * page's origin must be on your partner account's `allowedOrigins` list or
  * the widget refuses to load (`origin_not_allowed`).
  *
- * The telehealth iframe requests camera/microphone access — the embed
- * script sets `allow="camera; microphone; display-capture"` on the iframe
- * it creates; no host-page permissions policy changes are usually needed.
+ * The telehealth iframe requests camera/microphone access, the in-frame
+ * pharmacy picker (a prescription's "choose a pharmacy" step) asks for the
+ * device's location, and the in-frame checkout can offer wallet payments —
+ * the embed script sets
+ * `allow="camera; microphone; display-capture; geolocation; payment"` on the
+ * iframe it creates; no host-page permissions policy changes are usually
+ * needed. If you build the iframe yourself, carry the same `allow` list.
  *
  * ## Event plumbing
  *
  * The iframe posts {@link EmbedPostMessage} envelopes to the host page; the
  * custom element verifies the message origin and re-dispatches each one as
  * a DOM `CustomEvent` named `natzar:<event>` (see {@link EmbedDomEventName})
- * whose `detail` is the envelope's `data`. Listen on the element:
+ * whose `detail` is the envelope's `data`. Only `natzar:expired` needs an
+ * answer (a fresh token, for sessions that outlive one); everything else —
+ * presenting the payment step as a dialog included — the element does
+ * itself. Listen on the element when you want to react:
  *
  * ```js
  * const el = document.querySelector('natzar-async');
@@ -189,7 +196,8 @@ export type EmbedEventName =
   | 'rated'
   | 'closed'
   | 'expired'
-  | 'error';
+  | 'error'
+  | 'payment';
 
 /** Runtime list of every embed event name. */
 export const EMBED_EVENT_NAMES = [
@@ -204,6 +212,7 @@ export const EMBED_EVENT_NAMES = [
   'closed',
   'expired',
   'error',
+  'payment',
 ] as const satisfies readonly EmbedEventName[];
 
 /**
@@ -215,6 +224,7 @@ export const EMBED_EVENT_NAMES = [
  * - Async chat only: `consented`, `queued`, `assigned`, `message`.
  * - Telehealth only: `joined`, `ended` (plus `queued` while in the waiting
  *   room and `assigned` when a physician picks up).
+ * - Any surface whose visit the clinic charges for: `payment`.
  */
 export interface EmbedEventDetailMap {
   /** The widget loaded, verified its token, and rendered. */
@@ -279,6 +289,32 @@ export interface EmbedEventDetailMap {
     code?: string;
     /** Human-readable description for logging. */
     message: string;
+  };
+  /**
+   * The widget opened (`started`) or closed (`ended`) its payment step: the
+   * secure card form a patient completes inside the frame before a visit the
+   * clinic charges for goes ahead. Every surface can reach one — the agent
+   * chat, an async consent, a telehealth waiting room, a booking — and
+   * `ended` follows however the step closes: paid, backed out of, failed, a
+   * session that expired under it, or the frame reloading.
+   *
+   * The frame is sized for a conversation and a checkout form is taller than
+   * one, so the element presents itself as a modal dialog over the page
+   * while the step is open, and puts itself back when it closes — nothing
+   * for the host to do. This event is the only CANCELABLE one:
+   * `preventDefault()` on `started` keeps the step inline, for a host that
+   * presents it itself. Such a host must never move the element to another
+   * parent: re-inserting an iframe reloads it, and the checkout in progress
+   * goes with it.
+   */
+  payment: {
+    /**
+     * The consult being paid for. EMPTY when the surface has none to name —
+     * a booking opened from the agent chat.
+     */
+    consultId: string;
+    /** `started` when the payment step opens, `ended` when it closes. */
+    phase: 'started' | 'ended';
   };
 }
 

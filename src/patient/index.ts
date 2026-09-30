@@ -37,9 +37,52 @@
 //   token, minted on demand from the patient session (the same thing the embed
 //   widget does). `care.telehealth.*` hides that: name the consult, and the
 //   SDK mints, caches and re-mints the consult token as needed.
+//
+// * A PRESCRIPTION IS ANSWERED IN PLACE. When a physician prescribes, the
+//   thread carries a "choose your pharmacy" link (`/pharmacy?id=`). The public
+//   page behind it is birthdate-gated and refuses partner-origin patients by
+//   design — the partner authenticated them — so the entry carries
+//   `awaiting: 'pharmacy'` and `care.prescriptions.*` drives the picker on the
+//   patient session: search, choose, add a pharmacy no directory covers.
+//
+// * A REFERRAL IS A FILE CARD. When a physician refers the patient (to a
+//   specialist, for lab tests, for imaging), the thread carries a "view your
+//   referral" link (`/referral?id=`) to a signed PDF. The page behind it is
+//   birthdate-gated, refuses partner-origin patients and dies after 30 days;
+//   on this session the document has NO window, so the entry's `link` reads
+//   `view` for as long as the referral stands, the "active for 30 days"
+//   sentence is stripped from `text`, and `care.referrals.document(id)` mints
+//   a fresh short-lived URL on every open. Nothing awaits the patient — a
+//   referral is carried, not answered — so no `awaiting` is set.
+//
+// * A PRICED INVITE IS ONE BUTTON. When the tenant charges for the visit an
+//   invite offers, its entry's `link.payment` carries the price BEFORE the
+//   click ("Yes & pay CA$100"), and `care.acceptAndPay(entry, {mount})` runs
+//   the whole round from that one press: the action is asked FIRST with
+//   `checkout: true` (so an invite that would fold into an open consult, or
+//   has expired, is never charged for), the refusal hands back a checkout
+//   bound to that invite, your `mount` shows Stripe's form, the SDK waits for
+//   the platform to confirm `paid` — Stripe.js's onComplete is not proof, the
+//   signed webhook is — and repeats the action with the payment. Because the
+//   checkout is bound to the invite, a patient who paid and then reloaded is
+//   let in by pressing again: no second charge, no payment id to carry.
+//
+// * A VIDEO ROOM IS SINGLE-USE. The platform may retire the room mid-call and
+//   hand out a new one; a `ROOM_DELETED` disconnect means "join again", not
+//   "the call is over", and the patient must not publish into a room whose
+//   metadata lacks the grant's `roomNonce`. `connectPatientRoom` runs a
+//   LiveKit `Room` you construct by those rules.
 
 import {watch, type SyncState, type Unsubscribe, type WatchOptions} from '../subscribe';
 import {NatzarApiError, isNatzarApiError} from '../errors';
+import type {
+  PharmacyLinkAction,
+  PharmacyResource,
+  PharmacySearchOrigin,
+  PHARMACY_SEARCH_RADII_KM,
+  PrescriptionStatus,
+} from '../contract/prescriptions';
+import {REFERRAL_LINK_VALIDITY_SENTENCES, type ReferralKind, type ReferralLinkAction} from '../contract/referrals';
 import {
   assertConnectable,
   callPatientOp,
@@ -47,9 +90,25 @@ import {
   type PatientSession,
   type TransportOptions,
 } from './transport';
+import {
+  roomCarriesNonce,
+  startRoomSession,
+  type RoomPull,
+  type RoomSession,
+  type RoomSessionOptions,
+  type RoomSessionState,
+} from '../room';
 
 export type {PatientSession, Unsubscribe, SyncState, WatchOptions, TransportOptions, FetchLike};
 export {NatzarSessionError} from './transport';
+export {DISCONNECT_REASON, NO_RECONNECT_POLICY, parseRoomMetadata, roomCarriesNonce, roomOptions} from '../room';
+export type {LiveKitRoomLike, ReconnectPolicyLike, RepullReason, RoomPull, RoomSession} from '../room';
+// The contract shapes this entry's own signatures name, so a browser-only
+// consumer can type a picker row or the origin it builds without a second
+// import (`@natzar/client/contract` remains their canonical home).
+export type {PharmacyLinkAction, PharmacyResource, PharmacySearchOrigin, PrescriptionStatus, ReferralKind, ReferralLinkAction};
+export type {PatientSurfaceErrorCode} from './codes';
+export type {NatzarErrorCode} from '../errors';
 
 /**
  * What a platform link inside a message can currently be used for.
@@ -59,12 +118,33 @@ export {NatzarSessionError} from './transport';
  * ("Rated", "Consultation ended") — a button that vanishes after a tap leaves
  * the patient unsure whether it registered.
  *
- * - `consent` / `rate` / `join` / `book` — actionable; mirrored on `awaiting`.
+ * - `consent` / `rate` / `join` / `book` / `choose` — actionable; mirrored on `awaiting`.
+ * - `view` — actionable, NOT mirrored on `awaiting`: a referral's signed PDF
+ *   can be opened with `care.referrals.document(link.consultId)`. Nothing is
+ *   owed — the patient carries the document.
  * - `open` — the consult is live and the conversation itself is the surface.
  * - `rated` — already rated. `ended` — finished, nothing left to do.
+ * - `sent` — the prescription went to the chosen pharmacy (`link.pharmacyName`
+ *   names it when known). `expired` — the 24-hour pharmacy link lapsed
+ *   unused, or the prescription (or referral) is not this patient's.
+ *   `revoked` — the physician withdrew it. All three keep the button visible
+ *   and disabled.
  * - `none` — the platform could not resolve it; say nothing rather than guess.
  */
-export type LinkAction = 'consent' | 'rate' | 'join' | 'book' | 'open' | 'rated' | 'ended' | 'none';
+export type LinkAction =
+  | 'consent'
+  | 'rate'
+  | 'join'
+  | 'book'
+  | 'open'
+  | 'rated'
+  | 'ended'
+  | PharmacyLinkAction
+  | ReferralLinkAction
+  | 'none';
+
+/** The kinds of link a message can carry, by the page it would have led to. */
+export type LinkKind = 'async' | 'telehealth' | 'book' | 'pharmacy' | 'referral';
 
 /** One entry in the patient's care timeline. Plain, serializable data. */
 export interface TimelineEntry {
@@ -98,9 +178,11 @@ export interface TimelineEntry {
    * `rating` — a finished consult can be rated; answer with `care.rate(...)`.
    * `join` — a video consult is waiting; `care.telehealth.join(entry.consultId)`.
    * `book` — an appointment can be booked; `care.telehealth.slots(entry.consultId)`.
+   * `pharmacy` — a prescription is waiting for its pharmacy;
+   * `care.prescriptions.pharmacies(entry.link.consultId, …)` then `choose`.
    * Absent once answered, so a rendered button disappears on its own.
    */
-  awaiting?: 'consent' | 'rating' | 'join' | 'book';
+  awaiting?: 'consent' | 'rating' | 'join' | 'book' | 'pharmacy';
   /** True while a locally-sent entry has not yet been confirmed by the server. */
   pending?: boolean;
   /**
@@ -121,8 +203,133 @@ export interface TimelineEntry {
    * shared between the two.
    */
   clientRef?: string;
-  /** A consult link the message carried, resolved to what it can do now. */
-  link?: {kind: 'async' | 'telehealth' | 'book'; consultId: string; action: LinkAction};
+  /**
+   * A platform link the message carried, resolved to what it can do now.
+   *
+   * `consultId` is the id the link named — a consult for `async` /
+   * `telehealth` / `book`, the PRESCRIPTION id for `pharmacy` and the
+   * REFERRAL id for `referral`. One field for every kind, deliberately: a
+   * card renders `link.action` and hands `link.consultId` to the matching
+   * `care.*` call, and a second id field would only give a partner two
+   * places to read the same value. The entry's own `consultId` is untouched
+   * by a pharmacy or referral link (it still names the thread the physician
+   * wrote on).
+   */
+  link?: {
+    kind: LinkKind;
+    consultId: string;
+    action: LinkAction;
+    /** For a `pharmacy` link: the chosen pharmacy once one was chosen ("Sent to …"). */
+    pharmacyName?: string | null;
+    /** For a `referral` link: the document's title ("Laboratory requisition"), for the file card. */
+    title?: string | null;
+    /**
+     * What taking this invite costs, while it is actionable (`consent` /
+     * `join` / `book`) and the tenant charges for it — label the button
+     * "Yes & pay CA$100" and press it with `care.acceptAndPay(entry, …)`.
+     * ABSENT means "show no price", never "free": a free scenario, one that
+     * is already paid, or a price the platform could not read right now.
+     * The action stays authoritative either way.
+     */
+    payment?: InvitePrice;
+  };
+}
+
+/**
+ * A price, in minor units. Format it with the patient's locale:
+ * `new Intl.NumberFormat(lang, {style: 'currency', currency: currency.toUpperCase()}).format(amountCents / 100)`.
+ */
+export interface InvitePrice {
+  amountCents: number;
+  /** ISO 4217, lowercase as Stripe reports it (`cad`). */
+  currency: string;
+}
+
+/**
+ * The checkout a payment refusal carries when the action was asked with
+ * `checkout: true` — bound to that invite (read it with {@link checkoutOf}).
+ *
+ * - `clientSecret` (+ `publishableKey` when the platform has one configured;
+ *   otherwise mount with your own key of the same Stripe account): an
+ *   embedded Checkout Session for Stripe.js `createEmbeddedCheckoutPage`.
+ * - `checkoutUrl`: a hosted session to send the patient to instead.
+ * - `alreadyPaid`: nothing to pay — a payment already covers this invite
+ *   (`settling`: the patient finished Stripe's form, the platform has not
+ *   confirmed it yet). Wait for `paid`, then repeat the action.
+ *
+ * Asking again for the same invite hands back the SAME checkout while it is
+ * payable (a double click, a remount) rather than a second one.
+ */
+export interface CheckoutPayload extends InvitePrice {
+  paymentId: string;
+  clientSecret?: string;
+  publishableKey?: string;
+  checkoutUrl?: string;
+  alreadyPaid?: boolean;
+  settling?: boolean;
+}
+
+/** Payment inputs for `respond` / `telehealth.join` (and, inline, `telehealth.book`). */
+export interface PaymentOptions {
+  /**
+   * A payment you already hold for this visit (`paid`, from a checkout). Not
+   * needed after a checkout bound to the invite: its paid row is adopted.
+   */
+  paymentId?: string;
+  /**
+   * On a payment refusal, attach a checkout bound to this invite to the
+   * error (`checkoutOf(error)`) — the one-press "accept & pay". Ignored when
+   * `paymentId` is set: a presented payment's refusal is that payment's story.
+   */
+  checkout?: boolean;
+  signal?: AbortSignal;
+}
+
+/** One payment's state, as the platform sees it. Only `paid` entitles a visit. */
+export interface PaymentState {
+  paymentId: string;
+  status: 'pending' | 'paid' | 'failed' | 'expired' | 'refunded' | 'unknown';
+  /** The platform's verdict, from Stripe's signed webhook — never from the browser. */
+  paid: boolean;
+}
+
+export interface AcceptAndPayOptions {
+  /**
+   * Show the payment step and resolve once the patient completed it —
+   * mount Stripe.js with `clientSecret` + `publishableKey` and resolve from
+   * its `onComplete` (or open `checkoutUrl` and resolve when they are back).
+   * Reject to abandon (the patient backed out): the checkout stays bound to
+   * the invite and the next press resumes it. Not called when nothing is
+   * owed or the invite is already paid for.
+   */
+  mount: (checkout: CheckoutPayload) => Promise<void>;
+  /** A `book` entry's chosen slot — required there, ignored elsewhere. */
+  booking?: {startsAt: string; practitionerId?: string; timezone?: string};
+  signal?: AbortSignal;
+  /**
+   * How long to wait, after `mount` resolves, for the platform to confirm
+   * the payment. On timeout it rejects `payment_not_completed` with
+   * `details.paymentId` — press again later: the paid row is adopted.
+   * @defaultValue 120000
+   */
+  confirmTimeoutMs?: number;
+  /** Poll cadence while waiting for `paid`. @defaultValue 2000 */
+  pollIntervalMs?: number;
+}
+
+/** What `acceptAndPay` did. */
+export interface AcceptAndPayResult {
+  action: 'consent' | 'join' | 'book';
+  /**
+   * The payment this press paid with (or resumed). Null when the action went
+   * through on the first ask — nothing was owed, or a payment already bound
+   * to the invite was adopted.
+   */
+  paymentId: string | null;
+  /** For `join`: the waiting-room state after the (paid) join. */
+  join?: JoinState;
+  /** For `book`: the appointment. */
+  booking?: BookingResult;
 }
 
 /** Everything a patient screen needs, in one object. */
@@ -156,6 +363,12 @@ export interface CareSnapshot {
      * `queue` — every consult minted before booking existed.
      */
     mode?: 'queue' | 'scheduled';
+    /**
+     * A consult-scoped session's price while its next step is still owed
+     * (consent, the first join, the booking). Absent = no price to show —
+     * see `TimelineEntry.link.payment`.
+     */
+    payment?: InvitePrice;
   };
 }
 
@@ -186,11 +399,21 @@ export interface TelehealthSession {
   mode: 'queue' | 'scheduled';
 }
 
-/** What a video room needs — hand it to your LiveKit client. */
+/**
+ * What a video room needs — hand it to {@link connectPatientRoom} with the
+ * LiveKit `Room` you render. The SDK only hands one over when it carries a
+ * `roomNonce`: a grant without one could not be checked, so it is never
+ * offered to connect with.
+ */
 export interface LiveKitGrant {
   token: string;
   url: string;
   roomName: string;
+  /**
+   * The nonce the room's metadata must carry (`{"v":1,"n":roomNonce}`) before
+   * the patient publishes anything. Never empty.
+   */
+  roomNonce: string;
 }
 
 /**
@@ -203,7 +426,10 @@ export interface JoinState {
   /** Place in line while `waiting`; 0 while connecting. */
   position: number;
   estimatedMinutes: number;
-  /** Present exactly when the call is on — `status === 'in_progress'`. */
+  /**
+   * Present when the call is on — `status === 'in_progress'`. An
+   * `in_progress` state without it is transient: beat again.
+   */
   livekit?: LiveKitGrant;
   /** Who the patient is looking at ("Dr. Sarah Chen MD") and the tile form ("Dr. Chen"). */
   physicianName?: string;
@@ -312,6 +538,13 @@ export interface BookingSlots {
   noEligiblePhysicians: boolean;
   /** Why, when licensure is the reason for an empty grid. Null otherwise. */
   licenseBlock: unknown | null;
+  /**
+   * What booking costs, while the consult is not booked yet and the tenant
+   * charges for it — label the confirm button "Confirm 3:00 PM · Pay CA$100"
+   * and book with `checkout: true` (or `care.acceptAndPay`). Absent = no
+   * price to show.
+   */
+  payment?: InvitePrice;
 }
 
 export interface BookingResult {
@@ -336,8 +569,131 @@ export interface AppointmentBeat {
     status?: string;
   };
   appointment: Appointment | null;
-  /** Present exactly when the call is on. */
+  /** Present when the call is on (never without its `roomNonce`). */
   livekit?: LiveKitGrant;
+}
+
+/**
+ * What a prescription's pharmacy link can be used for right now. NEVER a
+ * rejection for a miss: a prescription that is not this patient's, or that
+ * no longer exists, reads as an expired link — the same answer the page
+ * gives, and the one a card can render without a second code path.
+ */
+export interface PrescriptionLinkState {
+  /**
+   * The EFFECTIVE status: `expired` the moment the 24-hour window lapses,
+   * even before the platform's sweep stamps the row.
+   */
+  status: PrescriptionStatus;
+  expired: boolean;
+  /** ISO instant the link dies, for a countdown. Null when it carries no window. */
+  expiresAt: string | null;
+  /** The chosen pharmacy, once one was chosen. */
+  pharmacyName: string | null;
+  /** How the platform transmits in this zone: e-prescribing or fax. Null on a miss. */
+  transport: 'erx' | 'fax' | null;
+  /** The button — `choose` is the only actionable one; the rest label a disabled control. */
+  action: PharmacyLinkAction;
+}
+
+/**
+ * A referral's signed PDF, as `care.referrals.document(id)` hands it over —
+ * the same reply the platform's app and embed widget open from. `document`
+ * exists while the referral is `issued`: a presigned URL minted on THIS
+ * call and good for `expiresIn` seconds — open it at once (a new tab, the
+ * OS viewer), never store it, and call again for a fresh one. A withdrawn
+ * referral answers `revoked` with no document. Never `expired`: the 30-day
+ * window is the anonymous web page's; on this session the document stays
+ * reachable for as long as the referral exists. A referral that is not this
+ * patient's rejects with `not_found`.
+ */
+export type ReferralDocument =
+  | {
+      status: 'issued';
+      kind: ReferralKind;
+      /** The document's title in its own language ("Imaging requisition — MRI"). */
+      title: string;
+      physicianName: string;
+      /** ISO instant the referral was signed. */
+      issuedAt: string;
+      document: {
+        url: string;
+        /** Seconds the URL stays valid. */
+        expiresIn: number;
+        /** An ASCII-safe download name ("Laboratory-requisition-<id>.pdf"). */
+        fileName: string;
+        contentType: 'application/pdf';
+      };
+      /** All PDFs in a multi-referral operation; absent on older single referrals. */
+      files?: Array<{id: string; kind: ReferralKind; title: string; document: {url: string; downloadUrl?: string; expiresIn: number; fileName: string; contentType: 'application/pdf'}}>;
+    }
+  | {status: 'revoked'; kind: ReferralKind; title: string; physicianName: string; issuedAt: string; revokedAt: string | null};
+
+/** The radii `pharmacies()` accepts, km — default first, then "search wider". */
+export type PharmacySearchRadiusKm = (typeof PHARMACY_SEARCH_RADII_KM)[number];
+
+/** What to search around, and optionally for. */
+export interface PharmacySearchInput {
+  /**
+   * Where to centre the search — the device fix, the geocoded home address,
+   * or a place the patient typed. Omit it and the platform ranks around the
+   * cached home point if it has one; otherwise the answer carries
+   * `homeAddress` for you to geocode (then `setHomeLocation` so the next
+   * search starts ranked).
+   */
+  origin?: PharmacySearchOrigin;
+  /** Free text — name, city or postal code. */
+  query?: string;
+  /** Widen from the default (25 km). */
+  radiusKm?: PharmacySearchRadiusKm;
+}
+
+/** The picker's list, framed by the state the caller has to settle on. */
+export interface PharmacySearch {
+  /** The effective status. When it is not choosable, `pharmacies` is empty — render the state instead. */
+  status: PrescriptionStatus;
+  transport: 'erx' | 'fax';
+  pharmacyName: string | null;
+  /** The origin the list was ranked by — yours, else the cached home. Absent when there was none. */
+  origin?: PharmacySearchOrigin;
+  /** The one-line home address on file when NO origin exists — geocode it, then `setHomeLocation`. */
+  homeAddress?: string;
+  /** Sorted by distance from `origin` when there is one. Only `reachable` rows can be chosen. */
+  pharmacies: PharmacyResource[];
+}
+
+/** The choice was recorded; the prescription is on its way. */
+export interface PharmacyChoice {
+  status: 'transmitting';
+  pharmacyName: string;
+  transport: 'erx' | 'fax';
+}
+
+/** A pharmacy the patient typed in (fax zones only). */
+export interface AddPharmacyInput {
+  name: string;
+  address: string;
+  city?: string;
+  region?: string;
+  postalCode?: string;
+  /** The pharmacy's fax line. Without one the row waits for a clinician to add it. */
+  fax?: string;
+}
+
+/**
+ * The added pharmacy. It is not chosen yet: the platform first faxes a
+ * one-page probe to the line, and a delivered probe chooses it for this
+ * prescription on its own — so after a `probe: 'sent'` keep polling
+ * `state()` until the action moves off `choose`.
+ */
+export interface AddedPharmacy {
+  directoryId: string;
+  pharmacy: PharmacyResource;
+  status: 'pending_verification';
+  /** `not_sent` when no fax was given or it was refused (`faxIssue` says why). */
+  probe: 'sent' | 'not_sent';
+  /** Why the typed fax was refused (`same_as_phone` / `toll_free` / `invalid`), when it was. */
+  faxIssue: string | null;
 }
 
 export interface ConnectOptions extends TransportOptions {
@@ -377,8 +733,33 @@ export interface PatientClient {
      */
     send(input: SendInput, signal?: AbortSignal): Promise<void>;
   };
-  /** Answer a consent invite surfaced as `entry.awaiting === 'consent'`. */
-  respond(entry: TimelineEntry, accept: boolean, signal?: AbortSignal): Promise<void>;
+  /**
+   * Answer a consent invite surfaced as `entry.awaiting === 'consent'`.
+   *
+   * On a priced invite an accept without a payment rejects
+   * `payment_required` (`details` say what is owed). Pass
+   * `{checkout: true}` and that refusal also carries a checkout bound to
+   * the invite (`checkoutOf(error)`), or `{paymentId}` to accept with a
+   * payment you hold — or let `care.acceptAndPay(entry, {mount})` do the
+   * whole round. The third argument may still be a bare `AbortSignal`.
+   */
+  respond(entry: TimelineEntry, accept: boolean, options?: AbortSignal | PaymentOptions): Promise<void>;
+  /**
+   * The one-press "Yes & pay" / "Join & pay" / "Confirm · Pay" for an entry
+   * `awaiting` `consent`, `join` or `book` (a `book` entry needs
+   * `options.booking`). Asks the action first with `checkout: true`; when it
+   * is refused for payment, `mount`s the bound checkout, waits for the
+   * platform to confirm `paid` (never trusting the browser), and repeats the
+   * action with the payment. A free (or already-paid) invite goes straight
+   * through. Rejects with the action's own error otherwise — `slot_taken`
+   * after a paid booking keeps the payment bound: book another time.
+   */
+  acceptAndPay(entry: TimelineEntry, options: AcceptAndPayOptions): Promise<AcceptAndPayResult>;
+  /** Payments made on this patient's behalf — the state `acceptAndPay` waits on. */
+  payments: {
+    /** One payment's state. `paid` is the platform's word, from Stripe's signed webhook. */
+    status(paymentId: string, signal?: AbortSignal): Promise<PaymentState>;
+  };
   /**
    * Rate a finished consult surfaced as `entry.awaiting === 'rating'`. A video
    * consult is rated on two questions; `communication` defaults to `stars`
@@ -401,8 +782,15 @@ export interface PatientClient {
   telehealth: {
     /** Mint (or reuse) the consult session. Mostly useful for `mode`. */
     session(consultId: string, signal?: AbortSignal): Promise<TelehealthSession>;
-    /** Enter / stay in the waiting room; returns the room grant once the call is on. */
-    join(consultId: string, signal?: AbortSignal): Promise<JoinState>;
+    /**
+     * Enter / stay in the waiting room; returns the room grant once the call
+     * is on. On a priced on-demand consult the first join rejects
+     * `payment_required` until it is paid — `{checkout: true}` attaches the
+     * bound checkout to that refusal, `{paymentId}` presents a payment you
+     * hold. Once a payment is attached, later beats need neither. The second
+     * argument may still be a bare `AbortSignal`.
+     */
+    join(consultId: string, options?: AbortSignal | PaymentOptions): Promise<JoinState>;
     /** Give up the place in line. `join()` again to re-enter. */
     leave(consultId: string, signal?: AbortSignal): Promise<{left: boolean}>;
     /** Post-call feedback: two star questions (1–5) plus optional free text. */
@@ -426,11 +814,14 @@ export interface PatientClient {
      * in it. A lost race rejects with `slot_taken` (or `slot_unavailable`)
      * and `details.slots` holds a FRESH grid, so the retry is against times
      * that still exist; `too_many_open_bookings` means the patient must
-     * cancel or attend one first.
+     * cancel or attend one first. On a priced tenant an unpaid booking
+     * rejects `payment_required`; `checkout: true` attaches the bound
+     * checkout, `paymentId` presents a payment (not needed after a checkout
+     * bound to this consult — it is adopted, including after a lost slot).
      */
     book(
       consultId: string,
-      booking: {startsAt: string; practitionerId?: string; timezone?: string},
+      booking: {startsAt: string; practitionerId?: string; timezone?: string; paymentId?: string; checkout?: boolean},
       signal?: AbortSignal,
     ): Promise<BookingResult>;
     /** Cancel the booked appointment (refused with `too_late_to_cancel` inside the clinic's window). */
@@ -440,6 +831,69 @@ export interface PatientClient {
      * from `waitingRoomOpensAt`; send `present: false` once when leaving.
      */
     appointmentBeat(consultId: string, present?: boolean, signal?: AbortSignal): Promise<AppointmentBeat>;
+  };
+  /**
+   * The pharmacy picker, keyed by the prescription a message linked
+   * (`entry.link.consultId` on an `awaiting: 'pharmacy'` entry). Runs on the
+   * patient session itself — the prescription is the patient's, whatever
+   * kind of session this is — and every call re-checks that on the platform.
+   *
+   * The flow the platform's own page runs: `pharmacies()` (with the best
+   * origin you have), the patient picks a `reachable` row, `choose()`, then
+   * poll `state()` until `action` reads `sent` — the fax transport confirms
+   * in the thread, and a `failed` status re-opens the picker (choose again).
+   *
+   * The origin chain that page (and the embed widget) walks: the server's
+   * own origin → the geocoded home address (cached via `setHomeLocation`) →
+   * a device fix → a coarse point from the patient's IP → a place the
+   * patient typed. This SDK stops one hop short: it has no IP lookup, so
+   * with no fix and no home either ask for a postal code, or resolve a
+   * coarse origin from the patient's IP with your own service and pass it
+   * with `source: 'ip'` (distances then read as approximate).
+   */
+  prescriptions: {
+    /** What the link can do now. Never rejects for a miss — reads `expired`. */
+    state(id: string, signal?: AbortSignal): Promise<PrescriptionLinkState>;
+    /**
+     * The list, sorted by distance from `origin`. Refused with
+     * `not_found` only when the prescription is not this patient's; a
+     * prescription past choosing answers an EMPTY list with its status.
+     */
+    pharmacies(id: string, input?: PharmacySearchInput, signal?: AbortSignal): Promise<PharmacySearch>;
+    /**
+     * Send the prescription to one of the listed pharmacies. Refused with
+     * `pharmacy_not_found`, `not_choosable` / `expired` / `lost_race` (the
+     * error's `details.status` says where the prescription is now — re-read
+     * `state()`), or `pharmacy_unreachable` (a fax zone and the row has no
+     * verified fax line).
+     */
+    choose(id: string, directoryId: string, signal?: AbortSignal): Promise<PharmacyChoice>;
+    /**
+     * Cache the home point once you have geocoded `homeAddress`, so the next
+     * picker for this patient starts ranked. Refused with `invalid_location`.
+     */
+    setHomeLocation(id: string, point: {lat: number; lng: number}, signal?: AbortSignal): Promise<void>;
+    /**
+     * Add a pharmacy no directory covers — fax zones only (`not_available`
+     * elsewhere). Refused with `invalid_pharmacy` (the error's `details.code`
+     * names the field) or `not_choosable`.
+     */
+    addPharmacy(id: string, pharmacy: AddPharmacyInput, signal?: AbortSignal): Promise<AddedPharmacy>;
+  };
+  /**
+   * A referral the physician issued on the thread — a signed PDF the patient
+   * carries to the laboratory, the imaging centre or the specialist. The
+   * entry's `link` reads `view` (keyed by the referral id, `link.consultId`)
+   * for as long as the referral stands; `revoked` once withdrawn.
+   */
+  referrals: {
+    /**
+     * The document, with a URL minted on this call. Open it inside the tap
+     * that asked for it (a `window.open` after an `await` is a popup to
+     * every browser — open the tab first, then point it at `document.url`).
+     * Rejects with `not_found` for a referral that is not this patient's.
+     */
+    document(id: string, signal?: AbortSignal): Promise<ReferralDocument>;
   };
   attachments: {
     /**
@@ -692,6 +1146,142 @@ export function connectPatient(session: PatientSession, options: ConnectOptions 
     }
   };
 
+  // --- the three payable actions -------------------------------------------
+  //
+  // Named here rather than inline in the returned object so acceptAndPay can
+  // run the very same calls a partner would — one wire path per action.
+
+  const respond = async (_entry: TimelineEntry, accept: boolean, options?: AbortSignal | PaymentOptions): Promise<void> => {
+    const {signal, pay} = paymentArgs(options);
+    // The token is what scopes the answer — a patient session resolves the
+    // patient's own open invite, a consult session its own thread — so the
+    // entry is only the thing the partner rendered the buttons on. Payment
+    // arguments ride only on an accept: a decline is never charged.
+    await op(
+      'mutation',
+      sessionTyp() === 'async' ? 'embedAsyncConsent' : 'embedAgentConsent',
+      {accept, ...(accept ? pay : {})},
+      signal,
+    );
+    refreshNow();
+  };
+
+  const join = async (consultId: string, options?: AbortSignal | PaymentOptions): Promise<JoinState> => {
+    const {signal, pay} = paymentArgs(options);
+    const raw = await consultOp<RawJoin>(consultId, 'embedConsultJoin', pay, signal);
+    const result = toJoinState(raw);
+    // The transcript gains lifecycle notices as the call starts and ends;
+    // a conversation rendered beside the video should not lag them.
+    if (result.status !== 'waiting') refreshNow();
+    return result;
+  };
+
+  const book = async (
+    consultId: string,
+    booking: {startsAt: string; practitionerId?: string; timezone?: string; paymentId?: string; checkout?: boolean},
+    signal?: AbortSignal,
+  ): Promise<BookingResult> => {
+    const {pay} = paymentArgs({paymentId: booking.paymentId, checkout: booking.checkout});
+    const raw = await consultOp<{appointment?: RawAppointment | null; rescheduled?: boolean}>(
+      consultId,
+      'embedBook',
+      {
+        startsAt: booking.startsAt,
+        ...(booking.practitionerId ? {practitionerId: booking.practitionerId} : {}),
+        ...(booking.timezone ? {timezone: booking.timezone} : {}),
+        ...pay,
+      },
+      signal,
+    );
+    if (!raw?.appointment) {
+      throw new NatzarApiError({
+        code: 'internal_error',
+        status: 500,
+        message: 'The platform confirmed no appointment',
+        route: 'embedBook',
+        details: raw,
+      });
+    }
+    refreshNow();
+    return {appointment: toAppointment(raw.appointment), rescheduled: raw.rescheduled === true};
+  };
+
+  // On the PATIENT session whatever the action ran on: the platform scopes a
+  // payment to the session's patient and tenant, which every token of this
+  // patient shares, so a consult token is never needed to read one.
+  const paymentStatus = async (paymentId: string, signal?: AbortSignal): Promise<PaymentState> => {
+    const raw = await op<{status?: string; paid?: boolean}>('mutation', 'embedPaymentStatus', {paymentId}, signal);
+    const status = PAYMENT_STATUSES.has(raw?.status as PaymentState['status']) ? (raw!.status as PaymentState['status']) : 'unknown';
+    // `paid` only when the platform says so — never inferred from a status we
+    // could not read.
+    return {paymentId, status, paid: raw?.paid === true && status === 'paid'};
+  };
+
+  // Poll until the platform confirms the payment. Rejects on a status that
+  // can no longer become `paid`, and on timeout — both as
+  // `payment_not_completed` carrying the id, so the caller can resume: the
+  // row stays bound to the invite and the next press adopts it once paid.
+  const untilPaid = async (paymentId: string, opts: AcceptAndPayOptions): Promise<void> => {
+    const interval = opts.pollIntervalMs ?? 2000;
+    const deadline = Date.now() + (opts.confirmTimeoutMs ?? 120_000);
+    for (;;) {
+      const state = await paymentStatus(paymentId, opts.signal);
+      if (state.paid) return;
+      const dead = state.status === 'failed' || state.status === 'expired' || state.status === 'refunded';
+      if (dead || Date.now() >= deadline) {
+        throw new NatzarApiError({
+          code: 'payment_not_completed',
+          status: 409,
+          message: dead ? `The payment ${state.status}` : 'The payment was not confirmed in time',
+          route: 'embedPaymentStatus',
+          details: {paymentId, status: state.status, ...(dead ? {} : {timedOut: true})},
+        });
+      }
+      await delay(interval, opts.signal);
+    }
+  };
+
+  const acceptAndPay = async (entry: TimelineEntry, opts: AcceptAndPayOptions): Promise<AcceptAndPayResult> => {
+    const action = entry.awaiting === 'consent' || entry.awaiting === 'join' || entry.awaiting === 'book'
+      ? entry.awaiting
+      : null;
+    if (!action) throw new Error('acceptAndPay() needs an entry awaiting consent, join or book.');
+    const consultId = entry.link?.consultId ?? entry.consultId;
+    if (action !== 'consent' && !consultId) throw new Error('That entry names no consult.');
+    if (action === 'book' && !opts.booking?.startsAt) throw new Error('acceptAndPay() on a booking needs options.booking.startsAt.');
+    const signal = opts.signal;
+
+    const attempt = async (pay: {paymentId?: string; checkout?: boolean}): Promise<Omit<AcceptAndPayResult, 'action' | 'paymentId'>> => {
+      if (action === 'consent') {
+        await respond(entry, true, {...pay, signal});
+        return {};
+      }
+      if (action === 'join') return {join: await join(consultId!, {...pay, signal})};
+      return {booking: await book(consultId!, {...opts.booking!, ...pay}, signal)};
+    };
+
+    // The action FIRST, never a checkout ahead of it: the platform decides
+    // expiry, state and the fold into an open consult before it asks for
+    // money, so an invite that cannot be taken — or is free to take — is
+    // never charged for. `checkout: true` makes a payment refusal carry the
+    // invite's bound checkout.
+    let checkout: CheckoutPayload | null;
+    try {
+      const done = await attempt({checkout: true});
+      return {action, paymentId: null, ...done};
+    } catch (e) {
+      checkout = checkoutOf(e);
+      if (!checkout) throw e;
+    }
+    // Nothing to mount when a payment already covers the invite (paid, or
+    // completed at Stripe and settling) — only the confirmation is awaited.
+    if (!checkout.alreadyPaid) await opts.mount(checkout);
+    await untilPaid(checkout.paymentId, opts);
+    const done = await attempt({paymentId: checkout.paymentId});
+    refreshNow();
+    return {action, paymentId: checkout.paymentId, ...done};
+  };
+
   return {
     conversation: {
       subscribe: (onChange, watchOptions = {}) => {
@@ -770,12 +1360,10 @@ export function connectPatient(session: PatientSession, options: ConnectOptions 
       },
     },
 
-    respond: async (_entry, accept, signal) => {
-      // The token is what scopes the answer — a patient session resolves the
-      // patient's own open invite, a consult session its own thread — so the
-      // entry is only the thing the partner rendered the buttons on.
-      await op('mutation', sessionTyp() === 'async' ? 'embedAsyncConsent' : 'embedAgentConsent', {accept}, signal);
-      refreshNow();
+    respond,
+    acceptAndPay,
+    payments: {
+      status: paymentStatus,
     },
 
     rate: async (entry, rating, signal) => {
@@ -815,14 +1403,7 @@ export function connectPatient(session: PatientSession, options: ConnectOptions 
     telehealth: {
       session: (consultId, signal) => telehealthSession(consultId, signal),
 
-      join: async (consultId, signal) => {
-        const raw = await consultOp<RawJoin>(consultId, 'embedConsultJoin', {}, signal);
-        const result = toJoinState(raw);
-        // The transcript gains lifecycle notices as the call starts and ends;
-        // a conversation rendered beside the video should not lag them.
-        if (result.status !== 'waiting') refreshNow();
-        return result;
-      },
+      join,
 
       leave: async (consultId, signal) => {
         const raw = await consultOp<{left?: boolean}>(consultId, 'embedConsultLeave', {}, signal);
@@ -858,29 +1439,7 @@ export function connectPatient(session: PatientSession, options: ConnectOptions 
         return toBookingSlots(raw);
       },
 
-      book: async (consultId, booking, signal) => {
-        const raw = await consultOp<{appointment?: RawAppointment | null; rescheduled?: boolean}>(
-          consultId,
-          'embedBook',
-          {
-            startsAt: booking.startsAt,
-            ...(booking.practitionerId ? {practitionerId: booking.practitionerId} : {}),
-            ...(booking.timezone ? {timezone: booking.timezone} : {}),
-          },
-          signal,
-        );
-        if (!raw?.appointment) {
-          throw new NatzarApiError({
-            code: 'internal_error',
-            status: 500,
-            message: 'The platform confirmed no appointment',
-            route: 'embedBook',
-            details: raw,
-          });
-        }
-        refreshNow();
-        return {appointment: toAppointment(raw.appointment), rescheduled: raw.rescheduled === true};
-      },
+      book,
 
       cancelBooking: async (consultId, signal) => {
         await consultOp(consultId, 'embedCancelBooking', {}, signal);
@@ -891,6 +1450,75 @@ export function connectPatient(session: PatientSession, options: ConnectOptions 
         const raw = await consultOp<RawAppointmentBeat>(consultId, 'embedAppointmentBeat', {present}, signal);
         return toAppointmentBeat(raw);
       },
+    },
+
+    prescriptions: {
+      // The state op never answers `ok: false` (a miss IS a state), so
+      // nothing here can throw for a stale id — which is what lets a card
+      // poll it after `choose()` without a second error path.
+      state: async (id, signal) => toPrescriptionLinkState(await op<RawPrescriptionLinkState>('query', 'embedPrescriptionState', {id}, signal)),
+
+      pharmacies: async (id, input = {}, signal) => {
+        const raw = await op<RawPharmacySearch>(
+          'query',
+          'embedPrescriptionPharmacies',
+          {
+            id,
+            // AWSJSON travels stringified — the platform refuses a raw object.
+            ...(input.origin ? {origin: JSON.stringify(input.origin)} : {}),
+            ...(input.query?.trim() ? {query: input.query.trim()} : {}),
+            ...(input.radiusKm !== undefined ? {radiusKm: input.radiusKm} : {}),
+          },
+          signal,
+        );
+        return toPharmacySearch(raw);
+      },
+
+      choose: async (id, directoryId, signal) => {
+        const raw = await op<RawPharmacyChoice>('mutation', 'embedPrescriptionChoose', {id, directoryId}, signal);
+        // The thread gains the "sent to …" notice once the transport
+        // confirms; a conversation rendered beside the picker should not
+        // lag the card that just changed.
+        refreshNow();
+        return {
+          status: 'transmitting',
+          pharmacyName: String(raw?.pharmacyName ?? ''),
+          transport: raw?.transport === 'fax' ? 'fax' : 'erx',
+        };
+      },
+
+      setHomeLocation: async (id, point, signal) => {
+        await op('mutation', 'embedPrescriptionHomeLocation', {id, lat: point.lat, lng: point.lng}, signal);
+      },
+
+      addPharmacy: async (id, pharmacy, signal) => {
+        const raw = await op<RawAddedPharmacy>(
+          'mutation',
+          'embedPrescriptionAddPharmacy',
+          {id, pharmacy: JSON.stringify(pharmacy)},
+          signal,
+        );
+        if (!raw?.directoryId || !raw.pharmacy) {
+          throw new NatzarApiError({
+            code: 'internal_error',
+            status: 500,
+            message: 'The platform recorded no pharmacy',
+            route: 'embedPrescriptionAddPharmacy',
+            details: raw,
+          });
+        }
+        return {
+          directoryId: String(raw.directoryId),
+          pharmacy: raw.pharmacy,
+          status: 'pending_verification',
+          probe: raw.probe === 'sent' ? 'sent' : 'not_sent',
+          faxIssue: typeof raw.faxIssue === 'string' && raw.faxIssue ? raw.faxIssue : null,
+        };
+      },
+    },
+
+    referrals: {
+      document: async (id, signal) => toReferralDocument(await op<RawReferralDocument>('query', 'embedReferralDocument', {id}, signal)),
     },
 
     attachments: {
@@ -968,6 +1596,207 @@ export function connectPatient(session: PatientSession, options: ConnectOptions 
   };
 }
 
+// --- payments ----------------------------------------------------------------
+
+/**
+ * The checkout a payment refusal carries, or null — the `checkout: true`
+ * half of the one-press "accept & pay":
+ *
+ * ```ts
+ * try {
+ *   await care.respond(entry, true, {checkout: true});
+ * } catch (e) {
+ *   const checkout = checkoutOf(e);
+ *   if (!checkout) throw e;            // not a payment refusal, or none could start
+ *   // mount checkout.clientSecret … then wait for care.payments.status(…).paid
+ * }
+ * ```
+ *
+ * Null for any other error, for a refusal asked without `checkout: true`,
+ * and when the platform could not start one (`details.checkoutError` says
+ * why: `payments_unavailable`, `scenario_not_priced`, `stripe_error`). A
+ * payload with nothing to mount and nothing paid is treated as none.
+ */
+export function checkoutOf(error: unknown): CheckoutPayload | null {
+  if (!isNatzarApiError(error) || (error.code !== 'payment_required' && error.code !== 'payment_not_completed')) return null;
+  const raw = (error.details as {checkout?: unknown} | null | undefined)?.checkout;
+  if (!raw || typeof raw !== 'object') return null;
+  const c = raw as Record<string, unknown>;
+  const text = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
+  const price = toPrice(c);
+  const paymentId = text(c.paymentId);
+  if (!paymentId || !price) return null;
+  const clientSecret = text(c.clientSecret);
+  const publishableKey = text(c.publishableKey);
+  const checkoutUrl = text(c.checkoutUrl);
+  const alreadyPaid = c.alreadyPaid === true;
+  if (!alreadyPaid && !clientSecret && !checkoutUrl) return null;
+  return {
+    paymentId,
+    ...price,
+    ...(clientSecret ? {clientSecret} : {}),
+    ...(publishableKey ? {publishableKey} : {}),
+    ...(checkoutUrl ? {checkoutUrl} : {}),
+    ...(alreadyPaid ? {alreadyPaid: true} : {}),
+    ...(alreadyPaid && c.settling === true ? {settling: true} : {}),
+  };
+}
+
+// --- the video room ------------------------------------------------------------
+
+/**
+ * Where a patient's room session stands — {@link RoomSessionState} without
+ * `removed`, which only the physician helper reports (a patient's removal is
+ * pulled through like any other drop).
+ */
+export type PatientRoomState = Exclude<RoomSessionState, {phase: 'removed'}>;
+
+/** Options for {@link connectPatientRoom}. */
+export type PatientRoomOptions = RoomSessionOptions<LiveKitGrant, PatientRoomState>;
+
+/**
+ * Run a patient's LiveKit room by the platform's rules, from the grant a
+ * join (or appointment beat) returned until the call is over:
+ *
+ * - connects with nothing published, then publishes the microphone and
+ *   camera ONLY when the room's metadata carries the grant's `roomNonce`;
+ *   otherwise it disconnects and pulls a fresh grant (never publishing);
+ * - `ROOM_DELETED` or any drop it did not cause → pulls again: `live` in a
+ *   new room, `waiting` (back in the queue — your waiting room, never the
+ *   rating screen), or `ended` (the rating screen, as before). A drop while
+ *   a connect is still pending ends that attempt at once; the helper never
+ *   calls `room.connect()` on top of an attempt that has not settled;
+ * - `DUPLICATE_IDENTITY` (the patient opened the call on another device or
+ *   tab) → `displaced`, and nothing more until `session.resume()` — the two
+ *   screens must not keep re-joining each other;
+ * - never lets LiveKit reconnect on its own: the `Room` must be built with
+ *   {@link roomOptions}, or this throws.
+ *
+ * What it cannot do for you: keep YOUR device controls away from an
+ * unchecked room. Mount `VideoConference`, `ControlBar`, `TrackToggle` or any
+ * mute/camera button of your own only while `call.phase === 'live'`, and
+ * render a placeholder in `connecting` and `repulling`. livekit-client queues
+ * a microphone or camera switched on while the room is not connected and
+ * publishes it as soon as the next connection's signal is up — before the
+ * room check — so a tap on "unmute" during "Reconnecting…" could reach a
+ * room recreated empty by a stale token.
+ *
+ * ```ts
+ * import {Room} from 'livekit-client';
+ * import {RoomContext, VideoConference} from '@livekit/components-react';
+ * import {connectPatientRoom, patientPullFromJoin, roomOptions} from '@natzar/client/patient';
+ *
+ * const room = new Room(roomOptions());
+ * const session = connectPatientRoom({
+ *   room,
+ *   grant: state.livekit!,                                   // from care.telehealth.join()
+ *   pull: (signal) => care.telehealth.join(consultId, signal).then(patientPullFromJoin),
+ *   onState: (s) => setCall(s),                              // render from s.phase
+ * });
+ * // <RoomContext.Provider value={room}>
+ * //   {call.phase === 'live' ? <VideoConference /> : <Reconnecting />}   // no device control outside `live`
+ * // </RoomContext.Provider>; on unmount: session.leave()
+ * ```
+ */
+export function connectPatientRoom(options: PatientRoomOptions): RoomSession {
+  return startRoomSession<LiveKitGrant>(options as RoomSessionOptions<LiveKitGrant, RoomSessionState>, {
+    label: 'connectPatientRoom',
+    usable: (grant): grant is LiveKitGrant =>
+      !!grant && typeof grant.token === 'string' && !!grant.token && typeof grant.url === 'string' && !!grant.url &&
+      typeof grant.roomNonce === 'string' && !!grant.roomNonce,
+    verify: (metadata, grant) => roomCarriesNonce(metadata, grant.roomNonce),
+    // A patient is never removed by design; if it happens, pull through it.
+    removed: 'repull',
+  });
+}
+
+const JOIN_ENDED = new Set(['completed', 'cancelled', 'no_show', 'expired']);
+
+/**
+ * Map a `care.telehealth.join()` answer (or a server-side
+ * `POST /v1/telehealth-consults/{id}/join` body) for {@link connectPatientRoom}:
+ * `in_progress` with a grant → `live`, without one → `retry`; a finished
+ * consult → `ended`; anything else — `waiting` above all, or a status added
+ * after you shipped — → `waiting`, never a reconnect.
+ */
+export function patientPullFromJoin(state: {status?: string | null; livekit?: LiveKitGrantLike | null} | null | undefined): RoomPull<LiveKitGrant> {
+  const status = String(state?.status ?? '');
+  if (status === 'in_progress') {
+    const grant = toLiveKitGrant(state?.livekit ?? undefined);
+    return grant ? {kind: 'live', grant} : {kind: 'retry'};
+  }
+  if (JOIN_ENDED.has(status)) return {kind: 'ended', status};
+  return {kind: 'waiting'};
+}
+
+/**
+ * Map a `care.telehealth.appointmentBeat()` answer for
+ * {@link connectPatientRoom}: `in_progress` with a grant → `live`; `missed` /
+ * `closed` → `ended`; `early` / `waiting` / `connecting` (and anything
+ * unknown) → `waiting` — back to the appointment's waiting room.
+ */
+export function patientPullFromAppointmentBeat(
+  beat: {state?: {phase?: string | null; status?: string | null} | null; livekit?: LiveKitGrantLike | null} | null | undefined,
+): RoomPull<LiveKitGrant> {
+  const phase = String(beat?.state?.phase ?? '');
+  if (phase === 'in_progress') {
+    const grant = toLiveKitGrant(beat?.livekit ?? undefined);
+    return grant ? {kind: 'live', grant} : {kind: 'retry'};
+  }
+  if (phase === 'missed') return {kind: 'ended', status: String(beat?.state?.status ?? 'no_show')};
+  if (phase === 'closed') return {kind: 'ended', status: String(beat?.state?.status ?? 'completed')};
+  return {kind: 'waiting'};
+}
+
+
+const PAYMENT_STATUSES = new Set<PaymentState['status']>(['pending', 'paid', 'failed', 'expired', 'refunded']);
+
+// A price off the wire: a positive whole amount and a currency, or nothing —
+// a malformed price is not shown, the same "absent is not free" rule the
+// platform applies.
+function toPrice(raw: unknown): InvitePrice | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const {amountCents, currency} = raw as {amountCents?: unknown; currency?: unknown};
+  if (typeof amountCents !== 'number' || !Number.isInteger(amountCents) || amountCents <= 0) return undefined;
+  if (typeof currency !== 'string' || !currency) return undefined;
+  return {amountCents, currency};
+}
+
+// The payment arguments of respond / join. The 0.15 signatures took a bare
+// AbortSignal in that position, and still may. A presented payment wins over
+// `checkout` — the platform would ignore the flag anyway.
+function paymentArgs(options?: AbortSignal | PaymentOptions): {signal?: AbortSignal; pay: {paymentId?: string; checkout?: true}} {
+  if (!options) return {pay: {}};
+  if (isAbortSignal(options)) return {signal: options, pay: {}};
+  const paymentId = options.paymentId?.trim();
+  return {
+    ...(options.signal ? {signal: options.signal} : {}),
+    pay: paymentId ? {paymentId} : options.checkout ? {checkout: true} : {},
+  };
+}
+
+// Duck-typed rather than `instanceof`: a signal from another realm (an
+// iframe, a test runner's) is still a signal.
+function isAbortSignal(value: unknown): value is AbortSignal {
+  return !!value && typeof value === 'object' && 'aborted' in value &&
+    typeof (value as AbortSignal).addEventListener === 'function';
+}
+
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason ?? new Error('aborted'));
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason ?? new Error('aborted'));
+    };
+    signal?.addEventListener('abort', onAbort, {once: true});
+  });
+}
+
 // --- shaping -----------------------------------------------------------------
 
 // A consult token is trusted for this long less than its `exp` says, so a
@@ -984,6 +1813,8 @@ interface RawState {
   rateable?: boolean;
   mode?: string;
   assignedPhysicianName?: string | null;
+  /** The consult's price while its next step is owed (absent otherwise). */
+  payment?: {amountCents?: number; currency?: string} | null;
   /** …and a nested form is tolerated too, for deployments that nest it. */
   consult?: {
     id?: string;
@@ -997,6 +1828,7 @@ interface RawState {
     joinable?: boolean;
     mode?: string;
     awaitingConsent?: boolean;
+    payment?: {amountCents?: number; currency?: string} | null;
   };
 }
 interface RawMessages {
@@ -1012,8 +1844,56 @@ interface RawMessages {
     signature?: string | null;
     clientRef?: string | null;
   }>;
-  /** What each consult linked from the transcript can be used for right now. */
-  linkStates?: Record<string, {kind?: string; action?: string}>;
+  /**
+   * What each consult (or prescription, or referral) linked from the
+   * transcript can be used for right now. `pharmacyName` rides along on a
+   * pharmacy link, `title` on a referral link.
+   */
+  linkStates?: Record<string, {
+    kind?: string;
+    action?: string;
+    pharmacyName?: string | null;
+    title?: string | null;
+    /** An actionable, priced invite's price (consent / join / book). */
+    payment?: {amountCents?: number; currency?: string} | null;
+  }>;
+}
+interface RawReferralDocument {
+  status?: string;
+  kind?: string;
+  title?: string;
+  physicianName?: string;
+  issuedAt?: string;
+  revokedAt?: string | null;
+  document?: {url?: string; expiresIn?: number; fileName?: string; contentType?: string} | null;
+  files?: Array<{id?: string; kind?: string; title?: string; document?: {url?: string; downloadUrl?: string; expiresIn?: number; fileName?: string}}>;
+}
+interface RawPrescriptionLinkState {
+  status?: string;
+  expired?: boolean;
+  expiresAt?: string | null;
+  pharmacyName?: string | null;
+  transport?: string | null;
+  action?: string;
+}
+interface RawPharmacySearch {
+  status?: string;
+  transport?: string;
+  pharmacyName?: string | null;
+  origin?: PharmacySearchOrigin;
+  homeAddress?: string;
+  pharmacies?: PharmacyResource[];
+}
+interface RawPharmacyChoice {
+  status?: string;
+  pharmacyName?: string;
+  transport?: string;
+}
+interface RawAddedPharmacy {
+  directoryId?: string;
+  pharmacy?: PharmacyResource;
+  probe?: string;
+  faxIssue?: string | null;
 }
 interface RawJoin {
   status?: string;
@@ -1023,6 +1903,7 @@ interface RawJoin {
   token?: string;
   url?: string;
   roomName?: string;
+  roomNonce?: string;
   physicianName?: string;
   physicianShortName?: string;
 }
@@ -1034,13 +1915,14 @@ interface RawAppointment extends Partial<Omit<Appointment, 'clinicTimezone' | 'p
   physicianTimezone?: string | null;
   patientTimezone?: string | null;
 }
-interface RawBookingSlots extends Partial<Omit<BookingSlots, 'status' | 'slots' | 'appointment' | 'clinicTimezone' | 'nextFrom' | 'patientLang'>> {
+interface RawBookingSlots extends Partial<Omit<BookingSlots, 'status' | 'slots' | 'appointment' | 'clinicTimezone' | 'nextFrom' | 'patientLang' | 'payment'>> {
   status?: string;
   slots?: SlotOffer[];
   clinicTimezone?: string | null;
   nextFrom?: string | null;
   patientLang?: string | null;
   appointment?: RawAppointment | null;
+  payment?: {amountCents?: number; currency?: string} | null;
 }
 interface RawAppointmentBeat {
   state?: {phase?: string; startsAt?: string | null; opensAt?: string; otherSidePresent?: boolean; status?: string} | null;
@@ -1048,6 +1930,7 @@ interface RawAppointmentBeat {
   token?: string;
   url?: string;
   roomName?: string;
+  roomNonce?: string;
 }
 
 type Phase = NonNullable<CareSnapshot['consult']>['phase'];
@@ -1068,18 +1951,39 @@ const PHASES: Record<string, Phase> = {
 
 const JOIN_STATUSES = new Set<JoinState['status']>(['waiting', 'in_progress', 'completed', 'cancelled', 'no_show', 'expired']);
 const BEAT_PHASES = new Set<AppointmentBeat['state']['phase']>(['early', 'waiting', 'connecting', 'in_progress', 'missed', 'closed']);
-const LINK_ACTIONS = new Set<LinkAction>(['consent', 'rate', 'join', 'book', 'open', 'rated', 'ended', 'none']);
+const LINK_ACTIONS = new Set<LinkAction>([
+  'consent',
+  'rate',
+  'join',
+  'book',
+  'open',
+  'rated',
+  'ended',
+  'choose',
+  'sent',
+  'expired',
+  'revoked',
+  'view',
+  'none',
+]);
+const PHARMACY_ACTIONS = new Set<PharmacyLinkAction>(['choose', 'sent', 'expired', 'revoked']);
+const REFERRAL_KINDS = new Set<ReferralKind>(['specialist', 'laboratory', 'imaging']);
+const PRESCRIPTION_STATUSES = new Set<PrescriptionStatus>(['awaiting_pharmacy', 'transmitting', 'sent', 'failed', 'revoked', 'expired']);
 
-// The consult links the platform writes into messages (the same two shapes
-// the embed widget strips, plus the booking one). Matched with their
-// surrounding non-space run so the WHOLE URL comes out of the prose.
-const LINKS: Array<{kind: 'async' | 'telehealth' | 'book'; pattern: RegExp}> = [
+// The links the platform writes into messages (the same shapes the embed
+// widget strips: the two consult ones, the booking one, the pharmacy one a
+// prescription notice carries, and the referral one a referral notice
+// carries). Matched with their surrounding non-space run so the WHOLE URL
+// comes out of the prose.
+const LINKS: Array<{kind: LinkKind; pattern: RegExp}> = [
   {kind: 'async', pattern: /\S*\/async\?id=([A-Za-z0-9_-]+)\S*/},
   {kind: 'telehealth', pattern: /\S*\/telehealth\?id=([A-Za-z0-9_-]+)\S*/},
   {kind: 'book', pattern: /\S*\/book\?id=([A-Za-z0-9_-]+)\S*/},
+  {kind: 'pharmacy', pattern: /\S*\/pharmacy\?id=([A-Za-z0-9_-]+)\S*/},
+  {kind: 'referral', pattern: /\S*\/referral\?id=([A-Za-z0-9_-]+)\S*/},
 ];
 
-function detectLink(body: string): {kind: 'async' | 'telehealth' | 'book'; consultId: string} | null {
+function detectLink(body: string): {kind: LinkKind; consultId: string} | null {
   for (const {kind, pattern} of LINKS) {
     const m = pattern.exec(body);
     if (m) return {kind, consultId: m[1]};
@@ -1088,10 +1992,15 @@ function detectLink(body: string): {kind: 'async' | 'telehealth' | 'book'; consu
 }
 
 // The prose without the URL — and without the blank line the removal leaves
-// behind when the link sat on its own line.
-function stripLink(body: string): string {
+// behind when the link sat on its own line. A referral notice also sheds its
+// "active for 30 days" sentence (whichever of the five languages it came
+// in): it describes the anonymous web link, and the document opened on this
+// session has no window. The pharmacy notice keeps its 24-hour sentence —
+// that link does expire here too.
+function stripLink(body: string, kind: LinkKind): string {
   let out = body;
   for (const {pattern} of LINKS) out = out.replace(pattern, '');
+  if (kind === 'referral') for (const sentence of REFERRAL_LINK_VALIDITY_SENTENCES) out = out.replace(sentence, '');
   return out.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
 }
 
@@ -1130,23 +2039,46 @@ function toSnapshot(state: RawState, messages: RawMessages): CareSnapshot {
     const link = entry.author !== 'patient' ? detectLink(body) : null;
     if (link) {
       const resolved = linkStates[link.consultId];
-      // Unresolved (the server answers for async and telehealth ids; a
-      // booking link is never dead — its page is the appointment's own):
-      // the same defaults the embed widget applies (frontend/partner-embed/links.ts).
+      // Unresolved (the server answers for async, telehealth, prescription
+      // and referral ids; a booking link is never dead — its page is the
+      // appointment's own; a pharmacy link opens a picker whose first call
+      // re-reads the state anyway; a referral open IS a read): the same
+      // defaults the embed widget applies (frontend/partner-embed/links.ts).
       const action = LINK_ACTIONS.has(resolved?.action as LinkAction)
         ? (resolved?.action as LinkAction)
         : link.kind === 'book'
           ? 'book'
           : link.kind === 'telehealth'
             ? 'join'
-            : 'none';
-      entry.text = stripLink(body);
+            : link.kind === 'pharmacy'
+              ? 'choose'
+              : link.kind === 'referral'
+                ? 'view'
+                : 'none';
+      entry.text = stripLink(body, link.kind);
       entry.link = {kind: link.kind, consultId: link.consultId, action};
-      entry.consultId = link.consultId;
+      // The price rides only on an ACTIONABLE invite: a price beside "Rated"
+      // or "Consultation ended" would be a bill for nothing.
+      const price = action === 'consent' || action === 'join' || action === 'book' ? toPrice(resolved?.payment) : undefined;
+      if (price) entry.link.payment = price;
+      if (link.kind === 'pharmacy') {
+        // The id names a PRESCRIPTION, not the thread the notice was written
+        // on — `entry.consultId` keeps naming the thread.
+        entry.link.pharmacyName = typeof resolved?.pharmacyName === 'string' && resolved.pharmacyName ? resolved.pharmacyName : null;
+      } else if (link.kind === 'referral') {
+        // Likewise a REFERRAL id; the title is what the file card shows.
+        entry.link.title = typeof resolved?.title === 'string' && resolved.title ? resolved.title : null;
+      } else {
+        entry.consultId = link.consultId;
+      }
+      // A referral sets nothing here on purpose: `view` is an offer, not a
+      // debt — the patient carries the document, the platform waits on
+      // nothing.
       if (action === 'consent') entry.awaiting = 'consent';
       else if (action === 'rate') entry.awaiting = 'rating';
       else if (action === 'join') entry.awaiting = 'join';
       else if (action === 'book') entry.awaiting = 'book';
+      else if (action === 'choose') entry.awaiting = 'pharmacy';
     }
     return entry;
   });
@@ -1181,6 +2113,7 @@ function toSnapshot(state: RawState, messages: RawMessages): CareSnapshot {
             rateable: state.rateable,
             mode: state.mode,
             ...(state.assignedPhysicianName ? {physicianName: state.assignedPhysicianName} : {}),
+            ...(state.payment ? {payment: state.payment} : {}),
           }
         : undefined;
 
@@ -1202,6 +2135,7 @@ function toSnapshot(state: RawState, messages: RawMessages): CareSnapshot {
           ? {joinable: true}
           : {}),
       ...(raw.type === 'telehealth' ? {mode: raw.mode === 'scheduled' ? ('scheduled' as const) : ('queue' as const)} : {}),
+      ...(toPrice(raw.payment) ? {payment: toPrice(raw.payment)!} : {}),
     };
     // Mark the entry the patient must act on, so the partner renders a button
     // from data instead of parsing a link out of message prose.
@@ -1214,6 +2148,17 @@ function toSnapshot(state: RawState, messages: RawMessages): CareSnapshot {
   return snapshot;
 }
 
+/** A grant as a wire or a relay may carry it: any field missing or null. */
+export type LiveKitGrantLike = {token?: string | null; url?: string | null; roomName?: string | null; roomNonce?: string | null};
+
+// A grant is handed over only whole: a token without a URL cannot connect,
+// and one without its room nonce could not be checked before publishing —
+// so neither is offered (fail closed; the next beat brings a complete one).
+function toLiveKitGrant(raw: LiveKitGrantLike | null | undefined): LiveKitGrant | undefined {
+  if (!raw?.token || !raw.url || typeof raw.roomNonce !== 'string' || !raw.roomNonce) return undefined;
+  return {token: String(raw.token), url: String(raw.url), roomName: String(raw.roomName ?? ''), roomNonce: raw.roomNonce};
+}
+
 function toJoinState(raw: RawJoin): JoinState {
   const status = JOIN_STATUSES.has(raw?.status as JoinState['status']) ? (raw.status as JoinState['status']) : 'unknown';
   const result: JoinState = {
@@ -1222,7 +2167,8 @@ function toJoinState(raw: RawJoin): JoinState {
     estimatedMinutes: Number(raw?.estimatedMinutes ?? 0),
     rated: raw?.rated === true,
   };
-  if (raw?.token && raw.url) result.livekit = {token: String(raw.token), url: String(raw.url), roomName: String(raw.roomName ?? '')};
+  const grant = toLiveKitGrant(raw);
+  if (grant) result.livekit = grant;
   if (raw?.physicianName) result.physicianName = String(raw.physicianName);
   if (raw?.physicianShortName) result.physicianShortName = String(raw.physicianShortName);
   return result;
@@ -1250,6 +2196,7 @@ function toBookingSlots(raw: RawBookingSlots): BookingSlots {
     patientLang: typeof raw?.patientLang === 'string' && raw.patientLang ? raw.patientLang : null,
     noEligiblePhysicians: raw?.noEligiblePhysicians === true,
     licenseBlock: raw?.licenseBlock ?? null,
+    ...(toPrice(raw?.payment) ? {payment: toPrice(raw?.payment)!} : {}),
   };
 }
 
@@ -1286,7 +2233,84 @@ function toAppointmentBeat(raw: RawAppointmentBeat): AppointmentBeat {
     },
     appointment: raw?.appointment ? toAppointment(raw.appointment) : null,
   };
-  if (raw?.token && raw.url) result.livekit = {token: String(raw.token), url: String(raw.url), roomName: String(raw.roomName ?? '')};
+  const grant = toLiveKitGrant(raw);
+  if (grant) result.livekit = grant;
+  return result;
+}
+
+// A null answer on the wire (a row the platform will not show this patient)
+// reads as an expired link — the platform's own rule, and the one answer a
+// card can render safely. A deployment that predates the op is NOT masked
+// this way: AppSync refuses the unknown field and `callPatientOp` surfaces
+// that as `internal_error`, the package's convention for version skew.
+function toPrescriptionLinkState(raw: RawPrescriptionLinkState | null | undefined): PrescriptionLinkState {
+  const status = PRESCRIPTION_STATUSES.has(raw?.status as PrescriptionStatus) ? (raw!.status as PrescriptionStatus) : 'expired';
+  const action = PHARMACY_ACTIONS.has(raw?.action as PharmacyLinkAction) ? (raw!.action as PharmacyLinkAction) : 'expired';
+  return {
+    status,
+    expired: raw?.expired === true || action === 'expired',
+    expiresAt: typeof raw?.expiresAt === 'string' && raw.expiresAt ? raw.expiresAt : null,
+    pharmacyName: typeof raw?.pharmacyName === 'string' && raw.pharmacyName ? raw.pharmacyName : null,
+    transport: raw?.transport === 'erx' || raw?.transport === 'fax' ? raw.transport : null,
+    action,
+  };
+}
+
+// The document op refuses in-band for a miss (`{ok:false, error:'not_found'}`,
+// thrown by callPatientOp before this runs), so what reaches here is a row
+// the platform will show this patient: issued with its URL, or revoked. A
+// reply with neither a usable document nor `revoked` (a deployment that
+// predates the op answers through AppSync's own refusal, never this) is
+// reported as the package's version-skew code rather than rendered as a
+// card that opens nothing.
+function toReferralDocument(raw: RawReferralDocument | null | undefined): ReferralDocument {
+  const kind = REFERRAL_KINDS.has(raw?.kind as ReferralKind) ? (raw!.kind as ReferralKind) : 'specialist';
+  const base = {
+    kind,
+    title: String(raw?.title ?? ''),
+    physicianName: String(raw?.physicianName ?? ''),
+    issuedAt: String(raw?.issuedAt ?? ''),
+  };
+  if (raw?.status === 'revoked') {
+    return {status: 'revoked', ...base, revokedAt: typeof raw.revokedAt === 'string' && raw.revokedAt ? raw.revokedAt : null};
+  }
+  const doc = raw?.document;
+  if (raw?.status !== 'issued' || !doc?.url) {
+    throw new NatzarApiError({
+      code: 'internal_error',
+      status: 500,
+      message: 'The platform returned no referral document',
+      route: 'embedReferralDocument',
+      details: raw,
+    });
+  }
+  return {
+    status: 'issued',
+    ...base,
+    ...(Array.isArray(raw.files) ? {files: raw.files.filter((file) => !!file.document?.url).map((file) => ({
+      id: String(file.id ?? ''),
+      kind: REFERRAL_KINDS.has(file.kind as ReferralKind) ? file.kind as ReferralKind : kind,
+      title: String(file.title ?? ''),
+      document: {url: String(file.document!.url), ...(file.document?.downloadUrl ? {downloadUrl: file.document.downloadUrl} : {}), expiresIn: Number(file.document?.expiresIn ?? 0), fileName: String(file.document?.fileName ?? 'referral.pdf'), contentType: 'application/pdf' as const},
+    }))} : {}),
+    document: {
+      url: String(doc.url),
+      expiresIn: typeof doc.expiresIn === 'number' ? doc.expiresIn : 0,
+      fileName: String(doc.fileName ?? 'referral.pdf'),
+      contentType: 'application/pdf',
+    },
+  };
+}
+
+function toPharmacySearch(raw: RawPharmacySearch | null | undefined): PharmacySearch {
+  const result: PharmacySearch = {
+    status: PRESCRIPTION_STATUSES.has(raw?.status as PrescriptionStatus) ? (raw!.status as PrescriptionStatus) : 'expired',
+    transport: raw?.transport === 'fax' ? 'fax' : 'erx',
+    pharmacyName: typeof raw?.pharmacyName === 'string' && raw.pharmacyName ? raw.pharmacyName : null,
+    pharmacies: Array.isArray(raw?.pharmacies) ? raw.pharmacies : [],
+  };
+  if (raw?.origin && typeof raw.origin === 'object') result.origin = raw.origin;
+  if (typeof raw?.homeAddress === 'string' && raw.homeAddress) result.homeAddress = raw.homeAddress;
   return result;
 }
 
@@ -1340,12 +2364,17 @@ const fingerprint = (s: CareSnapshot): string =>
     s.timeline[s.timeline.length - 1]?.id ?? '',
     s.timeline[s.timeline.length - 1]?.awaiting ?? '',
     // A link's action moves on its own (join → ended once the call is over)
-    // without the timeline growing; the button must follow.
-    s.timeline.map((e) => (e.link ? `${e.id}:${e.link.action}` : '')).filter(Boolean).join(','),
+    // without the timeline growing; the button must follow — and so must its
+    // price, which appears, changes or goes (paid) on the same entry.
+    s.timeline
+      .map((e) => (e.link ? `${e.id}:${e.link.action}:${e.link.payment ? `${e.link.payment.amountCents}${e.link.payment.currency}` : ''}` : ''))
+      .filter(Boolean)
+      .join(','),
     s.awaitingReply ? '1' : '0',
     s.consult?.id ?? '',
     s.consult?.phase ?? '',
     s.consult?.position ?? '',
     s.consult?.rateable ? '1' : '0',
     s.consult?.joinable ? '1' : '0',
+    s.consult?.payment ? `${s.consult.payment.amountCents}${s.consult.payment.currency}` : '',
   ].join('|');

@@ -34,9 +34,9 @@
  * - `verifyWebhook` / `handleWebhook` — signature verification over the RAW
  *   body, with the replay window enforced.
  * - `uploadAttachments` — presign + PUT + staging keys, in one call.
- * - `detectLink` / `resolveLinkActions` — turn the transcript's invite links
- *   into buttons, which is what an in-app surface should render instead of a
- *   URL that navigates the patient away.
+ * - `detectLink` / `resolveLinkActions` — turn the transcript's invite,
+ *   prescription and referral links into buttons, which is what an in-app
+ *   surface should render instead of a URL that navigates the patient away.
  * - The whole contract (`./contract`): resource shapes, request schemas, error
  *   codes, webhook payloads, embed element types — re-exported here.
  *
@@ -70,6 +70,9 @@ export {
 export type {EndpointOverrides, NatzarEndpoints, NatzarEnvironment, NatzarZone} from './environments';
 
 export {NatzarApiError, isErrorCode, isNatzarApiError, isRetryable} from './errors';
+export type {NatzarErrorCode} from './errors';
+export type {PatientSurfaceErrorCode} from './patient/codes';
+export type {PhysicianSurfaceErrorCode} from './physician/codes';
 
 export type {CredentialKind, FetchLike, HttpConfig, RequestArgs} from './http';
 
@@ -92,14 +95,17 @@ export type {StagedAttachment, UploadInput} from './uploads';
 export {
   actionFor,
   asyncActionFor,
+  bookActionFor,
   detectLink,
   isActionable,
   linkIdsIn,
+  pharmacyActionFor,
+  referralActionFor,
   resolveLinkActions,
   stripLink,
   telehealthActionFor,
 } from './links';
-export type {DetectedLink, LinkAction, LinkActions} from './links';
+export type {DetectedLink, LinkAction, LinkActions, LinkKind} from './links';
 
 // The contract's TYPES — resources, request/response shapes, error codes,
 // webhook payloads, embed element types. Re-exported so a consumer imports one

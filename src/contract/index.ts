@@ -84,6 +84,20 @@
  *   (`fr_CH` → `fr`) and the tier ranking every assigner applies (the
  *   patient's language, then English, then anyone). Pure; the platform
  *   routes with it.
+ * - `./prescriptions` — the patient-side pharmacy choice of a prescription a
+ *   physician issued on an async consult: the link shape to detect on the
+ *   transcript, the resource the `/v1/prescriptions` routes read, the
+ *   pharmacy and search-origin shapes, the search radii.
+ * - `./referrals` — the signed requisition a physician issued on an async
+ *   consult (specialist / laboratory / imaging), which the patient carries:
+ *   the link shape to detect on the transcript, the validity sentences to
+ *   strip, and the resource `GET /v1/referrals/{id}` reads (link state plus
+ *   a short-lived document URL).
+ * - `./provider-embed` — the `<natzar-provider>` clinician embed: modes,
+ *   capabilities, session grant, provider REST route table, postMessage
+ *   protocol.
+ * - `./provider-embed-schemas` — zod request schemas of the provider embed
+ *   routes.
  *
  * @packageDocumentation
  */
@@ -97,3 +111,7 @@ export * from './embed';
 export * from './schedule';
 export * from './timezones';
 export * from './languages';
+export * from './prescriptions';
+export * from './referrals';
+export * from './provider-embed';
+export * from './provider-embed-schemas';

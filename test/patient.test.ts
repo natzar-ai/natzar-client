@@ -1,6 +1,6 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {connectPatient} from '../dist/esm/patient/index.js';
+import {checkoutOf, connectPatient} from '../dist/esm/patient/index.js';
 
 // The patient surface — the half that runs in a browser with no API key.
 // Everything here is stubbed at fetch, so these assert SHAPING rules rather
@@ -436,14 +436,33 @@ describe('connectPatient — telehealth', () => {
     assert.deepEqual(rate.variables, {token: 'tele_1', communicationRating: 5, overallPhysicianRating: 4, feedback: 'great'});
   });
 
-  it('hands over the room grant when the call starts', async () => {
+  // A grant the patient could not check before publishing is never offered:
+  // no nonce, no grant (fail closed — the next beat brings a whole one).
+  it('never hands over a room grant that carries no roomNonce', async () => {
+    for (const roomNonce of [undefined, '', null]) {
+      const {fetchLike} = teleOps({
+        embedConsultJoin: {ok: true, status: 'in_progress', token: 'lk_tok', url: 'wss://lk.test', roomName: 'consult-e-tele_1-a', ...(roomNonce !== undefined ? {roomNonce} : {})},
+        embedAppointmentBeat: {ok: true, state: {phase: 'in_progress', startsAt: null}, token: 'lk_tok', url: 'wss://lk.test', roomName: 'r', ...(roomNonce !== undefined ? {roomNonce} : {})},
+      });
+      const care = connectPatient(SESSION, {fetch: fetchLike});
+      const state = await care.telehealth.join('tele_1');
+      assert.equal(state.status, 'in_progress');
+      assert.equal(state.livekit, undefined, `nonce ${String(roomNonce)}`);
+      assert.equal((await care.telehealth.appointmentBeat('tele_1')).livekit, undefined);
+    }
+  });
+
+  it('hands over the room grant, nonce included, when the call starts', async () => {
     const {fetchLike} = teleOps({
-      embedConsultJoin: {ok: true, status: 'in_progress', token: 'lk_tok', url: 'wss://lk.test', roomName: 'consult-tele_1', physicianName: 'Dr. Sarah Chen MD', physicianShortName: 'Dr. Chen'},
+      embedConsultJoin: {ok: true, status: 'in_progress', token: 'lk_tok', url: 'wss://lk.test', roomName: 'consult-e-tele_1-a', roomNonce: 'n0nce', physicianName: 'Dr. Sarah Chen MD', physicianShortName: 'Dr. Chen'},
+      embedAppointmentBeat: {ok: true, state: {phase: 'in_progress', startsAt: null}, token: 'lk_2', url: 'wss://lk.test', roomName: 'r2', roomNonce: 'n2'},
     });
-    const state = await connectPatient(SESSION, {fetch: fetchLike}).telehealth.join('tele_1');
+    const care = connectPatient(SESSION, {fetch: fetchLike});
+    const state = await care.telehealth.join('tele_1');
     assert.equal(state.status, 'in_progress');
-    assert.deepEqual(state.livekit, {token: 'lk_tok', url: 'wss://lk.test', roomName: 'consult-tele_1'});
+    assert.deepEqual(state.livekit, {token: 'lk_tok', url: 'wss://lk.test', roomName: 'consult-e-tele_1-a', roomNonce: 'n0nce'});
     assert.equal(state.physicianShortName, 'Dr. Chen');
+    assert.deepEqual((await care.telehealth.appointmentBeat('tele_1')).livekit, {token: 'lk_2', url: 'wss://lk.test', roomName: 'r2', roomNonce: 'n2'});
   });
 
   it('reports a status added after you shipped as `unknown`', async () => {
@@ -627,6 +646,325 @@ describe('connectPatient — telehealth', () => {
   });
 });
 
+// --- Prescriptions ------------------------------------------------------------
+//
+// The physician's "choose your pharmacy" notice carries a `/pharmacy?id=` link
+// to a birthdate-gated page that refuses partner-origin patients by design —
+// so inside a partner's UI the link is a button and the picker runs here, on
+// the patient session. Every variable type below is pinned to the schema's own
+// scalar: a `String` variable for an `Int`/`Float`/`AWSJSON` argument is
+// refused by AppSync before the resolver runs.
+
+describe('connectPatient — prescriptions', () => {
+  const RX_BODY = 'Dr. Chen sent you a prescription. Choose your pharmacy below.\n\nhttps://ca.app.natzar.ai/pharmacy?id=rx_1\n\nThis link is active for the next 24 hours.';
+
+  it('turns the pharmacy link into a `choose` action on the prescription id, leaving the thread id on the entry', async () => {
+    const {fetchLike} = stub({
+      embedState: {},
+      embedAgentMessages: {
+        messages: [{...msg('physician', RX_BODY, '2026-09-18T09:00:00Z', 'a'), asyncConsultId: 'thread_1'}],
+        linkStates: {rx_1: {kind: 'pharmacy', action: 'choose', pharmacyName: null}},
+      },
+    });
+    const snap = await connectPatient(SESSION, {fetch: fetchLike}).conversation.get();
+    const [rx] = snap.timeline;
+    assert.equal(rx.text, 'Dr. Chen sent you a prescription. Choose your pharmacy below.\n\nThis link is active for the next 24 hours.');
+    assert.deepEqual(rx.link, {kind: 'pharmacy', consultId: 'rx_1', action: 'choose', pharmacyName: null});
+    assert.equal(rx.awaiting, 'pharmacy');
+    assert.equal(rx.consultId, 'thread_1', 'a pharmacy link names a prescription — the entry still names the thread');
+  });
+
+  it('carries the chosen pharmacy on a `sent` link and offers nothing to press', async () => {
+    const {fetchLike} = stub({
+      embedState: {},
+      embedAgentMessages: {
+        messages: [msg('physician', RX_BODY, '2026-09-18T09:00:00Z', 'a')],
+        linkStates: {rx_1: {kind: 'pharmacy', action: 'sent', pharmacyName: 'Shoppers Drug Mart'}},
+      },
+    });
+    const snap = await connectPatient(SESSION, {fetch: fetchLike}).conversation.get();
+    assert.equal(snap.timeline[0].link?.action, 'sent');
+    assert.equal(snap.timeline[0].link?.pharmacyName, 'Shoppers Drug Mart');
+    assert.equal(snap.timeline[0].awaiting, undefined);
+  });
+
+  it('defaults an unresolved pharmacy link to `choose` — the picker re-reads the state anyway', async () => {
+    const {fetchLike} = stub({
+      embedState: {},
+      embedAgentMessages: {messages: [msg('physician', RX_BODY, '2026-09-18T09:00:00Z', 'a')], linkStates: {}},
+    });
+    const snap = await connectPatient(SESSION, {fetch: fetchLike}).conversation.get();
+    assert.equal(snap.timeline[0].link?.action, 'choose');
+    assert.equal(snap.timeline[0].awaiting, 'pharmacy');
+  });
+
+  it('drives the picker on the patient session with the schema-exact variable types', async () => {
+    const hit = {directoryId: 'ca:ON:12345', name: 'Main St Pharmacy', address: '1 Main St', city: 'Toronto', region: 'ON', reachable: true, lat: 43.65, lng: -79.38, distanceKm: 1.2};
+    const {calls, fetchLike} = stub({
+      embedPrescriptionState: {status: 'awaiting_pharmacy', expired: false, expiresAt: '2026-09-19T09:00:00Z', pharmacyName: null, transport: 'fax', action: 'choose'},
+      embedPrescriptionPharmacies: {ok: true, status: 'awaiting_pharmacy', transport: 'fax', pharmacyName: null, origin: {lat: 43.65, lng: -79.38, source: 'device'}, pharmacies: [hit]},
+      embedPrescriptionChoose: {ok: true, status: 'transmitting', attempt: 1, pharmacyName: 'Main St Pharmacy', transport: 'fax'},
+      embedPrescriptionHomeLocation: {ok: true},
+    });
+    const care = connectPatient(SESSION, {fetch: fetchLike});
+
+    const state = await care.prescriptions.state('rx_1');
+    assert.deepEqual(state, {status: 'awaiting_pharmacy', expired: false, expiresAt: '2026-09-19T09:00:00Z', pharmacyName: null, transport: 'fax', action: 'choose'});
+    const stateCall = calls.find((c) => c.name === 'embedPrescriptionState')!;
+    assert.match(stateCall.query, /^query Op/, 'the state is a query, like embedState');
+    assert.match(stateCall.query, /\$id: String!/);
+    assert.deepEqual(stateCall.variables, {token: 'tok_1', id: 'rx_1'});
+
+    const list = await care.prescriptions.pharmacies('rx_1', {origin: {lat: 43.65, lng: -79.38, source: 'device'}, query: ' main ', radiusKm: 50});
+    assert.equal(list.pharmacies.length, 1);
+    assert.equal(list.transport, 'fax');
+    assert.deepEqual(list.origin, {lat: 43.65, lng: -79.38, source: 'device'});
+    assert.equal('ok' in list, false, 'the in-band ok flag never reaches the partner');
+    const search = calls.find((c) => c.name === 'embedPrescriptionPharmacies')!;
+    assert.match(search.query, /^query Op/, 'the search is a query');
+    assert.match(search.query, /\$origin: AWSJSON\b/, 'a.json() is AWSJSON on the wire');
+    assert.match(search.query, /\$radiusKm: Int\b/, 'a.integer() is Int on the wire');
+    assert.match(search.query, /\$query: String\b/);
+    assert.deepEqual(JSON.parse(String(search.variables.origin)), {lat: 43.65, lng: -79.38, source: 'device'}, 'AWSJSON travels stringified');
+    assert.equal(search.variables.query, 'main', 'free text is trimmed');
+    assert.equal(search.variables.radiusKm, 50);
+
+    const chosen = await care.prescriptions.choose('rx_1', 'ca:ON:12345');
+    assert.deepEqual(chosen, {status: 'transmitting', pharmacyName: 'Main St Pharmacy', transport: 'fax'});
+    const choose = calls.find((c) => c.name === 'embedPrescriptionChoose')!;
+    assert.match(choose.query, /^mutation Op/);
+    assert.match(choose.query, /\$directoryId: String!/);
+    assert.deepEqual(choose.variables, {token: 'tok_1', id: 'rx_1', directoryId: 'ca:ON:12345'});
+
+    await care.prescriptions.setHomeLocation('rx_1', {lat: 43.7, lng: -79.4});
+    const home = calls.find((c) => c.name === 'embedPrescriptionHomeLocation')!;
+    assert.match(home.query, /\$lat: Float!/, 'a.float() is Float on the wire');
+    assert.match(home.query, /\$lng: Float!/);
+    assert.deepEqual(home.variables, {token: 'tok_1', id: 'rx_1', lat: 43.7, lng: -79.4});
+  });
+
+  it('sends nothing it was not given on a search — no origin, no query, no radius', async () => {
+    const {calls, fetchLike} = stub({
+      embedPrescriptionPharmacies: {ok: true, status: 'awaiting_pharmacy', transport: 'erx', pharmacyName: null, homeAddress: '1 Main St, Toronto', pharmacies: []},
+    });
+    const list = await connectPatient(SESSION, {fetch: fetchLike}).prescriptions.pharmacies('rx_1');
+    assert.equal(list.homeAddress, '1 Main St, Toronto', 'the address to geocode when no origin exists');
+    assert.equal(list.origin, undefined);
+    const search = calls[0];
+    assert.deepEqual(search.variables, {token: 'tok_1', id: 'rx_1'});
+    assert.doesNotMatch(search.query, /\$origin|\$query|\$radiusKm/);
+  });
+
+  it('adds a pharmacy no directory covers, stringified like every a.json() argument', async () => {
+    const pharmacy = {directoryId: 'ca:manual:abc', name: 'Corner Pharmacy', address: '9 Side St', reachable: false};
+    const {calls, fetchLike} = stub({
+      embedPrescriptionAddPharmacy: {ok: true, directoryId: 'ca:manual:abc', pharmacy, status: 'pending_verification', probe: 'sent', faxIssue: null},
+    });
+    const added = await connectPatient(SESSION, {fetch: fetchLike}).prescriptions.addPharmacy('rx_1', {name: 'Corner Pharmacy', address: '9 Side St', fax: '+14165550100'});
+    assert.deepEqual(added, {directoryId: 'ca:manual:abc', pharmacy, status: 'pending_verification', probe: 'sent', faxIssue: null});
+    const call = calls[0];
+    assert.match(call.query, /^mutation Op/);
+    assert.match(call.query, /\$pharmacy: AWSJSON!/);
+    assert.deepEqual(JSON.parse(String(call.variables.pharmacy)), {name: 'Corner Pharmacy', address: '9 Side St', fax: '+14165550100'});
+  });
+
+  it('reads a miss as an expired link rather than throwing — the state call is safe to poll', async () => {
+    const {fetchLike} = stub({
+      embedPrescriptionState: {status: 'expired', expired: true, expiresAt: null, pharmacyName: null, transport: null, action: 'expired'},
+    });
+    const state = await connectPatient(SESSION, {fetch: fetchLike}).prescriptions.state('someone_elses');
+    assert.equal(state.action, 'expired');
+    assert.equal(state.expired, true);
+    assert.equal(state.transport, null);
+  });
+
+  it('maps a refused choice onto the SAME error the server half throws, with the status in the details', async () => {
+    const {fetchLike} = stub({
+      embedPrescriptionChoose: {ok: false, error: 'not_choosable', status: 'sent'},
+    });
+    await assert.rejects(
+      () => connectPatient(SESSION, {fetch: fetchLike}).prescriptions.choose('rx_1', 'ca:ON:1'),
+      (e: {code?: string; status?: number; details?: {status?: string}}) => e.code === 'not_choosable' && e.status === 409 && e.details?.status === 'sent',
+    );
+  });
+
+  it('reports the whole refusal vocabulary by its own code, never as internal_error', async () => {
+    for (const error of ['pharmacy_not_found', 'not_choosable', 'expired', 'pharmacy_unreachable', 'lost_race', 'invalid_location', 'not_available', 'invalid_pharmacy', 'not_found']) {
+      const {fetchLike} = stub({embedPrescriptionChoose: {ok: false, error}});
+      await assert.rejects(
+        () => connectPatient(SESSION, {fetch: fetchLike}).prescriptions.choose('rx_1', 'x'),
+        (e: {code?: string}) => e.code === error,
+        error,
+      );
+    }
+  });
+
+  // A refusal arrives in-band on a 200, so `status` is nominal — but it must
+  // be the SAME number the REST plane sends for that code, or a partner
+  // logging `e.status` sees 409 from one half and 404/422 from the other.
+  it('stamps the contract status on a refusal the REST plane also knows, and 409 on the embed-only ones', async () => {
+    const expected: Record<string, number> = {
+      embed_token_expired: 401,
+      not_found: 404,
+      pharmacy_not_found: 404,
+      invalid_location: 422,
+      invalid_pharmacy: 422,
+      invalid_request: 400,
+      not_choosable: 409,
+      lost_race: 409,
+      expired: 409,
+      not_available: 409,
+    };
+    for (const [error, status] of Object.entries(expected)) {
+      const {fetchLike} = stub({embedPrescriptionChoose: {ok: false, error}});
+      await assert.rejects(
+        () => connectPatient(SESSION, {fetch: fetchLike}).prescriptions.choose('rx_1', 'x'),
+        (e: {code?: string; status?: number}) => e.code === error && e.status === status,
+        `${error} → ${status}`,
+      );
+    }
+  });
+});
+
+// --- Referrals ----------------------------------------------------------------
+//
+// The physician's "view your referral" notice carries a `/referral?id=` link
+// to a signed PDF behind a birthdate-gated page that refuses partner-origin
+// patients and dies after 30 days. On the patient session the document has
+// no window: the link reads `view` for as long as the referral stands, the
+// 30-day sentence is stripped, nothing awaits the patient, and the document
+// op mints a fresh URL on every open.
+
+describe('connectPatient — referrals', () => {
+  const REF_BODY =
+    'Dr. Chen has sent you a referral for laboratory tests. Simply show it or hand it to the laboratory — they will take it from there. Tap to view your referral: https://ca.app.natzar.ai/referral?id=ref_1\n\nThis link is active for the next 30 days.';
+
+  it('turns the referral link into a `view` action on the referral id, strips the validity sentence and awaits nothing', async () => {
+    const {fetchLike} = stub({
+      embedState: {},
+      embedAgentMessages: {
+        messages: [{...msg('physician', REF_BODY, '2026-09-22T09:00:00Z', 'a'), asyncConsultId: 'thread_1'}],
+        linkStates: {ref_1: {kind: 'referral', action: 'view', title: 'Laboratory requisition', referralKind: 'laboratory'}},
+      },
+    });
+    const snap = await connectPatient(SESSION, {fetch: fetchLike}).conversation.get();
+    const [ref] = snap.timeline;
+    assert.equal(
+      ref.text,
+      'Dr. Chen has sent you a referral for laboratory tests. Simply show it or hand it to the laboratory — they will take it from there. Tap to view your referral:',
+    );
+    assert.deepEqual(ref.link, {kind: 'referral', consultId: 'ref_1', action: 'view', title: 'Laboratory requisition'});
+    assert.equal(ref.awaiting, undefined, 'a referral is carried, not answered');
+    assert.equal(ref.consultId, 'thread_1', 'a referral link names a referral — the entry still names the thread');
+  });
+
+  it('strips the validity sentence in every language and leaves the prescription sentence alone', async () => {
+    const sentences = [
+      'This link is active for the next 30 days.',
+      'Este enlace está activo durante los próximos 30 días.',
+      'Dieser Link ist die nächsten 30 Tage aktiv.',
+      'Ce lien est actif pendant les 30 prochains jours.',
+      'Questo link è attivo per i prossimi 30 giorni.',
+    ];
+    const {fetchLike} = stub({
+      embedState: {},
+      embedAgentMessages: {
+        messages: [
+          ...sentences.map((sentence, i) => msg('physician', `Lead-in: https://x.test/referral?id=ref_${i}\n\n${sentence}`, '2026-09-22T09:00:00Z', `r${i}`)),
+          msg('physician', 'Choose your pharmacy:\n\nhttps://x.test/pharmacy?id=rx_1\n\nThis link is active for the next 24 hours.', '2026-09-22T09:00:01Z', 'p'),
+        ],
+        linkStates: {},
+      },
+    });
+    const snap = await connectPatient(SESSION, {fetch: fetchLike}).conversation.get();
+    for (let i = 0; i < sentences.length; i++) assert.equal(snap.timeline[i].text, 'Lead-in:', sentences[i]);
+    assert.equal(snap.timeline[5].text, 'Choose your pharmacy:\n\nThis link is active for the next 24 hours.');
+  });
+
+  it('defaults an unresolved referral link to `view` — the open re-reads the row anyway', async () => {
+    const {fetchLike} = stub({
+      embedState: {},
+      embedAgentMessages: {messages: [msg('physician', REF_BODY, '2026-09-22T09:00:00Z', 'a')], linkStates: {}},
+    });
+    const snap = await connectPatient(SESSION, {fetch: fetchLike}).conversation.get();
+    assert.equal(snap.timeline[0].link?.action, 'view');
+    assert.equal(snap.timeline[0].link?.title, null);
+    assert.equal(snap.timeline[0].awaiting, undefined);
+  });
+
+  it('renders a withdrawn referral as `revoked` with nothing to press', async () => {
+    const {fetchLike} = stub({
+      embedState: {},
+      embedAgentMessages: {
+        messages: [msg('physician', REF_BODY, '2026-09-22T09:00:00Z', 'a')],
+        linkStates: {ref_1: {kind: 'referral', action: 'revoked', title: 'Laboratory requisition'}},
+      },
+    });
+    const snap = await connectPatient(SESSION, {fetch: fetchLike}).conversation.get();
+    assert.equal(snap.timeline[0].link?.action, 'revoked');
+    assert.equal(snap.timeline[0].awaiting, undefined);
+  });
+
+  it('mints the document on the patient session and hands it back as issued', async () => {
+    const {calls, fetchLike} = stub({
+      embedReferralDocument: {
+        ok: true,
+        status: 'issued',
+        kind: 'laboratory',
+        title: 'Laboratory requisition',
+        physicianName: 'Dr. Sarah Chen',
+        issuedAt: '2026-09-22T09:00:00Z',
+        document: {url: 'https://s3.test/ref_1.pdf', expiresIn: 300, fileName: 'Laboratory-requisition-ref_1.pdf', contentType: 'application/pdf'},
+      },
+    });
+    const doc = await connectPatient(SESSION, {fetch: fetchLike}).referrals.document('ref_1');
+    assert.deepEqual(doc, {
+      status: 'issued',
+      kind: 'laboratory',
+      title: 'Laboratory requisition',
+      physicianName: 'Dr. Sarah Chen',
+      issuedAt: '2026-09-22T09:00:00Z',
+      document: {url: 'https://s3.test/ref_1.pdf', expiresIn: 300, fileName: 'Laboratory-requisition-ref_1.pdf', contentType: 'application/pdf'},
+    });
+    const call = calls.find((c) => c.name === 'embedReferralDocument')!;
+    assert.match(call.query, /^query Op/, 'the document read is a query');
+    assert.match(call.query, /\$id: String!/);
+    assert.deepEqual(call.variables, {token: 'tok_1', id: 'ref_1'});
+  });
+
+  it('exposes every PDF under one referral link', async () => {
+    const document = {url: 'https://s3.test/ref_1.pdf', expiresIn: 300, fileName: 'ref_1.pdf', contentType: 'application/pdf'};
+    const {fetchLike} = stub({embedReferralDocument: {
+      ok: true, status: 'issued', kind: 'laboratory', title: 'Laboratory requisition', physicianName: 'Dr. Sarah Chen', issuedAt: '2026-09-22T09:00:00Z', document,
+      files: [
+        {id: 'ref_1', kind: 'laboratory', title: 'Laboratory requisition', document},
+        {id: 'ref_2', kind: 'imaging', title: 'Imaging requisition', document: {...document, url: 'https://s3.test/ref_2.pdf', fileName: 'ref_2.pdf'}},
+      ],
+    }});
+    const reply = await connectPatient(SESSION, {fetch: fetchLike}).referrals.document('ref_1');
+    assert.equal(reply.status, 'issued');
+    if (reply.status === 'issued') assert.deepEqual(reply.files?.map((file) => [file.id, file.document.fileName]), [['ref_1', 'ref_1.pdf'], ['ref_2', 'ref_2.pdf']]);
+  });
+
+  it('hands back a withdrawn referral as `revoked`, with no document', async () => {
+    const {fetchLike} = stub({
+      embedReferralDocument: {ok: true, status: 'revoked', kind: 'imaging', title: 'Imaging requisition — MRI', physicianName: 'Dr. Sarah Chen', issuedAt: '2026-09-22T09:00:00Z', revokedAt: '2026-09-23T09:00:00Z'},
+    });
+    const doc = await connectPatient(SESSION, {fetch: fetchLike}).referrals.document('ref_1');
+    assert.equal(doc.status, 'revoked');
+    assert.equal('document' in doc, false);
+    if (doc.status === 'revoked') assert.equal(doc.revokedAt, '2026-09-23T09:00:00Z');
+  });
+
+  it('rejects a referral that is not this patient\'s with `not_found`, never an expired state', async () => {
+    const {fetchLike} = stub({embedReferralDocument: {ok: false, error: 'not_found'}});
+    await assert.rejects(
+      () => connectPatient(SESSION, {fetch: fetchLike}).referrals.document('someone_elses'),
+      (e: {code?: string; status?: number}) => e.code === 'not_found' && e.status === 404,
+    );
+  });
+});
+
 describe('connectPatient — session kind', () => {
   it('answers consent through the thread op on a consult-scoped session', async () => {
     const {calls, fetchLike} = stub({embedAsyncConsent: {ok: true, status: 'queued'}});
@@ -734,5 +1072,240 @@ describe('connectPatient — polling discipline', () => {
     assert.equal(calls.filter((c) => c.name === 'embedState').length, reads, 'nothing polls after stop()');
     assert.equal(maxInFlight, 1, 'one poll at a time');
     assert.ok(reads >= 2, 'the refresh still produced a fresh read');
+  });
+});
+
+describe('connectPatient — accept & pay', () => {
+  const PRICE = {amountCents: 10000, currency: 'cad'};
+  const refusal = (checkout?: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
+    ok: false, status: 'invited', error: 'payment_required', modality: 'async', mode: 'live', ...PRICE,
+    ...(checkout ? {checkout} : {}), ...extra,
+  });
+  const embeddedCheckout = {paymentId: 'pay_1', ...PRICE, clientSecret: 'cs_test_secret', publishableKey: 'pk_test_1'};
+  const inviteEntry = {id: 'm1', author: 'agent' as const, text: '', sentAt: '', source: 'agent' as const, awaiting: 'consent' as const};
+
+  it('surfaces the price on an ACTIONABLE invite link only, and drops a malformed one', async () => {
+    const {fetchLike} = stub({
+      embedState: {},
+      embedAgentMessages: {
+        messages: [
+          msg('agent', 'A physician can take this: https://x.test/async?id=thr_1', '2026-09-24T09:00:00Z', 'a'),
+          msg('agent', 'Join: https://x.test/telehealth?id=tele_1', '2026-09-24T09:01:00Z', 'b'),
+          msg('agent', 'Rate: https://x.test/async?id=thr_2', '2026-09-24T09:02:00Z', 'c'),
+          msg('agent', 'Book: https://x.test/book?id=bk_1', '2026-09-24T09:03:00Z', 'd'),
+        ],
+        linkStates: {
+          thr_1: {kind: 'async', action: 'consent', payment: PRICE},
+          tele_1: {kind: 'telehealth', action: 'join', payment: {amountCents: '10000', currency: 'cad'}},
+          thr_2: {kind: 'async', action: 'rate', payment: PRICE},
+          bk_1: {kind: 'book', action: 'book', payment: {amountCents: 5000, currency: 'cad'}},
+        },
+      },
+    });
+    const snap = await connectPatient(SESSION, {fetch: fetchLike}).conversation.get();
+    const [consent, join, rate, book] = snap.timeline;
+    assert.deepEqual(consent.link, {kind: 'async', consultId: 'thr_1', action: 'consent', payment: PRICE});
+    assert.equal(join.link?.payment, undefined, 'a malformed price is not shown');
+    assert.equal(rate.link?.payment, undefined, 'no price beside a terminal action');
+    assert.deepEqual(book.link?.payment, {amountCents: 5000, currency: 'cad'});
+  });
+
+  it('reads a consult-scoped session price and a slot grid price', async () => {
+    const {fetchLike} = stub({
+      embedState: {typ: 'async', consultId: 'thr_1', status: 'invited', payment: PRICE},
+      embedAgentMessages: {messages: []},
+      embedAgentTelehealthSession: {ok: true, embedToken: 'tele_s', consultId: 'bk_1', mode: 'scheduled'},
+      embedBookingSlots: {ok: true, status: 'invited', slots: [], timezone: 'UTC', payment: PRICE},
+    });
+    const care = connectPatient(SESSION, {fetch: fetchLike});
+    const snap = await care.conversation.get();
+    assert.deepEqual(snap.consult?.payment, PRICE);
+    const grid = await care.telehealth.slots('bk_1');
+    assert.deepEqual(grid.payment, PRICE);
+  });
+
+  it('sends `checkout` as a Boolean and `paymentId` as String!, and keeps the bare-signal form', async () => {
+    const {calls, fetchLike} = stub({embedAgentConsent: {ok: true, status: 'queued'}});
+    const care = connectPatient(SESSION, {fetch: fetchLike});
+    await care.respond(inviteEntry, true, {checkout: true});
+    assert.equal(calls[0].variables.checkout, true);
+    assert.match(calls[0].query, /\$checkout: Boolean\b/);
+    await care.respond(inviteEntry, true, {paymentId: 'pay_1', checkout: true});
+    assert.equal(calls[1].variables.paymentId, 'pay_1');
+    assert.equal(calls[1].variables.checkout, undefined, 'a presented payment wins over checkout');
+    assert.match(calls[1].query, /\$paymentId: String!/);
+    await care.respond(inviteEntry, true, new AbortController().signal);
+    assert.deepEqual(Object.keys(calls[2].variables).sort(), ['accept', 'token']);
+    await care.respond(inviteEntry, false, {checkout: true, paymentId: 'pay_1'});
+    assert.deepEqual(Object.keys(calls[3].variables).sort(), ['accept', 'token'], 'a decline is never charged');
+  });
+
+  it('join and book carry the payment on the consult token', async () => {
+    const {calls, fetchLike} = stub({
+      embedAgentTelehealthSession: {ok: true, embedToken: 'tele_1', consultId: 'tele_1', mode: 'queue'},
+      embedConsultJoin: {ok: true, status: 'waiting', position: 1, estimatedMinutes: 3},
+      embedBook: {ok: true, appointment: {consultId: 'tele_1', startsAt: '2026-10-01T15:00:00Z', timezone: 'UTC'}},
+    });
+    const care = connectPatient(SESSION, {fetch: fetchLike});
+    await care.telehealth.join('tele_1', {paymentId: 'pay_1'});
+    await care.telehealth.join('tele_1', new AbortController().signal);
+    await care.telehealth.book('tele_1', {startsAt: '2026-10-01T15:00:00Z', checkout: true});
+    const joins = calls.filter((c) => c.name === 'embedConsultJoin');
+    assert.equal(joins[0].variables.token, 'tele_1');
+    assert.equal(joins[0].variables.paymentId, 'pay_1');
+    assert.equal(joins[1].variables.paymentId, undefined);
+    const bookCall = calls.find((c) => c.name === 'embedBook')!;
+    assert.equal(bookCall.variables.checkout, true);
+  });
+
+  it('payments.status reads embedPaymentStatus on the patient session; only `paid` is paid', async () => {
+    const {calls, fetchLike} = stub({
+      embedPaymentStatus: (v: Vars) => (v.paymentId === 'pay_1' ? {ok: true, status: 'paid', paid: true} : {ok: true, status: 'teleported', paid: true}),
+    });
+    const care = connectPatient(SESSION, {fetch: fetchLike});
+    assert.deepEqual(await care.payments.status('pay_1'), {paymentId: 'pay_1', status: 'paid', paid: true});
+    assert.deepEqual(await care.payments.status('pay_2'), {paymentId: 'pay_2', status: 'unknown', paid: false});
+    assert.equal(calls[0].variables.token, SESSION.sessionToken);
+    assert.match(calls[0].query, /\$paymentId: String!/);
+  });
+
+  it('checkoutOf reads the bound checkout off a payment refusal, and nothing else', async () => {
+    const {fetchLike} = stub({
+      embedAgentConsent: (_v: Vars, n: number) =>
+        n === 1 ? refusal(embeddedCheckout)
+          : n === 2 ? refusal(undefined, {checkoutError: 'payments_unavailable'})
+            : n === 3 ? refusal({paymentId: 'pay_1', ...PRICE})
+              : {ok: false, error: 'expired', status: 'expired'},
+    });
+    const care = connectPatient(SESSION, {fetch: fetchLike});
+    const caught = async () => {
+      try {
+        await care.respond(inviteEntry, true, {checkout: true});
+      } catch (e) {
+        return e;
+      }
+      throw new Error('expected a refusal');
+    };
+    assert.deepEqual(checkoutOf(await caught()), embeddedCheckout);
+    assert.equal(checkoutOf(await caught()), null, 'no checkout could start');
+    assert.equal(checkoutOf(await caught()), null, 'nothing to mount and nothing paid');
+    assert.equal(checkoutOf(await caught()), null, 'not a payment refusal');
+  });
+
+  it('acceptAndPay: consent → mount → wait for paid → consent again with the payment', async () => {
+    const order: string[] = [];
+    const {calls, fetchLike} = stub({
+      embedState: {},
+      embedAgentMessages: {messages: []},
+      embedAgentConsent: (v: Vars) => {
+        order.push(v.paymentId ? `consent:${v.paymentId}` : `consent:checkout=${v.checkout}`);
+        return v.paymentId ? {ok: true, status: 'queued'} : refusal(embeddedCheckout);
+      },
+      embedPaymentStatus: (_v: Vars, n: number) => {
+        order.push('status');
+        return n < 3 ? {ok: true, status: 'pending', paid: false} : {ok: true, status: 'paid', paid: true};
+      },
+    });
+    const care = connectPatient(SESSION, {fetch: fetchLike});
+    const mounted: unknown[] = [];
+    const result = await care.acceptAndPay(inviteEntry, {
+      mount: async (checkout) => {
+        order.push('mount');
+        mounted.push(checkout);
+      },
+      pollIntervalMs: 1,
+    });
+    assert.deepEqual(mounted, [embeddedCheckout]);
+    assert.deepEqual(order, ['consent:checkout=true', 'mount', 'status', 'status', 'status', 'consent:pay_1']);
+    assert.deepEqual(result, {action: 'consent', paymentId: 'pay_1'});
+    assert.equal(calls.filter((c) => c.name === 'embedAgentConsent').length, 2);
+  });
+
+  it('acceptAndPay goes straight through when nothing is owed (free, folded, or adopted)', async () => {
+    const {calls, fetchLike} = stub({embedAgentConsent: {ok: true, status: 'queued'}});
+    const care = connectPatient(SESSION, {fetch: fetchLike});
+    let mounts = 0;
+    const result = await care.acceptAndPay(inviteEntry, {mount: async () => void mounts++});
+    assert.equal(mounts, 0);
+    assert.deepEqual(result, {action: 'consent', paymentId: null});
+    assert.equal(calls.length, 1);
+  });
+
+  it('acceptAndPay skips the form when the invite is already paid (settling) and only awaits confirmation', async () => {
+    const {fetchLike} = stub({
+      embedAgentConsent: (v: Vars) =>
+        v.paymentId ? {ok: true, status: 'queued'} : refusal({paymentId: 'pay_9', ...PRICE, alreadyPaid: true, settling: true}, {error: 'payment_not_completed'}),
+      embedPaymentStatus: (_v: Vars, n: number) => (n < 2 ? {ok: true, status: 'pending', paid: false} : {ok: true, status: 'paid', paid: true}),
+    });
+    const care = connectPatient(SESSION, {fetch: fetchLike});
+    let mounts = 0;
+    const result = await care.acceptAndPay(inviteEntry, {mount: async () => void mounts++, pollIntervalMs: 1});
+    assert.equal(mounts, 0);
+    assert.equal(result.paymentId, 'pay_9');
+  });
+
+  it('acceptAndPay on a video invite joins on the consult token and returns the waiting room', async () => {
+    const {calls, fetchLike} = stub({
+      embedAgentTelehealthSession: {ok: true, embedToken: 'tele_tok', consultId: 'tele_1', mode: 'queue'},
+      embedConsultJoin: (v: Vars) =>
+        v.paymentId
+          ? {ok: true, status: 'waiting', position: 2, estimatedMinutes: 6}
+          : {ok: false, error: 'payment_required', ...PRICE, checkout: {...embeddedCheckout, paymentId: 'pay_t'}},
+      embedPaymentStatus: {ok: true, status: 'paid', paid: true},
+    });
+    const care = connectPatient(SESSION, {fetch: fetchLike});
+    const entry = {id: 'm2', author: 'agent' as const, text: '', sentAt: '', source: 'agent' as const, awaiting: 'join' as const,
+      consultId: 'tele_1', link: {kind: 'telehealth' as const, consultId: 'tele_1', action: 'join' as const, payment: PRICE}};
+    const result = await care.acceptAndPay(entry, {mount: async () => {}, pollIntervalMs: 1});
+    assert.equal(result.action, 'join');
+    assert.equal(result.join?.position, 2);
+    const joins = calls.filter((c) => c.name === 'embedConsultJoin');
+    assert.deepEqual(joins.map((c) => [c.variables.token, c.variables.checkout, c.variables.paymentId]),
+      [['tele_tok', true, undefined], ['tele_tok', undefined, 'pay_t']]);
+    const status = calls.find((c) => c.name === 'embedPaymentStatus')!;
+    assert.equal(status.variables.token, SESSION.sessionToken, 'payment status is read on the patient session');
+  });
+
+  it('acceptAndPay stops on a payment that fails, rejecting with the id to resume from', async () => {
+    const {calls, fetchLike} = stub({
+      embedAgentConsent: refusal(embeddedCheckout),
+      embedPaymentStatus: {ok: true, status: 'failed', paid: false},
+    });
+    const care = connectPatient(SESSION, {fetch: fetchLike});
+    await assert.rejects(() => care.acceptAndPay(inviteEntry, {mount: async () => {}, pollIntervalMs: 1}), (e: {code?: string; details?: unknown}) => {
+      assert.equal(e.code, 'payment_not_completed');
+      assert.deepEqual(e.details, {paymentId: 'pay_1', status: 'failed'});
+      return true;
+    });
+    assert.equal(calls.filter((c) => c.name === 'embedAgentConsent').length, 1, 'no retry on an unpaid payment');
+  });
+
+  it('acceptAndPay passes a backed-out mount through and never polls', async () => {
+    const {calls, fetchLike} = stub({embedAgentConsent: refusal(embeddedCheckout)});
+    const care = connectPatient(SESSION, {fetch: fetchLike});
+    await assert.rejects(
+      () => care.acceptAndPay(inviteEntry, {mount: async () => {throw new Error('backed out');}}),
+      /backed out/,
+    );
+    assert.equal(calls.some((c) => c.name === 'embedPaymentStatus'), false);
+  });
+
+  it('acceptAndPay rethrows a refusal that carries no checkout (checkoutError)', async () => {
+    const {fetchLike} = stub({embedAgentConsent: refusal(undefined, {checkoutError: 'stripe_error'})});
+    const care = connectPatient(SESSION, {fetch: fetchLike});
+    await assert.rejects(() => care.acceptAndPay(inviteEntry, {mount: async () => {}}), (e: {code?: string; details?: {checkoutError?: string}}) => {
+      assert.equal(e.code, 'payment_required');
+      assert.equal(e.details?.checkoutError, 'stripe_error');
+      return true;
+    });
+  });
+
+  it('acceptAndPay refuses an entry that awaits nothing payable, and a booking without a slot', async () => {
+    const care = connectPatient(SESSION, {fetch: stub({}).fetchLike});
+    await assert.rejects(() => care.acceptAndPay({...inviteEntry, awaiting: 'rating'}, {mount: async () => {}}), /consent, join or book/);
+    await assert.rejects(
+      () => care.acceptAndPay({...inviteEntry, awaiting: 'book', consultId: 'bk_1'}, {mount: async () => {}}),
+      /booking\.startsAt/,
+    );
   });
 });

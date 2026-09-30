@@ -98,6 +98,55 @@ test('a 409 is NOT retried — a conflict is an answer, not a fault', async () =
   assert.equal(calls.length, 1);
 });
 
+test('a referral_request carries suggestedReferrals on the create body, untouched (0.13.0)', async () => {
+  const {calls, fetchLike} = stubFetch([{status: 200, body: {consult: {id: 't_1', kind: 'referral_request'}}}]);
+  const client = new NatzarClient({apiKey: KEY, baseUrl: 'https://x.test/v1', fetch: fetchLike});
+  const suggestedReferrals = [
+    {kind: 'laboratory' as const, tests: ['lipid_panel' as const, 'hba1c' as const], priority: 'routine' as const},
+    {kind: 'imaging' as const, modality: 'other' as const, otherModality: 'DXA', examination: 'Bone density', clinicalIndication: 'Age 67', priority: 'routine' as const},
+  ];
+  await client.asyncConsults.create({
+    externalPatientId: 'u_1',
+    consent: 'collected',
+    kind: 'referral_request',
+    subject: 'Requisitions — prevention check-up (2)',
+    context: 'Prevention questionnaire',
+    paymentId: 'pay_1',
+    suggestedReferrals,
+  });
+  assert.equal(calls[0].url, 'https://x.test/v1/async-consults');
+  assert.equal(calls[0].init.method, 'POST');
+  assert.deepEqual(JSON.parse(String(calls[0].init.body)).suggestedReferrals, suggestedReferrals);
+});
+
+test("asyncConsults.referrals lists a thread's issued referrals, and is retried like any read", async () => {
+  const referral = {id: 'ref_1', consultId: 't/1', kind: 'laboratory', status: 'issued', action: 'view', title: 'Laboratory requisition', files: []};
+  const {calls, fetchLike} = stubFetch([{status: 503}, {status: 200, body: {referrals: [referral]}}]);
+  const client = new NatzarClient({apiKey: KEY, baseUrl: 'https://x.test/v1', fetch: fetchLike, retryBaseMs: 1});
+  const {referrals} = await client.asyncConsults.referrals('t/1');
+  assert.deepEqual(referrals, [referral]);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].url, 'https://x.test/v1/async-consults/t%2F1/referrals');
+  assert.equal(calls[1].init.method, 'GET');
+});
+
+test('issuing a referral posts the structured requisition without automatic retries', async () => {
+  const referral = {id: 'ref_1', kind: 'laboratory', title: 'Laboratory requisition', issuedAt: '2026-09-22T09:00:00.000Z'};
+  const {calls, fetchLike} = stubFetch([{status: 200, body: {referral}}]);
+  const client = new NatzarClient({apiKey: KEY, baseUrl: 'https://x.test/v1', fetch: fetchLike});
+  const result = await client.asyncConsults.issueReferral('t/1', {
+    draft: {kind: 'laboratory', tests: ['cbc', 'ferritin'], priority: 'routine', fasting: true},
+    lang: 'fr',
+  });
+  assert.deepEqual(result.referral, referral);
+  assert.equal(calls[0].url, 'https://x.test/v1/async-consults/t%2F1/referrals');
+  assert.equal(calls[0].init.method, 'POST');
+  assert.deepEqual(JSON.parse(String(calls[0].init.body)), {
+    draft: {kind: 'laboratory', tests: ['cbc', 'ferritin'], priority: 'routine', fasting: true},
+    lang: 'fr',
+  });
+});
+
 test('a non-idempotent lifecycle POST is not replayed after a 500', async () => {
   const {calls, fetchLike} = stubFetch([
     {status: 500, body: {error: {code: 'internal_error', message: 'boom'}}},
@@ -377,4 +426,211 @@ test('the contract ships the schedule engine the platform runs', async () => {
   assert.equal(change.rules.length, 0, 'a day edit never touches the rules');
   assert.equal(change.exceptions.length, 1);
   assert.equal(change.exceptions[0].kind, 'block');
+});
+
+test('the prescription routes hit their paths, flatten the search origin and never replay a choice', async () => {
+  const rx = {
+    id: 'rx_1',
+    externalPatientId: 'u_1',
+    consultId: 't_1',
+    status: 'awaiting_pharmacy',
+    expired: false,
+    expiresAt: '2026-09-19T09:00:00.000Z',
+    transport: 'fax',
+    pharmacyName: null,
+    action: 'choose',
+    createdAt: '2026-09-18T09:00:00.000Z',
+  };
+  const {calls, fetchLike} = stubFetch([
+    {status: 200, body: {prescription: rx}},
+    {status: 200, body: {prescription: rx, origin: {lat: 43.65, lng: -79.38, source: 'device'}, pharmacies: []}},
+    {status: 200, body: {prescription: {...rx, status: 'transmitting', pharmacyName: 'Main St', action: 'sent'}}},
+    {status: 200, body: {ok: true}},
+    {status: 201, body: {pharmacy: {directoryId: 'ca:manual:x', name: 'Corner', address: '9 Side St', reachable: false}, status: 'pending_verification', probe: 'sent', faxIssue: null}},
+  ]);
+  const client = new NatzarClient({apiKey: KEY, baseUrl: 'https://x.test/v1', fetch: fetchLike, maxRetries: 0});
+
+  const {prescription} = await client.prescriptions.get('rx_1');
+  assert.equal(prescription.action, 'choose');
+  assert.equal(calls[0].url, 'https://x.test/v1/prescriptions/rx_1');
+  assert.equal(calls[0].init.method, 'GET');
+
+  await client.prescriptions.pharmacies('rx_1', {lat: 43.65, lng: -79.38, source: 'device', query: 'main', radiusKm: 50});
+  assert.equal(calls[1].url, 'https://x.test/v1/prescriptions/rx_1/pharmacies?lat=43.65&lng=-79.38&source=device&query=main&radiusKm=50');
+
+  const chosen = await client.prescriptions.choosePharmacy('rx_1', {directoryId: 'ca:ON:1'});
+  assert.equal(chosen.prescription.action, 'sent');
+  assert.equal(calls[2].url, 'https://x.test/v1/prescriptions/rx_1/pharmacy');
+  assert.equal(calls[2].init.method, 'POST');
+  assert.deepEqual(JSON.parse(String(calls[2].init.body)), {directoryId: 'ca:ON:1'});
+
+  await client.prescriptions.setHomeLocation('rx_1', {lat: 43.7, lng: -79.4});
+  assert.equal(calls[3].url, 'https://x.test/v1/prescriptions/rx_1/home-location');
+  assert.deepEqual(JSON.parse(String(calls[3].init.body)), {lat: 43.7, lng: -79.4});
+
+  const added = await client.prescriptions.addPharmacy('rx_1', {name: 'Corner', address: '9 Side St', fax: '+14165550100'});
+  assert.equal(added.status, 'pending_verification');
+  assert.equal(calls[4].url, 'https://x.test/v1/prescriptions/rx_1/pharmacies');
+  assert.equal(calls[4].init.method, 'POST');
+});
+
+test('a choice is not replayed after a 500 — one choice is recorded, and `get` answers the retry', async () => {
+  // Compare `setHomeLocation`, which IS replayed: it writes a point, and the
+  // same point twice is the same point.
+  const choose = stubFetch([{status: 500, body: {error: {code: 'internal_error', message: 'boom'}}}, {status: 200, body: {}}]);
+  const client = new NatzarClient({apiKey: KEY, baseUrl: 'https://x.test/v1', fetch: choose.fetchLike, maxRetries: 2, retryBaseMs: 1});
+  await assert.rejects(() => client.prescriptions.choosePharmacy('rx_1', {directoryId: 'ca:ON:1'}));
+  assert.equal(choose.calls.length, 1, 'no replay of a choice');
+
+  const home = stubFetch([{status: 500, body: {error: {code: 'internal_error', message: 'boom'}}}, {status: 200, body: {ok: true}}]);
+  const client2 = new NatzarClient({apiKey: KEY, baseUrl: 'https://x.test/v1', fetch: home.fetchLike, maxRetries: 2, retryBaseMs: 1});
+  await client2.prescriptions.setHomeLocation('rx_1', {lat: 1, lng: 2});
+  assert.equal(home.calls.length, 2, 'the home point is replayed');
+});
+
+test('the referral route hits its path and hands back the document minted on that read', async () => {
+  const referral = {
+    id: 'ref_1',
+    externalPatientId: 'u_1',
+    consultId: 't_1',
+    kind: 'imaging',
+    status: 'issued',
+    action: 'view',
+    title: 'Imaging requisition — MRI',
+    physicianName: 'Dr. Sarah Chen',
+    issuedAt: '2026-09-22T09:00:00.000Z',
+    revokedAt: null,
+    createdAt: '2026-09-22T09:00:00.000Z',
+    document: {url: 'https://s3.test/ref_1.pdf?X-Amz-Expires=300', expiresAt: '2026-09-22T09:05:00.000Z', fileName: 'Imaging-requisition-ref_1.pdf', contentType: 'application/pdf'},
+  };
+  const {calls, fetchLike} = stubFetch([{status: 200, body: {referral}}]);
+  const client = new NatzarClient({apiKey: KEY, baseUrl: 'https://x.test/v1', fetch: fetchLike, maxRetries: 0});
+  const res = await client.referrals.get('ref_1');
+  assert.equal(calls[0].url, 'https://x.test/v1/referrals/ref_1');
+  assert.equal(calls[0].init.method, 'GET');
+  assert.equal(res.referral.action, 'view');
+  assert.equal(res.referral.document?.contentType, 'application/pdf');
+  assert.equal(res.referral.document?.url, referral.document.url);
+});
+
+test('a referral of another tenant, or of a patient this key did not provision, is a uniform 404', async () => {
+  const {fetchLike} = stubFetch([{status: 404, body: {error: {code: 'not_found', message: 'No such resource'}}}]);
+  const client = new NatzarClient({apiKey: KEY, baseUrl: 'https://x.test/v1', fetch: fetchLike, maxRetries: 0});
+  await assert.rejects(
+    () => client.referrals.get('someone_elses'),
+    (e: unknown) => isNatzarApiError(e) && e.code === 'not_found' && e.status === 404,
+  );
+});
+
+test('a refused choice carries the contract code and the prescription status in the body', async () => {
+  const {fetchLike} = stubFetch([
+    {status: 409, body: {error: {code: 'prescription_not_choosable', message: 'Already sent', details: {status: 'sent'}}}},
+  ]);
+  const client = new NatzarClient({apiKey: KEY, baseUrl: 'https://x.test/v1', fetch: fetchLike, maxRetries: 0});
+  await assert.rejects(
+    () => client.prescriptions.choosePharmacy('rx_1', {directoryId: 'ca:ON:1'}),
+    (e: unknown) => isNatzarApiError(e) && e.code === 'prescription_not_choosable' && e.status === 409 && (e.details as {status?: string})?.status === 'sent',
+  );
+});
+
+// ── Accept & pay (0.16.0) ──────────────────────────────────────────────────
+// The REST join is payment-gated: the body now carries the payment, and the
+// 0.15 `join(id, opts)` call shape must keep working.
+
+test('telehealth.join sends the paymentId body, and still accepts the 0.15 (id, opts) shape', async () => {
+  const {calls, fetchLike} = stubFetch([
+    {status: 200, body: {status: 'waiting', position: 1, estimatedMinutes: 3}},
+    {status: 200, body: {status: 'waiting', position: 1, estimatedMinutes: 3}},
+    {status: 200, body: {status: 'waiting', position: 1, estimatedMinutes: 3}},
+  ]);
+  const client = new NatzarClient({apiKey: KEY, baseUrl: 'https://x.test/v1', fetch: fetchLike});
+  await client.telehealth.join('tele_1', {paymentId: 'pay_1'});
+  assert.equal(calls[0].url, 'https://x.test/v1/telehealth-consults/tele_1/join');
+  assert.deepEqual(JSON.parse(String(calls[0].init.body)), {paymentId: 'pay_1'});
+  const controller = new AbortController();
+  await client.telehealth.join('tele_1', {signal: controller.signal});
+  assert.deepEqual(JSON.parse(String(calls[1].init.body)), {}, 'call options are never sent as the body');
+  await client.telehealth.join('tele_1');
+  assert.deepEqual(JSON.parse(String(calls[2].init.body)), {});
+});
+
+test('a 402 on join carries what is owed and which scenario to check out', async () => {
+  const {fetchLike} = stubFetch([{
+    status: 402,
+    body: {error: {code: 'payment_required', message: 'pay', details: {amountCents: 10000, currency: 'cad', modality: 'telehealth', mode: 'live'}}},
+  }]);
+  const client = new NatzarClient({apiKey: KEY, baseUrl: 'https://x.test/v1', fetch: fetchLike, maxRetries: 0});
+  await assert.rejects(() => client.telehealth.join('tele_1'), (e: unknown) => {
+    assert.ok(isErrorCode(e, 'payment_required'));
+    assert.deepEqual((e as {details: unknown}).details, {amountCents: 10000, currency: 'cad', modality: 'telehealth', mode: 'live'});
+    return true;
+  });
+});
+
+test('billing.visitCheckout takes a consult-keyed body as-is', async () => {
+  const {calls, fetchLike} = stubFetch([{status: 200, body: {ok: true, alreadyPaid: true, paymentId: 'pay_1', consultId: 'thr_1', amountCents: 10000, currency: 'cad'}}]);
+  const client = new NatzarClient({apiKey: KEY, baseUrl: 'https://x.test/v1', fetch: fetchLike});
+  const res = await client.billing.visitCheckout({asyncConsultId: 'thr_1', uiMode: 'embedded'});
+  assert.deepEqual(JSON.parse(String(calls[0].init.body)), {asyncConsultId: 'thr_1', uiMode: 'embedded'});
+  assert.equal(res.alreadyPaid, true);
+  assert.equal(res.consultId, 'thr_1');
+});
+
+test('a decline the platform refuses over a payment surfaces its reason, and is sent once', async () => {
+  const {calls, fetchLike} = stubFetch([
+    {status: 409, body: {error: {code: 'thread_not_active', message: 'paid', details: {status: 'invited', reason: 'payment_settled'}}}},
+    {status: 402, body: {error: {code: 'payment_invalid', message: 'retry', details: {reason: 'payment_check_failed', modality: 'async', mode: 'live'}}}},
+  ]);
+  const client = new NatzarClient({apiKey: KEY, baseUrl: 'https://x.test/v1', fetch: fetchLike, retryBaseMs: 1});
+  await assert.rejects(() => client.asyncConsults.consent('thr_1', {accept: false}), (e: unknown) => {
+    assert.ok(isErrorCode(e, 'thread_not_active'));
+    assert.equal((e as {status: number}).status, 409);
+    assert.deepEqual((e as {details: unknown}).details, {status: 'invited', reason: 'payment_settled'});
+    return true;
+  });
+  assert.deepEqual(JSON.parse(String(calls[0].init.body)), {accept: false});
+  // payment_check_failed is the caller's retry to make, not the transport's.
+  await assert.rejects(() => client.asyncConsults.consent('thr_1', {accept: false}), (e: unknown) => {
+    assert.ok(isErrorCode(e, 'payment_invalid'));
+    assert.equal((e as {details: {reason: string}}).details.reason, 'payment_check_failed');
+    return true;
+  });
+  assert.equal(calls.length, 2);
+});
+
+test('billing.waitForPayment polls until paid', async () => {
+  const pending = {id: 'pay_1', patientId: 'p', status: 'pending', paid: false, amountCents: 100, currency: 'cad'};
+  const {calls, fetchLike} = stubFetch([
+    {status: 200, body: pending},
+    {status: 200, body: pending},
+    {status: 200, body: {...pending, status: 'paid', paid: true, consultId: 'thr_1', paidAt: '2026-09-24T10:00:00Z'}},
+  ]);
+  const client = new NatzarClient({apiKey: KEY, baseUrl: 'https://x.test/v1', fetch: fetchLike});
+  const paid = await client.billing.waitForPayment('pay_1', {intervalMs: 1});
+  assert.equal(calls.length, 3);
+  assert.equal(calls[0].url, 'https://x.test/v1/billing/payments/pay_1');
+  assert.equal(paid.paid, true);
+  assert.equal(paid.consultId, 'thr_1');
+});
+
+test('billing.waitForPayment gives up on a payment that can no longer be paid, and on timeout', async () => {
+  const row = {id: 'pay_1', patientId: 'p', paid: false, amountCents: 100, currency: 'cad'};
+  const expired = stubFetch([{status: 200, body: {...row, status: 'expired'}}]);
+  const client = new NatzarClient({apiKey: KEY, baseUrl: 'https://x.test/v1', fetch: expired.fetchLike});
+  await assert.rejects(() => client.billing.waitForPayment('pay_1', {intervalMs: 1}), (e: unknown) => {
+    assert.ok(isErrorCode(e, 'payment_invalid'));
+    assert.deepEqual((e as {details: unknown}).details, {reason: 'payment_not_completed', paymentId: 'pay_1', status: 'expired'});
+    return true;
+  });
+  const slow = stubFetch([]);
+  const pendingFetch = async (url: string, init: RequestInit) => {
+    slow.calls.push({url, init});
+    return new Response(JSON.stringify({...row, status: 'pending'}), {status: 200, headers: {'Content-Type': 'application/json'}});
+  };
+  const waiting = new NatzarClient({apiKey: KEY, baseUrl: 'https://x.test/v1', fetch: pendingFetch});
+  await assert.rejects(() => waiting.billing.waitForPayment('pay_1', {intervalMs: 1, timeoutMs: 5}), (e: unknown) => {
+    assert.ok(isNatzarApiError(e));
+    assert.equal((e as {details: {timedOut?: boolean}}).details.timedOut, true);
+    return true;
+  });
 });

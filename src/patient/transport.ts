@@ -19,7 +19,8 @@
 
 import {NatzarApiError} from '../errors';
 import {NatzarSessionError} from '../session-error';
-import type {ErrorCode} from '../contract/index';
+import {ERROR_HTTP_STATUS} from '../contract/errors';
+import {PATIENT_SURFACE_CODE_SET, type PatientSurfaceErrorCode} from './codes';
 
 /**
  * Everything the browser needs to talk to the patient surface — exactly the
@@ -128,11 +129,18 @@ export async function callPatientOp<T>(
   // because it also drives a widget that renders them. Partners get an
   // exception instead, matching every other call in this package.
   if (payload && typeof payload === 'object' && (payload as {ok?: boolean}).ok === false) {
-    const code = String((payload as {error?: string}).error ?? 'internal_error');
+    const raw = String((payload as {error?: string}).error ?? 'internal_error');
+    const code: PatientSurfaceErrorCode = PATIENT_SURFACE_CODE_SET.has(raw) ? (raw as PatientSurfaceErrorCode) : 'internal_error';
     throw new NatzarApiError({
-      code: (KNOWN_CODES.has(code) ? code : 'internal_error') as ErrorCode,
-      message: `Patient surface refused ${op.name}: ${code}`,
-      status: code.startsWith('embed_token') ? 401 : 409,
+      code,
+      message: `Patient surface refused ${op.name}: ${raw}`,
+      // The refusal came in-band on a 200, so the status is nominal: the one
+      // the REST contract assigns the same code (401 for a token, 404 for
+      // `not_found`, 422 for `invalid_location`…) so a log line reads the
+      // same whichever half raised it, and 409 for the embed-only spellings
+      // the contract does not know — a conflict with the resource's state,
+      // which is what every one of them is.
+      status: (ERROR_HTTP_STATUS as Readonly<Record<string, number | undefined>>)[code] ?? 409,
       route: op.name,
       details: payload,
     });
@@ -150,42 +158,9 @@ const parseMaybeJson = (v: unknown): unknown => {
   }
 };
 
-// The refusal vocabulary of the embed surface, verbatim from embed-api and the
-// booking/consent cores it calls. Anything outside this set is reported as
-// `internal_error` rather than passed through, so a partner never ends up
-// branching on a string the surface emitted once by accident.
-const KNOWN_CODES = new Set<string>([
-  'embed_token_invalid',
-  'embed_token_expired',
-  'origin_not_allowed',
-  'not_found',
-  'thread_not_active',
-  'already_rated',
-  'already_closed',
-  'invalid_request',
-  'internal_error',
-  'not_ended',
-  'not_rateable',
-  'not_closed',
-  'invalid_rating',
-  'empty_rating',
-  // Attachments (embedUploadUrls).
-  'unsupported_type',
-  'file_too_large',
-  // Video (embedConsultJoin / embedAppointmentBeat).
-  'livekit_unconfigured',
-  'expired',
-  // Scheduled consultations (embedBookingSlots / embedBook / embedCancelBooking).
-  'booking_disabled',
-  'too_many_open_bookings',
-  'slot_taken',
-  'slot_unavailable',
-  'too_late_to_cancel',
-  'not_booked',
-  'already_started',
-  'wrong_modality',
-  'payment_check_failed',
-]);
+// The refusal vocabulary (`PATIENT_SURFACE_CODES`) lives in ./codes so
+// `../errors` can type `NatzarApiError.code` with it without importing the
+// transport.
 
 // The embed ops' argument types, by name. Small and closed — the surface is
 // fixed by the contract, so a lookup beats threading types through every call.
@@ -215,6 +190,30 @@ const GQL_TYPES: Record<string, string> = {
   timezone: 'String',
   startsAt: 'AWSDateTime!',
   practitionerId: 'ID',
+  // Prescriptions (embedPrescription*). `id` is the prescription id lifted
+  // from the message link; `origin` and `pharmacy` are a.json() — stringified
+  // by the caller, like `attachment`; `radiusKm` is a.integer(), so `Int`,
+  // and the home point is a.float() — a `String` variable for a Float
+  // argument is refused before the resolver runs.
+  id: 'String!',
+  origin: 'AWSJSON',
+  query: 'String',
+  radiusKm: 'Int',
+  directoryId: 'String!',
+  lat: 'Float!',
+  lng: 'Float!',
+  pharmacy: 'AWSJSON!',
+  // Payments ("accept & pay"). `paymentId` is declared NON-null: that is the
+  // one type valid in every position it is sent to — the optional argument of
+  // embedAgentConsent / embedAsyncConsent / embedConsultJoin / embedBook (a
+  // `String!` variable may fill a nullable `String` argument) AND the
+  // required one of embedPaymentStatus (a nullable variable may not fill a
+  // `String!`). It is only ever sent when present, never as null. `checkout`
+  // and `embedded` are a.boolean(); sent as the default `String` they fail
+  // validation before the resolver runs.
+  paymentId: 'String!',
+  checkout: 'Boolean',
+  embedded: 'Boolean',
 };
 const gqlTypeFor = (name: string): string => GQL_TYPES[name] ?? 'String';
 

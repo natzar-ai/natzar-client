@@ -24,6 +24,8 @@
  */
 
 import type {PhysicianLanguage} from './languages';
+import type {PrescriptionDraft} from './prescriptions';
+import type {ReferralDraft} from './referrals';
 
 /** ISO-8601 UTC timestamp string, e.g. `2026-08-13T09:30:00.000Z`. */
 export type IsoDateTime = string;
@@ -82,7 +84,35 @@ export type AsyncClosedReason =
   | 'cancelled'
   | 'escalated'
   | 'declined'
-  | 'patient_closed';
+  | 'patient_closed'
+  /**
+   * `referral_request` threads only: the referral the request asked for was
+   * delivered to the patient — the request is answered.
+   */
+  | 'fulfilled';
+
+/**
+ * The two kinds of async thread.
+ *
+ * - `conversation` — the default, and every thread that existed before kinds
+ *   did: while it is open the AI assistant is silent, everything the patient
+ *   writes reaches the physician, and the patient holds at most one.
+ * - `referral_request` — a NON-BLOCKING request: a self-contained ask
+ *   (`context`) labelled by `requestSubject`, answered by ONE referral
+ *   document posted into the same conversation. It never silences the
+ *   assistant, may sit beside an open conversation (and beside other
+ *   requests — `has_open_thread` is never raised for or by one), cannot be
+ *   replied to (`POST …/replies` → `409 request_thread`), and closes
+ *   `fulfilled` when the referral notice is delivered. A physician who needs
+ *   more from the patient converts it into a `conversation` (the portal's
+ *   "Switch to conversation"), and the patient is told a physician now reads
+ *   what they write.
+ */
+export const ASYNC_CONSULT_KINDS = ['conversation', 'referral_request'] as const;
+export type AsyncConsultKind = (typeof ASYNC_CONSULT_KINDS)[number];
+
+/** Cap on `requestSubject` / the create body's `subject`. */
+export const ASYNC_REQUEST_SUBJECT_MAX = 120;
 
 /**
  * Lifecycle of a live (video) telehealth consult. Mirrors the
@@ -159,7 +189,33 @@ export type AsyncNotice =
   | 'inactivity_warning'
   | 'inactivity_closed'
   | 'escalated'
-  | 'awaiting_ack';
+  | 'awaiting_ack'
+  /**
+   * PRESCRIPTIONS (`./prescriptions`): the four things a prescription says
+   * to the patient on the thread. `prescription_issued` and
+   * `prescription_failed` carry the pharmacy link in `body` (detect it with
+   * `PHARMACY_LINK_REGEX`, resolve it with `GET /v1/prescriptions/{id}`);
+   * `prescription_sent` names the pharmacy it went to; `prescription_revoked`
+   * says the physician withdrew it. They arrive as ordinary
+   * `async_consult.message` webhook events — there is no prescription event
+   * type.
+   */
+  | 'prescription_issued'
+  | 'prescription_sent'
+  | 'prescription_failed'
+  | 'prescription_revoked'
+  /**
+   * REFERRALS (`./referrals`): the two things a referral says to the patient
+   * on the thread. `referral_issued` carries the document link in `body`
+   * (detect it with `REFERRAL_LINK_REGEX`, resolve it with
+   * `GET /v1/referrals/{id}`) followed by the 30-day validity sentence
+   * (`REFERRAL_LINK_VALIDITY_SENTENCES`), which a headless surface strips —
+   * the document has no window there; `referral_revoked` says the physician
+   * withdrew it. Ordinary `async_consult.message` webhook events, like the
+   * prescription notices.
+   */
+  | 'referral_issued'
+  | 'referral_revoked';
 
 /**
  * Machine-readable classification of a stored async-thread message:
@@ -455,6 +511,44 @@ export interface PhysicianResource {
 export type ConsultOrigin = 'partner' | 'platform';
 
 /**
+ * What accepting / joining / booking a consult costs the patient — or what
+ * already paid for it. Read it BEFORE the patient acts, so one button can say
+ * "Yes & pay CA$100" instead of "Yes" followed by a surprise
+ * (docs/partner-api/guides/payments.md).
+ *
+ * Present in two cases only:
+ *
+ * - `status: 'due'` — the consult is still an offer the patient can take
+ *   (async `invited`; a live video consult `invited`/`waiting`; a scheduled
+ *   one not yet booked), its link has not expired, and the tenant charges for
+ *   its scenario. The amount is exactly what the payment gate will ask for —
+ *   the same `(modality, mode)` the gate prices, never a catalog guess.
+ * - `status: 'paid'` — a payment already stands behind this consult:
+ *   `paymentId` names it, and `amountCents`/`currency` are what was paid. On
+ *   an invite this means the patient paid and has not completed the action
+ *   yet — repeating consent / join / book lets them in without a second
+ *   charge (the payment is bound to the consult and adopted automatically).
+ *
+ * ABSENT means "show no price", never "free": the scenario is free, the
+ * consult is past the point of paying, or the price could not be read right
+ * now. The action itself stays authoritative either way — a priced action
+ * without a payment answers `402 payment_required`.
+ */
+export interface ConsultPayment {
+  /** `due` — pay before (or while) acting; `paid` — a payment already covers it. */
+  status: 'due' | 'paid';
+  /** Minor units (cents). */
+  amountCents: number;
+  /** ISO 4217, lowercase as Stripe reports it (`cad`). */
+  currency: string;
+  /** The visit scenario being charged — what `POST /v1/billing/visit-checkout` prices. */
+  modality: 'async' | 'telehealth' | 'in_person';
+  mode: 'live' | 'book';
+  /** On `paid`: the Payment row (`GET /v1/billing/payments/{id}`). */
+  paymentId?: string;
+}
+
+/**
  * Patient feedback recorded on a closed async consult. Write-once; both
  * fields optional because a patient may leave stars, a comment, or both.
  */
@@ -492,10 +586,43 @@ export interface AsyncConsultResource {
   /** Why the consult closed. Present exactly when `status === 'closed'`. */
   closedReason?: AsyncClosedReason;
   /**
+   * Blocking or not — see {@link AsyncConsultKind}. Always present
+   * (`conversation` for every thread that predates kinds), so branch on it
+   * without a fallback. Added after the fields around it; `/v1` only grows.
+   */
+  kind: AsyncConsultKind;
+  /** `referral_request` only: the one-line label of the ask, as you sent it. */
+  requestSubject?: string;
+  /**
    * Clinical context you supplied at creation ("why they're here") — shown
-   * to the physician as the handoff summary.
+   * to the physician as the handoff summary. On a `referral_request` it is
+   * the ask itself.
    */
   context?: string;
+  /**
+   * `referral_request` only: the referral drafts you suggested at creation
+   * (`suggestedReferrals` on the create body), as validated and normalized.
+   * Suggested by the partner; the physician reviews, may edit, and signs —
+   * the issued documents are what `GET /v1/async-consults/{id}/referrals`
+   * lists. Absent when none were sent. Added after the fields around it;
+   * `/v1` only grows.
+   */
+  suggestedReferrals?: ReferralDraft[];
+  /**
+   * The platform's own AI-recommended next step, from its conversation with
+   * the patient before handoff — decoupled from `kind`: possible on any live
+   * thread the platform's assistant handed off, never present on a
+   * `referral_request` you originated (a different, partner-authored
+   * mechanism; see `suggestedReferrals` above). One or two short sentences
+   * for the physician: what, why, and what to confirm first when the AI is
+   * unsure. Always proposed on such a thread (the physician decides), so it
+   * may come with neither draft — a next step with nothing to sign.
+   */
+  recommendationNote?: string;
+  /** With `recommendationNote`: the AI's drafted referral(s), awaiting review and signature. At most one of this and `recommendedPrescription` is ever set. */
+  recommendedReferrals?: ReferralDraft[];
+  /** With `recommendationNote`: the AI's drafted prescription, awaiting review and signature. At most one of this and `recommendedReferrals` is ever set. */
+  recommendedPrescription?: PrescriptionDraft;
   /**
    * The tenant specialty slug the thread was routed to, if any. Governs who
    * auto-assignment may hand it to; a physician outside it may still `claim`.
@@ -601,6 +728,11 @@ export interface AsyncConsultResource {
   rating?: AsyncConsultRating;
   /** Who opened it — see {@link ConsultOrigin}. */
   origin: ConsultOrigin;
+  /**
+   * What consenting costs (`due`, while `invited`) or what paid for this
+   * consult (`paid`). Absent = no price to show. See {@link ConsultPayment}.
+   */
+  payment?: ConsultPayment;
 }
 
 /**
@@ -883,6 +1015,12 @@ export interface TelehealthConsultResource {
   rating?: TelehealthRating;
   /** Who opened it — see {@link ConsultOrigin}. */
   origin: ConsultOrigin;
+  /**
+   * What joining (an on-demand `queue` consult) or booking (a `scheduled`
+   * one, before a time is taken) costs — `due` — or what paid for it —
+   * `paid`. Absent = no price to show. See {@link ConsultPayment}.
+   */
+  payment?: ConsultPayment;
 }
 
 /**

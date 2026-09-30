@@ -4,6 +4,7 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "lib": ["ES2022", "DOM"],
+    "types": ["node"],
     "strict": true,
     // Deliberately OFF. `src/contract` is a verbatim copy of the API's own
     // contract package and compiles under the server's settings; turning this
