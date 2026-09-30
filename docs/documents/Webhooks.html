@@ -1,0 +1,273 @@
+<!DOCTYPE html><html class="default" lang="en" data-base="../"><head><meta charset="utf-8"/><meta http-equiv="x-ua-compatible" content="IE=edge"/><title>Webhooks | Natzar Partner API Reference - v1.0.0</title><meta name="description" content="Documentation for Natzar Partner API Reference"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="stylesheet" href="../assets/style.css"/><link rel="stylesheet" href="../assets/highlight.css"/><script defer src="../assets/main.js"></script><script async src="../assets/icons.js" id="tsd-icons-script"></script><script async src="../assets/search.js" id="tsd-search-script"></script><script async src="../assets/navigation.js" id="tsd-nav-script"></script><script async src="../assets/hierarchy.js" id="tsd-hierarchy-script"></script></head><body><script>document.documentElement.dataset.theme = localStorage.getItem("tsd-theme") || "os";document.body.style.display="none";setTimeout(() => window.app?app.showPage():document.body.style.removeProperty("display"),500)</script><header class="tsd-page-toolbar">
+<div class="tsd-toolbar-contents container"><a href="../index.html" class="title">Natzar Partner API Reference - v1.0.0</a>
+<div id="tsd-toolbar-links"></div><button id="tsd-search-trigger" class="tsd-widget" aria-label="Search"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-search"></use></svg></button><dialog id="tsd-search" aria-label="Search"><input role="combobox" id="tsd-search-input" aria-controls="tsd-search-results" aria-autocomplete="list" aria-expanded="true" autocapitalize="off" autocomplete="off" placeholder="Search the docs" maxLength="100"/>
+<ul role="listbox" id="tsd-search-results"></ul>
+<div id="tsd-search-status" aria-live="polite" aria-atomic="true">
+<div>Preparing search index...</div></div></dialog><a href="#" class="tsd-widget menu" id="tsd-toolbar-menu-trigger" data-toggle="menu" aria-label="Menu"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-menu"></use></svg></a></div></header>
+<div class="container container-main">
+<div class="col-content">
+<div class="tsd-page-title">
+<ul class="tsd-breadcrumb" aria-label="Breadcrumb">
+<li><a href="" aria-current="page">Webhooks</a></li></ul></div>
+<div class="tsd-panel tsd-typography"><h1 id="webhooks" class="tsd-anchor-link">Webhooks<a href="#webhooks" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h1>
+<p>Configure a <code>webhookUrl</code> on your partner account and Natzar POSTs you an
+event for every consult lifecycle transition and every transcript message
+— no polling required. Every event is also durably stored <strong>before</strong> any
+delivery attempt and replayable via <code>GET /v1/events</code>, so a missed webhook
+is never a lost event.</p>
+<h2 id="delivery" class="tsd-anchor-link">Delivery<a href="#delivery" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>Each delivery is an HTTPS <code>POST</code> to your <code>webhookUrl</code> with a JSON body of
+shape <a href="../types/index.WebhookEvent.html" class="tsd-kind-type-alias"> WebhookEvent</a>:</p>
+<pre><code class="json"><span class="hl-1">{</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;id&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;evt_9fK2mQ7wN2pT&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;type&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;async_consult.assigned&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;createdAt&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;2026-08-13T09:31:02.000Z&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;partnerId&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;pa_X8yL3kQ9&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;data&quot;</span><span class="hl-1">: {</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;consult&quot;</span><span class="hl-1">: { </span><span class="hl-6">&quot;id&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;kQ7wN2pT9xLm&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;status&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;active&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;...&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;...&quot;</span><span class="hl-1"> },</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;physicianId&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;e5f0c8aa-…&quot;</span><br/><span class="hl-1">  }</span><br/><span class="hl-1">}</span>
+</code><button type="button">Copy</button></pre>
+
+<p>Two headers accompany every delivery:</p>
+<table>
+<thead>
+<tr>
+<th>Header</th>
+<th>Content</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>X-Natzar-Event</code></td>
+<td>The event <code>type</code> — route without parsing the body.</td>
+</tr>
+<tr>
+<td><code>X-Natzar-Signature</code></td>
+<td>HMAC signature — see below.</td>
+</tr>
+</tbody>
+</table>
+<p>Rules of engagement:</p>
+<ul>
+<li><strong>Respond 2xx within 10 seconds.</strong> Do your real work asynchronously —
+enqueue and ack. Anything else (including a timeout) counts as a failed
+delivery.</li>
+<li><strong>Retries with backoff.</strong> Failed deliveries are retried several times;
+deliveries that keep failing are eventually parked — the event remains
+in the replay log (<code>GET /v1/events</code>, with <code>attempts</code>/<code>lastStatus</code> on the
+stored event showing what happened).</li>
+<li><strong>Ordering is per consult.</strong> Deliveries for the SAME consult are
+strictly ordered — a failing event blocks later events for that consult
+until it succeeds or exhausts retries. Different consults deliver
+independently. Don't let one consult's handler failure back up the rest:
+ack fast.</li>
+<li><strong>Deduplicate on <code>id</code>.</strong> Retries mean you MAY receive a delivery twice;
+the envelope <code>id</code> is stable across retries.</li>
+</ul>
+<h2 id="verifying" class="tsd-anchor-link">Verifying <code>X-Natzar-Signature</code><a href="#verifying" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>The header has the form:</p>
+<pre><code><span class="hl-8">X</span><span class="hl-1">-</span><span class="hl-2">Natzar</span><span class="hl-1">-</span><span class="hl-7">Signature</span><span class="hl-1">: </span><span class="hl-2">t</span><span class="hl-1">=</span><span class="hl-9">1755077462</span><span class="hl-1">,</span><span class="hl-2">v1</span><span class="hl-1">=5257</span><span class="hl-2">a869e7ecebeda32affa62cdca3fa51cad7e77a0e56ff536d0ce8e108d8bd</span>
+</code><button>Copy</button></pre>
+
+<p>where <code>v1</code> is <code>HMAC-SHA256(secret, &quot;&lt;t&gt;&quot; + &quot;.&quot; + rawBody)</code> — <code>rawBody</code>
+being the <strong>exact bytes of the request body</strong>. Sign-then-parse: verify
+against the raw body string, never against re-serialized JSON (key order
+or whitespace differences would break the digest). <code>secret</code> is your
+webhook signing secret, shown when the webhook is configured.</p>
+<p>Reject the delivery when the digest mismatches OR the timestamp is older
+than your tolerance (5 minutes is a good default — this bounds replay of
+captured deliveries).</p>
+<p>Runnable Node verification (Express with a raw-body parser):</p>
+<pre><code class="js"><span class="hl-10">import</span><span class="hl-1"> {</span><span class="hl-2">createHmac</span><span class="hl-1">, </span><span class="hl-2">timingSafeEqual</span><span class="hl-1">} </span><span class="hl-10">from</span><span class="hl-1"> </span><span class="hl-3">&#39;node:crypto&#39;</span><span class="hl-1">;</span><br/><span class="hl-10">import</span><span class="hl-1"> </span><span class="hl-2">express</span><span class="hl-1"> </span><span class="hl-10">from</span><span class="hl-1"> </span><span class="hl-3">&#39;express&#39;</span><span class="hl-1">;</span><br/><br/><span class="hl-0">function</span><span class="hl-1"> </span><span class="hl-4">verifyNatzarSignature</span><span class="hl-1">(</span><span class="hl-2">header</span><span class="hl-1">, </span><span class="hl-2">rawBody</span><span class="hl-1">, </span><span class="hl-2">secret</span><span class="hl-1">, </span><span class="hl-2">toleranceSeconds</span><span class="hl-1"> = </span><span class="hl-9">300</span><span class="hl-1">) {</span><br/><span class="hl-1">  </span><span class="hl-0">const</span><span class="hl-1"> </span><span class="hl-8">parts</span><span class="hl-1"> = </span><span class="hl-2">Object</span><span class="hl-1">.</span><span class="hl-4">fromEntries</span><span class="hl-1">(</span><br/><span class="hl-1">    </span><span class="hl-2">header</span><span class="hl-1">.</span><span class="hl-4">split</span><span class="hl-1">(</span><span class="hl-3">&#39;,&#39;</span><span class="hl-1">).</span><span class="hl-4">map</span><span class="hl-1">((</span><span class="hl-2">kv</span><span class="hl-1">) </span><span class="hl-0">=&gt;</span><span class="hl-1"> </span><span class="hl-2">kv</span><span class="hl-1">.</span><span class="hl-4">split</span><span class="hl-1">(</span><span class="hl-3">&#39;=&#39;</span><span class="hl-1">, </span><span class="hl-9">2</span><span class="hl-1">)),</span><br/><span class="hl-1">  );</span><br/><span class="hl-1">  </span><span class="hl-0">const</span><span class="hl-1"> </span><span class="hl-8">t</span><span class="hl-1"> = </span><span class="hl-4">Number</span><span class="hl-1">(</span><span class="hl-2">parts</span><span class="hl-1">.</span><span class="hl-2">t</span><span class="hl-1">);</span><br/><span class="hl-1">  </span><span class="hl-10">if</span><span class="hl-1"> (!</span><span class="hl-2">Number</span><span class="hl-1">.</span><span class="hl-4">isFinite</span><span class="hl-1">(</span><span class="hl-2">t</span><span class="hl-1">) || !</span><span class="hl-2">parts</span><span class="hl-1">.</span><span class="hl-2">v1</span><span class="hl-1">) </span><span class="hl-10">return</span><span class="hl-1"> </span><span class="hl-0">false</span><span class="hl-1">;</span><br/><span class="hl-1">  </span><span class="hl-10">if</span><span class="hl-1"> (</span><span class="hl-2">Math</span><span class="hl-1">.</span><span class="hl-4">abs</span><span class="hl-1">(</span><span class="hl-2">Date</span><span class="hl-1">.</span><span class="hl-4">now</span><span class="hl-1">() / </span><span class="hl-9">1000</span><span class="hl-1"> - </span><span class="hl-2">t</span><span class="hl-1">) &gt; </span><span class="hl-2">toleranceSeconds</span><span class="hl-1">) </span><span class="hl-10">return</span><span class="hl-1"> </span><span class="hl-0">false</span><span class="hl-1">;</span><br/><span class="hl-1">  </span><span class="hl-0">const</span><span class="hl-1"> </span><span class="hl-8">expected</span><span class="hl-1"> = </span><span class="hl-4">createHmac</span><span class="hl-1">(</span><span class="hl-3">&#39;sha256&#39;</span><span class="hl-1">, </span><span class="hl-2">secret</span><span class="hl-1">)</span><br/><span class="hl-1">    .</span><span class="hl-4">update</span><span class="hl-1">(</span><span class="hl-3">`</span><span class="hl-0">${</span><span class="hl-2">parts</span><span class="hl-11">.</span><span class="hl-2">t</span><span class="hl-0">}</span><span class="hl-3">.</span><span class="hl-0">${</span><span class="hl-2">rawBody</span><span class="hl-0">}</span><span class="hl-3">`</span><span class="hl-1">)</span><br/><span class="hl-1">    .</span><span class="hl-4">digest</span><span class="hl-1">(</span><span class="hl-3">&#39;hex&#39;</span><span class="hl-1">);</span><br/><span class="hl-1">  </span><span class="hl-0">const</span><span class="hl-1"> </span><span class="hl-8">a</span><span class="hl-1"> = </span><span class="hl-2">Buffer</span><span class="hl-1">.</span><span class="hl-4">from</span><span class="hl-1">(</span><span class="hl-2">parts</span><span class="hl-1">.</span><span class="hl-2">v1</span><span class="hl-1">, </span><span class="hl-3">&#39;hex&#39;</span><span class="hl-1">);</span><br/><span class="hl-1">  </span><span class="hl-0">const</span><span class="hl-1"> </span><span class="hl-8">b</span><span class="hl-1"> = </span><span class="hl-2">Buffer</span><span class="hl-1">.</span><span class="hl-4">from</span><span class="hl-1">(</span><span class="hl-2">expected</span><span class="hl-1">, </span><span class="hl-3">&#39;hex&#39;</span><span class="hl-1">);</span><br/><span class="hl-1">  </span><span class="hl-10">return</span><span class="hl-1"> </span><span class="hl-2">a</span><span class="hl-1">.</span><span class="hl-2">length</span><span class="hl-1"> === </span><span class="hl-2">b</span><span class="hl-1">.</span><span class="hl-2">length</span><span class="hl-1"> &amp;&amp; </span><span class="hl-4">timingSafeEqual</span><span class="hl-1">(</span><span class="hl-2">a</span><span class="hl-1">, </span><span class="hl-2">b</span><span class="hl-1">);</span><br/><span class="hl-1">}</span><br/><br/><span class="hl-0">const</span><span class="hl-1"> </span><span class="hl-8">app</span><span class="hl-1"> = </span><span class="hl-4">express</span><span class="hl-1">();</span><br/><span class="hl-12">// Raw body is REQUIRED for verification — parse JSON only after verifying.</span><br/><span class="hl-2">app</span><span class="hl-1">.</span><span class="hl-4">post</span><span class="hl-1">(</span><span class="hl-3">&#39;/natzar-webhooks&#39;</span><span class="hl-1">, </span><span class="hl-2">express</span><span class="hl-1">.</span><span class="hl-4">raw</span><span class="hl-1">({</span><span class="hl-2">type:</span><span class="hl-1"> </span><span class="hl-3">&#39;application/json&#39;</span><span class="hl-1">}), (</span><span class="hl-2">req</span><span class="hl-1">, </span><span class="hl-2">res</span><span class="hl-1">) </span><span class="hl-0">=&gt;</span><span class="hl-1"> {</span><br/><span class="hl-1">  </span><span class="hl-0">const</span><span class="hl-1"> </span><span class="hl-8">ok</span><span class="hl-1"> = </span><span class="hl-4">verifyNatzarSignature</span><span class="hl-1">(</span><br/><span class="hl-1">    </span><span class="hl-2">req</span><span class="hl-1">.</span><span class="hl-4">get</span><span class="hl-1">(</span><span class="hl-3">&#39;X-Natzar-Signature&#39;</span><span class="hl-1">) ?? </span><span class="hl-3">&#39;&#39;</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-2">req</span><span class="hl-1">.</span><span class="hl-2">body</span><span class="hl-1">.</span><span class="hl-4">toString</span><span class="hl-1">(</span><span class="hl-3">&#39;utf8&#39;</span><span class="hl-1">),</span><br/><span class="hl-1">    </span><span class="hl-2">process</span><span class="hl-1">.</span><span class="hl-2">env</span><span class="hl-1">.</span><span class="hl-8">NATZAR_WEBHOOK_SECRET</span><span class="hl-1">,</span><br/><span class="hl-1">  );</span><br/><span class="hl-1">  </span><span class="hl-10">if</span><span class="hl-1"> (!</span><span class="hl-2">ok</span><span class="hl-1">) </span><span class="hl-10">return</span><span class="hl-1"> </span><span class="hl-2">res</span><span class="hl-1">.</span><span class="hl-4">status</span><span class="hl-1">(</span><span class="hl-9">400</span><span class="hl-1">).</span><span class="hl-4">send</span><span class="hl-1">(</span><span class="hl-3">&#39;bad signature&#39;</span><span class="hl-1">);</span><br/><span class="hl-1">  </span><span class="hl-0">const</span><span class="hl-1"> </span><span class="hl-8">event</span><span class="hl-1"> = </span><span class="hl-8">JSON</span><span class="hl-1">.</span><span class="hl-4">parse</span><span class="hl-1">(</span><span class="hl-2">req</span><span class="hl-1">.</span><span class="hl-2">body</span><span class="hl-1">.</span><span class="hl-4">toString</span><span class="hl-1">(</span><span class="hl-3">&#39;utf8&#39;</span><span class="hl-1">));</span><br/><span class="hl-1">  </span><span class="hl-12">// Ack first, work later (idempotently, deduplicating on event.id).</span><br/><span class="hl-1">  </span><span class="hl-2">res</span><span class="hl-1">.</span><span class="hl-4">sendStatus</span><span class="hl-1">(</span><span class="hl-9">200</span><span class="hl-1">);</span><br/><span class="hl-1">  </span><span class="hl-4">handleEvent</span><span class="hl-1">(</span><span class="hl-2">event</span><span class="hl-1">);</span><br/><span class="hl-1">});</span>
+</code><button type="button">Copy</button></pre>
+
+<h2 id="event-catalog" class="tsd-anchor-link">Event catalog<a href="#event-catalog" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p><code>data</code> payload shapes are documented on <a href="../types/index.WebhookEvent.html" class="tsd-kind-type-alias"> WebhookEvent</a> (a
+discriminated union on <code>type</code> — switch on it and TypeScript narrows the
+payload). Consult-snapshot events carry the <strong>full consult resource</strong> as
+of the event, so handlers are stateless — you never need the previous
+event to interpret the current one.</p>
+<h3 id="async-consults" class="tsd-anchor-link">Async consults<a href="#async-consults" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<table>
+<thead>
+<tr>
+<th>Event</th>
+<th>When</th>
+<th>Payload highlights</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>async_consult.created</code></td>
+<td>Consult created via the API.</td>
+<td><code>consult</code> snapshot</td>
+</tr>
+<tr>
+<td><code>async_consult.consented</code></td>
+<td>Patient accepted the consent prompt.</td>
+<td><code>consult</code></td>
+</tr>
+<tr>
+<td><code>async_consult.declined</code></td>
+<td>Patient declined; the consult closed without starting.</td>
+<td><code>consult</code></td>
+</tr>
+<tr>
+<td><code>async_consult.queued</code></td>
+<td>Consented, waiting for physician capacity.</td>
+<td><code>consult</code></td>
+</tr>
+<tr>
+<td><code>async_consult.assigned</code></td>
+<td>A physician took the thread.</td>
+<td><code>consult</code>, <code>physicianId</code></td>
+</tr>
+<tr>
+<td><code>async_consult.reassigned</code></td>
+<td>Thread moved to another physician (SLA breach or takeover).</td>
+<td><code>consult</code>, <code>physicianId</code>, <code>previousPhysicianId</code></td>
+</tr>
+<tr>
+<td><code>async_consult.message</code></td>
+<td>A message landed on the transcript — any author, including system notices.</td>
+<td><code>asyncConsultId</code>, <code>message</code></td>
+</tr>
+<tr>
+<td><code>async_consult.message_rejected</code></td>
+<td>A 202-accepted patient message couldn't be routed because the thread closed underneath it before processing. This is the only rejection cause: messages sent while the thread is still <code>queued</code> (no physician yet) are persisted to the transcript and emit <code>async_consult.message</code> like any other.</td>
+<td><code>asyncConsultId</code>, <code>patientId</code>, <code>messageId</code>, <code>reason</code></td>
+</tr>
+<tr>
+<td><code>async_consult.resolve_requested</code></td>
+<td>Physician marked it resolved; acceptance window running.</td>
+<td><code>consult</code></td>
+</tr>
+<tr>
+<td><code>async_consult.reopened</code></td>
+<td>Patient replied inside the acceptance window; back to <code>active</code>.</td>
+<td><code>consult</code></td>
+</tr>
+<tr>
+<td><code>async_consult.closed</code></td>
+<td>Terminal state reached.</td>
+<td><code>consult</code>, <code>closedReason</code></td>
+</tr>
+<tr>
+<td><code>async_consult.rated</code></td>
+<td>Patient rated the consult.</td>
+<td><code>consult</code>, <code>rating</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="telehealth" class="tsd-anchor-link">Telehealth<a href="#telehealth" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<table>
+<thead>
+<tr>
+<th>Event</th>
+<th>When</th>
+<th>Payload highlights</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>telehealth.created</code></td>
+<td>Consult created via the API.</td>
+<td><code>consult</code> snapshot</td>
+</tr>
+<tr>
+<td><code>telehealth.waiting</code></td>
+<td>Patient entered the waiting room.</td>
+<td><code>consult</code></td>
+</tr>
+<tr>
+<td><code>telehealth.ringing</code></td>
+<td>A physician was reserved for the waiting patient; the patient's client is confirming it is still there. Not yet a call — an unanswered ring returns the consult to <code>waiting</code> with no event of its own.</td>
+<td><code>consult</code>, <code>practitionerId</code></td>
+</tr>
+<tr>
+<td><code>telehealth.in_progress</code></td>
+<td>A physician joined; the call is live.</td>
+<td><code>consult</code></td>
+</tr>
+<tr>
+<td><code>telehealth.completed</code></td>
+<td>The call ended.</td>
+<td><code>consult</code></td>
+</tr>
+<tr>
+<td><code>telehealth.cancelled</code></td>
+<td>Cancelled before/without a call.</td>
+<td><code>consult</code></td>
+</tr>
+<tr>
+<td><code>telehealth.recording_ready</code></td>
+<td>Composite recording (and transcript, when produced) available.</td>
+<td><code>consult</code></td>
+</tr>
+<tr>
+<td><code>telehealth.rated</code></td>
+<td>Patient rated the call.</td>
+<td><code>consult</code>, <code>rating</code></td>
+</tr>
+</tbody>
+</table>
+<p>Notes:</p>
+<ul>
+<li>Webhook payloads <strong>omit presigned URLs</strong> (they are stored durably):
+attachment <code>url</code>s are absent on <code>async_consult.message</code>, and
+<code>recordingUrl</code> is absent on telehealth events. React to
+<code>telehealth.recording_ready</code> by calling
+<code>GET /v1/telehealth-consults/{id}</code> for a fresh link; re-read
+<code>GET /v1/async-consults/{id}/messages</code> for fresh attachment links.</li>
+<li><strong>Prescriptions ride on <code>async_consult.message</code></strong> — there is no
+prescription event type. The four notices a prescription writes to the
+thread (<code>async:prescription_issued</code>, <code>…_sent</code>, <code>…_failed</code>, <code>…_revoked</code>,
+the message's <code>classification</code>) are ordinary transcript messages; the
+<code>issued</code> and <code>failed</code> ones carry the patient's pharmacy link in <code>body</code>.
+Resolving and acting on that link is the <a href="Prescriptions.html">Prescriptions</a>
+guide.</li>
+<li>New event types may be added within <code>/v1</code> — ignore types you don't
+recognize.</li>
+</ul>
+<h2 id="replay" class="tsd-anchor-link">Replay: <code>GET /v1/events</code><a href="#replay" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>The durable event log, <strong>oldest first</strong>. Every event is written here
+before any delivery attempt, so polling it is a complete, ordered
+substitute for (or reconciliation against) webhooks:</p>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-s</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/events?since=2026-08-13T00:00:00Z&amp;limit=100&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$NATZAR_KEY</span><span class="hl-3">&quot;</span>
+</code><button type="button">Copy</button></pre>
+
+<p>Each stored event carries the same <code>id</code>/<code>type</code>/<code>createdAt</code>/<code>data</code> as the
+webhook envelope, plus delivery bookkeeping: <code>deliveredAt</code> (last 2xx),
+<code>attempts</code> (0 when no <code>webhookUrl</code> is configured), <code>lastStatus</code>. Use
+<code>since</code> to start from a timestamp, then follow <code>nextCursor</code>.</p>
+<p>Typical reconciliation loop after downtime: page <code>/v1/events</code> from your
+last processed <code>createdAt</code>, apply anything whose <code>id</code> you haven't seen,
+resume normal webhook consumption.</p>
+<h2 id="no-webhook-url-at-all" class="tsd-anchor-link">No webhook URL at all?<a href="#no-webhook-url-at-all" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>That's fine — <code>webhookUrl</code> is optional. Headless integrations can run
+entirely on polling <code>GET /v1/events</code>; every event appears there regardless
+of delivery configuration.</p>
+</div></div>
+<div class="col-sidebar">
+<div class="page-menu">
+<div class="tsd-navigation settings">
+<details class="tsd-accordion"><summary class="tsd-accordion-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
+<h3>Settings</h3></summary>
+<div class="tsd-accordion-details">
+<div class="tsd-filter-visibility"><span class="settings-label">Member Visibility</span>
+<ul id="tsd-filter-options">
+<li class="tsd-filter-item"><label class="tsd-filter-input"><input type="checkbox" id="tsd-filter-protected" name="protected"/><svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect class="tsd-checkbox-background" width="30" height="30" x="1" y="1" rx="6" fill="none"></rect><path class="tsd-checkbox-checkmark" d="M8.35422 16.8214L13.2143 21.75L24.6458 10.25" stroke="none" stroke-width="3.5" stroke-linejoin="round" fill="none"></path></svg><span>Protected</span></label></li>
+<li class="tsd-filter-item"><label class="tsd-filter-input"><input type="checkbox" id="tsd-filter-inherited" name="inherited" checked/><svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect class="tsd-checkbox-background" width="30" height="30" x="1" y="1" rx="6" fill="none"></rect><path class="tsd-checkbox-checkmark" d="M8.35422 16.8214L13.2143 21.75L24.6458 10.25" stroke="none" stroke-width="3.5" stroke-linejoin="round" fill="none"></path></svg><span>Inherited</span></label></li></ul></div>
+<div class="tsd-theme-toggle"><label class="settings-label" for="tsd-theme">Theme</label><select id="tsd-theme"><option value="os">OS</option><option value="light">Light</option><option value="dark">Dark</option></select></div></div></details></div>
+<details open class="tsd-accordion tsd-page-navigation"><summary class="tsd-accordion-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
+<h3>On This Page</h3></summary>
+<div class="tsd-accordion-details"><a href="#webhooks"><span>Webhooks</span></a>
+<ul>
+<li><a href="#delivery"><span>Delivery</span></a></li>
+<li><a href="#verifying"><span>Verifying </span></a></li>
+<li><a href="#event-catalog"><span>Event catalog</span></a></li>
+<li>
+<ul>
+<li><a href="#async-consults"><span>Async consults</span></a></li>
+<li><a href="#telehealth"><span>Telehealth</span></a></li></ul></li>
+<li><a href="#replay"><span>Replay: </span></a></li>
+<li><a href="#no-webhook-url-at-all"><span>No webhook <wbr/>URL at all?</span></a></li></ul></div></details></div>
+<div class="site-menu">
+<nav class="tsd-navigation"><a href="../index.html">Natzar Partner API Reference - v1.0.0</a>
+<ul class="tsd-small-nested-navigation" id="tsd-nav-container">
+<li>Loading...</li></ul></nav></div></div></div><footer>
+<p class="tsd-generator">Generated using <a href="https://typedoc.org/" target="_blank">TypeDoc</a></p></footer>
+<div class="overlay"></div></body></html>

@@ -1,0 +1,286 @@
+<!DOCTYPE html><html class="default" lang="en" data-base="../"><head><meta charset="utf-8"/><meta http-equiv="x-ua-compatible" content="IE=edge"/><title>Physicians | Natzar Partner API Reference - v1.0.0</title><meta name="description" content="Documentation for Natzar Partner API Reference"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="stylesheet" href="../assets/style.css"/><link rel="stylesheet" href="../assets/highlight.css"/><script defer src="../assets/main.js"></script><script async src="../assets/icons.js" id="tsd-icons-script"></script><script async src="../assets/search.js" id="tsd-search-script"></script><script async src="../assets/navigation.js" id="tsd-nav-script"></script><script async src="../assets/hierarchy.js" id="tsd-hierarchy-script"></script></head><body><script>document.documentElement.dataset.theme = localStorage.getItem("tsd-theme") || "os";document.body.style.display="none";setTimeout(() => window.app?app.showPage():document.body.style.removeProperty("display"),500)</script><header class="tsd-page-toolbar">
+<div class="tsd-toolbar-contents container"><a href="../index.html" class="title">Natzar Partner API Reference - v1.0.0</a>
+<div id="tsd-toolbar-links"></div><button id="tsd-search-trigger" class="tsd-widget" aria-label="Search"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-search"></use></svg></button><dialog id="tsd-search" aria-label="Search"><input role="combobox" id="tsd-search-input" aria-controls="tsd-search-results" aria-autocomplete="list" aria-expanded="true" autocapitalize="off" autocomplete="off" placeholder="Search the docs" maxLength="100"/>
+<ul role="listbox" id="tsd-search-results"></ul>
+<div id="tsd-search-status" aria-live="polite" aria-atomic="true">
+<div>Preparing search index...</div></div></dialog><a href="#" class="tsd-widget menu" id="tsd-toolbar-menu-trigger" data-toggle="menu" aria-label="Menu"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-menu"></use></svg></a></div></header>
+<div class="container container-main">
+<div class="col-content">
+<div class="tsd-page-title">
+<ul class="tsd-breadcrumb" aria-label="Breadcrumb">
+<li><a href="" aria-current="page">Physicians</a></li></ul></div>
+<div class="tsd-panel tsd-typography"><h1 id="physicians-the-clinician-side-of-the-api" class="tsd-anchor-link">Physicians — the clinician side of the API<a href="#physicians-the-clinician-side-of-the-api" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h1>
+<p>Everything a clinician does on the platform — going on the live video rota,
+taking a call, answering written consultations, keeping a booked agenda,
+publishing availability, recording licences — can be done through the API,
+so your physicians work <strong>inside your own portal</strong> and never open ours.</p>
+<p>This guide is the server-and-browser recipe. The
+<a href="https://www.npmjs.com/package/@natzar/client"><code>@natzar/client/physician</code></a>
+entry point wraps all of it (polling, heartbeats, expiry); the raw routes are
+here so you can see what it does and go without it.</p>
+<p>Everything below assumes the <a href="Getting_started.html">getting-started</a> setup:</p>
+<pre><code class="bash"><span class="hl-0">export</span><span class="hl-1"> </span><span class="hl-2">NATZAR_API</span><span class="hl-1">=</span><span class="hl-3">&quot;https://&lt;your-assigned-api-host&gt;&quot;</span><br/><span class="hl-0">export</span><span class="hl-1"> </span><span class="hl-2">NATZAR_KEY</span><span class="hl-1">=</span><span class="hl-3">&quot;pp_test_...&quot;</span>
+</code><button type="button">Copy</button></pre>
+
+<h2 id="1-who-is-acting-the-three-physician-credentials" class="tsd-anchor-link">1. Who is acting — the three physician credentials<a href="#1-who-is-acting-the-three-physician-credentials" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>An API key authenticates your <strong>application</strong>, never a person. Anything that
+signs a clinical act with a physician's name — a reply on a patient's record,
+&quot;I am available&quot;, a licence — needs a second credential that names the
+clinician. There are three, and every physician route accepts any of them:</p>
+<table>
+<thead>
+<tr>
+<th>Credential</th>
+<th>How</th>
+<th>Meant for</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Session token</strong></td>
+<td><code>Authorization: Bearer &lt;sessionToken&gt;</code> (instead of the key)</td>
+<td>The clinician's <strong>browser</strong>. Minted by your server (§2), short-lived, restricted to the physician routes.</td>
+</tr>
+<tr>
+<td><strong>Cognito ID token</strong></td>
+<td>Key + <code>X-Natzar-Physician: &lt;id token&gt;</code></td>
+<td>A clinician who also has a login on our portal.</td>
+</tr>
+<tr>
+<td><strong>Asserted id</strong></td>
+<td>Key + <code>X-Natzar-Physician-Id: &lt;physicianId&gt;</code></td>
+<td>Your <strong>server</strong>, acting for a clinician you have already authenticated. Available unless your account has physician assertion switched off (<code>403 forbidden</code>).</td>
+</tr>
+</tbody>
+</table>
+<p>Precedence when several are present: session, then ID token, then asserted
+id. A session that also asserts a <em>different</em> physician is <code>400 invalid_request</code>.</p>
+<p>Wherever a route takes <code>/v1/physicians/{id}/…</code>, <code>{id}</code> may be the literal
+<strong><code>me</code></strong> — the acting physician. With no physician credential, <code>me</code> is <code>401 unauthorized</code>.</p>
+<p><strong>Self-only routes.</strong> Presence, heartbeat and availability are statements
+about a human's own presence, so with a physician credential the addressed
+physician must be the acting one (<code>400 invalid_request</code> otherwise). The
+session-scoped schedule / licence / specialty / language writes are self-only
+too. The key alone keeps its administrative reach over every physician of the
+tenant for schedule, licences, specialties and languages.</p>
+<h2 id="2-single-sign-on-mint-a-session-on-your-server" class="tsd-anchor-link">2. Single sign-on: mint a session on your server<a href="#2-single-sign-on-mint-a-session-on-your-server" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>Your clinician is already signed in to <em>your</em> portal. Exchange that for a
+Natzar physician session — <strong>tenant key only</strong>; a session may not mint
+another (<code>403 forbidden</code>):</p>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-X</span><span class="hl-1"> </span><span class="hl-3">POST</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/physicians/</span><span class="hl-2">$PHYSICIAN_ID</span><span class="hl-3">/session&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$NATZAR_KEY</span><span class="hl-3">&quot;</span><span class="hl-1"> </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&#39;Content-Type: application/json&#39;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-d</span><span class="hl-1"> </span><span class="hl-3">&#39;{&quot;ttlSeconds&quot;: 3600}&#39;</span>
+</code><button type="button">Copy</button></pre>
+
+<pre><code class="json"><span class="hl-1">{</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;sessionToken&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;eyJ…&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;expiresAt&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;2026-09-15T05:00:00.000Z&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;apiUrl&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;https://&lt;your-assigned-api-host&gt;/v1&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;physician&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;id&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;…&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;externalId&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;your-user-id&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;givenName&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;Léa&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;familyName&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;Morin&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;presence&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;status&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;offline&quot;</span><span class="hl-1">}}</span><br/><span class="hl-1">}</span>
+</code><button type="button">Copy</button></pre>
+
+<p>Send the whole object to the browser as-is: it is exactly what
+<code>connectPhysician(session)</code> takes. The token is a browser-grade credential:</p>
+<ul>
+<li>it reaches <strong>only</strong> the physician-side routes (the list in §7); anything
+else answers <code>403 forbidden</code> — keep the key on your server for those;</li>
+<li>it always acts as its <strong>own</strong> physician: another physician's resources
+are <code>403 forbidden</code> (or <code>404</code> where the record is not even visible);</li>
+<li>it dies on <code>expiresAt</code> (<code>401 unauthorized</code>), and a key rotation kills it
+early. The SDK reports the first <code>401</code> through <code>onExpired</code>; mint a fresh
+session and hand it to <code>desk.refresh(session)</code>.</li>
+</ul>
+<p><strong>Auto-provisioning.</strong> If the clinician has no physician record yet, create
+one first with <code>POST /v1/physicians</code> keyed by <em>your</em> user id
+(<code>externalId</code>) — an identical repeat is idempotent (200), so &quot;look up by
+<code>externalId</code>, create if missing, mint&quot; is safe to run on every sign-in.
+<code>409 email_in_use</code> means that email already backs a physician you did not
+create: a human has to reconcile it.</p>
+<h2 id="3-presence-the-live-video-rota" class="tsd-anchor-link">3. Presence — the live video rota<a href="#3-presence-the-live-video-rota" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<pre><code class="bash"><span class="hl-12"># on the rota; the matcher sees me at once</span><br/><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-X</span><span class="hl-1"> </span><span class="hl-3">POST</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/physicians/me/presence&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$SESSION</span><span class="hl-3">&quot;</span><span class="hl-1"> </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&#39;Content-Type: application/json&#39;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-d</span><span class="hl-1"> </span><span class="hl-3">&#39;{&quot;ready&quot;: true}&#39;</span>
+</code><button type="button">Copy</button></pre>
+
+<pre><code class="json"><span class="hl-1">{</span><span class="hl-6">&quot;presence&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;status&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;ready&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;readyAt&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;…&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;lastSeenAt&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;…&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;stale&quot;</span><span class="hl-1">: </span><span class="hl-0">false</span><span class="hl-1">}, </span><span class="hl-6">&quot;activeConsult&quot;</span><span class="hl-1">: </span><span class="hl-0">null</span><span class="hl-1">}</span>
+</code><button type="button">Copy</button></pre>
+
+<p>A <code>ready</code> physician stays on the rota only while <strong>heartbeats</strong> arrive:</p>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-X</span><span class="hl-1"> </span><span class="hl-3">POST</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/physicians/me/heartbeat&quot;</span><span class="hl-1"> </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$SESSION</span><span class="hl-3">&quot;</span>
+</code><button type="button">Copy</button></pre>
+
+<p>Every <strong>15 s</strong>, with a <strong>45 s</strong> TTL (<code>PHYSICIAN_HEARTBEAT_INTERVAL_SECONDS</code>,
+<code>PHYSICIAN_PRESENCE_TTL_SECONDS</code> in the contract). A closed laptop drops off
+the rota on its own — that is the point: no phantom clinicians. <code>presence.stale</code>
+is the platform telling you the beats stopped arriving. <code>{&quot;ready&quot;: false}</code>
+takes the physician off the rota immediately; a physician on a call reads
+<code>busy</code> until it ends.</p>
+<h2 id="4-the-workspace-one-read-polled" class="tsd-anchor-link">4. The workspace — one read, polled<a href="#4-the-workspace-one-read-polled" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/physicians/me/workspace&quot;</span><span class="hl-1"> </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$SESSION</span><span class="hl-3">&quot;</span>
+</code><button type="button">Copy</button></pre>
+
+<pre><code class="json"><span class="hl-1">{</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;physician&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;id&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;…&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;presence&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;status&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;ready&quot;</span><span class="hl-1">}, </span><span class="hl-6">&quot;asyncAvailable&quot;</span><span class="hl-1">: </span><span class="hl-0">true</span><span class="hl-1">},</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;telehealth&quot;</span><span class="hl-1">: {</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;visible&quot;</span><span class="hl-1">: </span><span class="hl-0">true</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;waiting&quot;</span><span class="hl-1">: </span><span class="hl-9">2</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;readyPhysicians&quot;</span><span class="hl-1">: </span><span class="hl-9">1</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;queue&quot;</span><span class="hl-1">: [{</span><span class="hl-6">&quot;id&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;…&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;patient&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;givenName&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;Alex&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;familyName&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;T.&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;birthdate&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;…&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;sex&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;female&quot;</span><span class="hl-1">}, </span><span class="hl-6">&quot;enqueuedAt&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;…&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;context&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;…&quot;</span><span class="hl-1">}],</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;active&quot;</span><span class="hl-1">: </span><span class="hl-0">null</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;upcoming&quot;</span><span class="hl-1">: [{</span><span class="hl-6">&quot;id&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;…&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;scheduledAt&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;…&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;patient&quot;</span><span class="hl-1">: {</span><span class="hl-17">…</span><span class="hl-1">}}]</span><br/><span class="hl-1">  },</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;async&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;available&quot;</span><span class="hl-1">: </span><span class="hl-0">true</span><span class="hl-1">, </span><span class="hl-6">&quot;queued&quot;</span><span class="hl-1">: [</span><span class="hl-17">...</span><span class="hl-1">], </span><span class="hl-6">&quot;mine&quot;</span><span class="hl-1">: [</span><span class="hl-17">...</span><span class="hl-1">], </span><span class="hl-6">&quot;overdue&quot;</span><span class="hl-1">: [</span><span class="hl-17">...</span><span class="hl-1">]}</span><br/><span class="hl-1">}</span>
+</code><button type="button">Copy</button></pre>
+
+<p>It is the whole clinician screen: presence, the live queue (<code>visible</code> says
+whether the matcher can see this physician), the call for THIS physician
+(<code>active</code>, when the matcher has reserved them — see §5), the next seven
+days of booked appointments, and the written inbox split into the three
+piles a clinician thinks in. Poll it (the SDK does, and only re-renders on
+change); every list is capped at 50 (<code>PHYSICIAN_WORKSPACE_LIST_CAP</code>).</p>
+<h2 id="5-on-demand-video-ring-→-room-→-end" class="tsd-anchor-link">5. On-demand video: ring → room → end<a href="#5-on-demand-video-ring-→-room-→-end" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>The platform pairs a waiting patient with the first eligible <code>ready</code>
+physician. You do <strong>not</strong> pick patients off the queue — the physician just
+stays ready, and the workspace's <code>telehealth.active</code> flips to a consult in
+<code>ringing</code> (the patient's client is confirming it is still there; the
+<code>telehealth.ringing</code> webhook says the same) and then <code>in_progress</code>.</p>
+<pre><code class="bash"><span class="hl-12"># the LiveKit grant for MY side of the call</span><br/><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-X</span><span class="hl-1"> </span><span class="hl-3">POST</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/telehealth-consults/</span><span class="hl-2">$ID</span><span class="hl-3">/room&quot;</span><span class="hl-1"> </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$SESSION</span><span class="hl-3">&quot;</span>
+</code><button type="button">Copy</button></pre>
+
+<pre><code class="json"><span class="hl-1">{</span><span class="hl-6">&quot;status&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;in_progress&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;livekit&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;url&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;wss://…&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;token&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;…&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;roomName&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;…&quot;</span><span class="hl-1">}, </span><span class="hl-6">&quot;consult&quot;</span><span class="hl-1">: {</span><span class="hl-17">…</span><span class="hl-1">}}</span>
+</code><button type="button">Copy</button></pre>
+
+<p><code>livekit</code> is present once the call is live; while the consult is still
+<code>ringing</code> you get the state without a grant — poll the workspace (or this
+route) until it is. The grant is for the <strong>acting</strong> physician; another
+physician's consult is <code>409 not_assigned</code>.</p>
+<p>The token is for <strong>connecting</strong>: it is valid for 10 minutes, so pull a fresh
+grant for every connection and never store one to reconnect with later. A
+connected physician stays connected until they disconnect; revoking them
+afterwards only refuses their next pull. The room itself can be retired
+mid-call: a <code>ROOM_DELETED</code> disconnect means &quot;call <code>/room</code> again&quot;, never &quot;the
+call is over&quot;, and <code>DUPLICATE_IDENTITY</code> (the same physician opened the call in
+another window) means a manual &quot;Use here&quot; button, never an automatic
+reconnect. The full rules, and the SDK's <code>connectPhysicianRoom</code> that runs
+them, are in <a href="../media/video-calls.md">Video calls</a>.</p>
+<pre><code class="bash"><span class="hl-12"># hang up — and stay on the rota (default) or go offline</span><br/><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-X</span><span class="hl-1"> </span><span class="hl-3">POST</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/telehealth-consults/</span><span class="hl-2">$ID</span><span class="hl-3">/end&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$SESSION</span><span class="hl-3">&quot;</span><span class="hl-1"> </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&#39;Content-Type: application/json&#39;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-d</span><span class="hl-1"> </span><span class="hl-3">&#39;{&quot;goOffline&quot;: false}&#39;</span>
+</code><button type="button">Copy</button></pre>
+
+<pre><code class="json"><span class="hl-1">{</span><span class="hl-6">&quot;consult&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;status&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;completed&quot;</span><span class="hl-1">, </span><span class="hl-17">…</span><span class="hl-1">}, </span><span class="hl-6">&quot;next&quot;</span><span class="hl-1">: </span><span class="hl-0">null</span><span class="hl-1">}</span>
+</code><button type="button">Copy</button></pre>
+
+<p><code>next</code> is the consult the matcher assigned the moment this one ended, when
+a patient was waiting — render it as the next ring without a round trip.
+Ending twice is idempotent. The patient rates afterwards (<code>telehealth.rated</code>).</p>
+<h2 id="6-booked-appointments" class="tsd-anchor-link">6. Booked appointments<a href="#6-booked-appointments" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>The physician's agenda comes from published availability
+(<a href="Scheduled_consultations.html">booking guide</a>) — <code>PUT</code>/<code>PATCH /v1/physicians/me/schedule</code> are
+self-only under a session; a clinician's own calendar edits with the PATCH —
+and the patient's booking. The waiting room is a
+two-sided beat:</p>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/physicians/me/agenda?from=…&amp;to=…&quot;</span><span class="hl-1"> </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$SESSION</span><span class="hl-3">&quot;</span><br/><br/><span class="hl-12"># every ~10 s while the physician is in the appointment&#39;s waiting room</span><br/><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-X</span><span class="hl-1"> </span><span class="hl-3">POST</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/telehealth-consults/</span><span class="hl-2">$ID</span><span class="hl-3">/ready&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$SESSION</span><span class="hl-3">&quot;</span><span class="hl-1"> </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&#39;Content-Type: application/json&#39;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-d</span><span class="hl-1"> </span><span class="hl-3">&#39;{&quot;present&quot;: true}&#39;</span>
+</code><button type="button">Copy</button></pre>
+
+<pre><code class="json"><span class="hl-1">{</span><span class="hl-6">&quot;state&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;phase&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;waiting&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;startsAt&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;…&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;otherSidePresent&quot;</span><span class="hl-1">: </span><span class="hl-0">false</span><span class="hl-1">}}</span>
+</code><button type="button">Copy</button></pre>
+
+<p><code>state.phase</code> walks <code>early</code> (with <code>opensAt</code>) → <code>waiting</code> → <code>connecting</code> /
+<code>in_progress</code> → <code>missed</code> / <code>closed</code>. The LiveKit grant appears the moment
+both sides are present inside the window; send <code>{&quot;present&quot;: false}</code> once
+when the physician leaves so the patient's screen stops saying they are
+there. Cancelling (<code>POST …/cancel</code>) tells the patient immediately. After a
+disconnect, call <code>/ready</code> again for the new room under the same rules as
+<code>/room</code> (<a href="../media/video-calls.md">Video calls</a>).</p>
+<p>The agenda answers with <code>timezone</code> — the physician's calendar zone — so the
+list can be labelled; each consult carries <code>patientTimezone</code> when the patient
+booked from another zone (show &quot;their time&quot; beside yours).</p>
+<h3 id="the-physicians-time-zone" class="tsd-anchor-link">The physician's time zone<a href="#the-physicians-time-zone" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<p>A physician's calendar is drawn and booked in <strong>one</strong> zone: their own when
+they picked one, else the clinic's. Set or clear it on the schedule itself,
+before or with the rules it applies to:</p>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-X</span><span class="hl-1"> </span><span class="hl-3">PATCH</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/physicians/me/schedule&quot;</span><span class="hl-1"> </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$SESSION</span><span class="hl-3">&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&#39;Content-Type: application/json&#39;</span><span class="hl-1"> </span><span class="hl-0">-d</span><span class="hl-1"> </span><span class="hl-3">&#39;{&quot;timezone&quot;: &quot;America/Toronto&quot;}&#39;</span><br/><span class="hl-12"># … and back to the clinic&#39;s:</span><br/><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-X</span><span class="hl-1"> </span><span class="hl-3">PATCH</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/physicians/me/schedule&quot;</span><span class="hl-1"> </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$SESSION</span><span class="hl-3">&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&#39;Content-Type: application/json&#39;</span><span class="hl-1"> </span><span class="hl-0">-d</span><span class="hl-1"> </span><span class="hl-3">&#39;{&quot;timezone&quot;: null}&#39;</span>
+</code><button type="button">Copy</button></pre>
+
+<p><code>GET …/schedule</code> reports <code>timezone</code> (effective), <code>clinicTimezone</code>,
+<code>schedulingTimezone</code> (null = follows the clinic) and <code>upcomingAppointments</code>
+— the booked appointments that keep their exact instants and re-render on the
+new clock after a change. Rules keep their wall-clock meaning. A rule that
+names a different <code>timezone</code> from the physician's is refused with
+<code>rule_zone_mismatch</code>; an unknown zone id is <code>400 invalid_request</code>.</p>
+<h2 id="7-the-written-inbox" class="tsd-anchor-link">7. The written inbox<a href="#7-the-written-inbox" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>The async routes you already know (<code>replies</code>, <code>claim</code>, <code>takeover</code>,
+<code>resolve</code>, <code>close</code>) take any physician credential, plus:</p>
+<pre><code class="bash"><span class="hl-12"># from written to video: closes the thread (`escalated`) and invites the patient</span><br/><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-X</span><span class="hl-1"> </span><span class="hl-3">POST</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/async-consults/</span><span class="hl-2">$ID</span><span class="hl-3">/escalate&quot;</span><span class="hl-1"> </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$SESSION</span><span class="hl-3">&quot;</span>
+</code><button type="button">Copy</button></pre>
+
+<pre><code class="json"><span class="hl-1">{</span><span class="hl-6">&quot;consult&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;status&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;closed&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;closedReason&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;escalated&quot;</span><span class="hl-1">, </span><span class="hl-17">…</span><span class="hl-1">}, </span><span class="hl-6">&quot;telehealthConsultId&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;…&quot;</span><span class="hl-1">}</span>
+</code><button type="button">Copy</button></pre>
+
+<p>The physician then goes <code>ready</code> (§3) to take the call. List filters help
+build the piles yourself: <code>GET /v1/async-consults?assignee=me|unassigned|&lt;id&gt;</code>
+and <code>origin=partner|platform|any</code>; <code>GET /v1/telehealth-consults?status=…&amp;practitionerId=…&amp;mode=…</code>.</p>
+<p>Takeover exists for a patient left waiting past the SLA: it is <code>409 sla_not_overdue</code> before that, and <code>409 thread_not_active</code> on a thread whose
+physician has already answered (nobody is waiting).</p>
+<h2 id="8-licences-specialties-and-languages" class="tsd-anchor-link">8. Licences, specialties and languages<a href="#8-licences-specialties-and-languages" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-X</span><span class="hl-1"> </span><span class="hl-3">PUT</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/physicians/me/licenses&quot;</span><span class="hl-1"> </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$SESSION</span><span class="hl-3">&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&#39;Content-Type: application/json&#39;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-d</span><span class="hl-1"> </span><span class="hl-3">&#39;{&quot;licenses&quot;: [{&quot;state&quot;: &quot;QC&quot;, &quot;country&quot;: &quot;CA&quot;, &quot;licenseNumber&quot;: &quot;12345&quot;, &quot;expiresAt&quot;: &quot;2027-06-30&quot;}]}&#39;</span><br/><br/><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/specialties&quot;</span><span class="hl-1"> </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$SESSION</span><span class="hl-3">&quot;</span><br/><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-X</span><span class="hl-1"> </span><span class="hl-3">PUT</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/physicians/me/specialties&quot;</span><span class="hl-1"> </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$SESSION</span><span class="hl-3">&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&#39;Content-Type: application/json&#39;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-d</span><span class="hl-1"> </span><span class="hl-3">&#39;{&quot;specialties&quot;: [&quot;dermatology&quot;], &quot;acceptsAllSpecialties&quot;: false}&#39;</span><br/><br/><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-X</span><span class="hl-1"> </span><span class="hl-3">PUT</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/physicians/me/languages&quot;</span><span class="hl-1"> </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$SESSION</span><span class="hl-3">&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&#39;Content-Type: application/json&#39;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-d</span><span class="hl-1"> </span><span class="hl-3">&#39;{&quot;languages&quot;: [&quot;fr&quot;, &quot;en&quot;]}&#39;</span>
+</code><button type="button">Copy</button></pre>
+
+<p>Whether licences are <em>enforced</em> in routing is a tenant setting
+(<code>licenseEnforcement</code> in the licences response, which also lists
+<code>expiringSoon</code> — surface it: an expired licence silently removes a physician
+from the rota); the list is informative otherwise. An empty specialty list
+means &quot;any&quot;.</p>
+<p><strong>Languages are a ranked preference, never a filter.</strong> Three routing inputs,
+three shapes of rule: specialty is a permissive filter, licensure a strict
+one, and language is not a filter at all. Among the physicians a consult may
+go to after those two, the platform offers it first to one who speaks the
+patient's language, then to one who speaks English, then to anyone — in the
+live queue, in booking, and in the messaging inbox alike. Inside a tier the
+usual fairness order (longest ready, least loaded, fewest open threads)
+decides. So no list can ever exclude a physician from a patient, and turning
+the feature on can never empty a rota; a physician who records nothing
+simply ranks last (never assumed English). Codes are the five base codes
+(<code>en</code>, <code>es</code>, <code>de</code>, <code>fr</code>, <code>it</code> — <code>PHYSICIAN_LANGUAGES</code> in the contract, with
+display names beside them); a full locale such as <code>fr_CH</code> is <code>400 invalid_request</code>, because the region says where a <em>patient</em> is, not what a
+clinician speaks. The read side: every consult carries <code>patientLang</code>, the
+patient's locale <strong>frozen at mint</strong> (the value routing was decided on, distinct
+from <code>patient.lang</code>, which moves with the patient's settings), and a slot
+grid carries <code>patientLang</code> beside each offer's <code>languages</code> so a booking page
+can badge the times a French speaker is preferred for.</p>
+<h2 id="what-a-session-may-call" class="tsd-anchor-link">What a session may call<a href="#what-a-session-may-call" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p><code>GET /v1/physicians/{id}</code> · presence · heartbeat · availability · workspace ·
+agenda · schedule (GET/PUT/PATCH) · licenses (GET/PUT) · specialties (PUT) ·
+languages (PUT) ·
+<code>GET /v1/specialties</code> · telehealth consults (list, get, <code>room</code>, <code>end</code>,
+<code>ready</code>, <code>cancel</code>) · async consults (list, get, messages, <code>replies</code>,
+<code>claim</code>, <code>takeover</code>, <code>resolve</code>, <code>close</code>, <code>escalate</code>) ·
+<code>POST /v1/attachments/upload-urls</code> · patients (list, get) ·
+<code>GET /v1/agent/messages</code>.</p>
+<p>Everything else — provisioning, creating consults on patients' behalf, embed
+sessions, the event log, minting sessions — is the tenant key's, and answers
+<code>403 forbidden</code> to a session.</p>
+<h2 id="consults-you-create-for-a-patient" class="tsd-anchor-link">Consults you create for a patient<a href="#consults-you-create-for-a-patient" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>A consult your server creates (<code>POST /v1/telehealth-consults</code>,
+<code>POST /v1/async-consults</code>) writes a system notice on the patient's
+conversation that carries the platform link (<code>/telehealth?id=</code>, <code>/book?id=</code>
+for a scheduled one, <code>/async?id=</code> for a written one). The embed widget and
+<code>@natzar/client/patient</code> turn that link into the <strong>Join / Choose a time /
+Accept</strong> button, exactly as they do for a consult the AI agent offered — so
+a partner backend and the agent look the same on the patient's screen.</p>
+</div></div>
+<div class="col-sidebar">
+<div class="page-menu">
+<div class="tsd-navigation settings">
+<details class="tsd-accordion"><summary class="tsd-accordion-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
+<h3>Settings</h3></summary>
+<div class="tsd-accordion-details">
+<div class="tsd-filter-visibility"><span class="settings-label">Member Visibility</span>
+<ul id="tsd-filter-options">
+<li class="tsd-filter-item"><label class="tsd-filter-input"><input type="checkbox" id="tsd-filter-protected" name="protected"/><svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect class="tsd-checkbox-background" width="30" height="30" x="1" y="1" rx="6" fill="none"></rect><path class="tsd-checkbox-checkmark" d="M8.35422 16.8214L13.2143 21.75L24.6458 10.25" stroke="none" stroke-width="3.5" stroke-linejoin="round" fill="none"></path></svg><span>Protected</span></label></li>
+<li class="tsd-filter-item"><label class="tsd-filter-input"><input type="checkbox" id="tsd-filter-inherited" name="inherited" checked/><svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect class="tsd-checkbox-background" width="30" height="30" x="1" y="1" rx="6" fill="none"></rect><path class="tsd-checkbox-checkmark" d="M8.35422 16.8214L13.2143 21.75L24.6458 10.25" stroke="none" stroke-width="3.5" stroke-linejoin="round" fill="none"></path></svg><span>Inherited</span></label></li></ul></div>
+<div class="tsd-theme-toggle"><label class="settings-label" for="tsd-theme">Theme</label><select id="tsd-theme"><option value="os">OS</option><option value="light">Light</option><option value="dark">Dark</option></select></div></div></details></div>
+<details open class="tsd-accordion tsd-page-navigation"><summary class="tsd-accordion-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
+<h3>On This Page</h3></summary>
+<div class="tsd-accordion-details"><a href="#physicians-the-clinician-side-of-the-api"><span>Physicians — the clinician side of the <wbr/>API</span></a>
+<ul>
+<li><a href="#1-who-is-acting-the-three-physician-credentials"><span>1. <wbr/>Who is acting — the three physician credentials</span></a></li>
+<li><a href="#2-single-sign-on-mint-a-session-on-your-server"><span>2. <wbr/>Single sign-<wbr/>on: mint a session on your server</span></a></li>
+<li><a href="#3-presence-the-live-video-rota"><span>3. <wbr/>Presence — the live video rota</span></a></li>
+<li><a href="#4-the-workspace-one-read-polled"><span>4. <wbr/>The workspace — one read, polled</span></a></li>
+<li><a href="#5-on-demand-video-ring-→-room-→-end"><span>5. <wbr/>On-<wbr/>demand video: ring → room → end</span></a></li>
+<li><a href="#6-booked-appointments"><span>6. <wbr/>Booked appointments</span></a></li>
+<li>
+<ul>
+<li><a href="#the-physicians-time-zone"><span>The physician&#39;s time zone</span></a></li></ul></li>
+<li><a href="#7-the-written-inbox"><span>7. <wbr/>The written inbox</span></a></li>
+<li><a href="#8-licences-specialties-and-languages"><span>8. <wbr/>Licences, specialties and languages</span></a></li>
+<li><a href="#what-a-session-may-call"><span>What a session may call</span></a></li>
+<li><a href="#consults-you-create-for-a-patient"><span>Consults you create for a patient</span></a></li></ul></div></details></div>
+<div class="site-menu">
+<nav class="tsd-navigation"><a href="../index.html">Natzar Partner API Reference - v1.0.0</a>
+<ul class="tsd-small-nested-navigation" id="tsd-nav-container">
+<li>Loading...</li></ul></nav></div></div></div><footer>
+<p class="tsd-generator">Generated using <a href="https://typedoc.org/" target="_blank">TypeDoc</a></p></footer>
+<div class="overlay"></div></body></html>

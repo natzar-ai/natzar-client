@@ -1,0 +1,354 @@
+<!DOCTYPE html><html class="default" lang="en" data-base="../"><head><meta charset="utf-8"/><meta http-equiv="x-ua-compatible" content="IE=edge"/><title>Embedding the patient UI | Natzar Partner API Reference - v1.0.0</title><meta name="description" content="Documentation for Natzar Partner API Reference"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="stylesheet" href="../assets/style.css"/><link rel="stylesheet" href="../assets/highlight.css"/><script defer src="../assets/main.js"></script><script async src="../assets/icons.js" id="tsd-icons-script"></script><script async src="../assets/search.js" id="tsd-search-script"></script><script async src="../assets/navigation.js" id="tsd-nav-script"></script><script async src="../assets/hierarchy.js" id="tsd-hierarchy-script"></script></head><body><script>document.documentElement.dataset.theme = localStorage.getItem("tsd-theme") || "os";document.body.style.display="none";setTimeout(() => window.app?app.showPage():document.body.style.removeProperty("display"),500)</script><header class="tsd-page-toolbar">
+<div class="tsd-toolbar-contents container"><a href="../index.html" class="title">Natzar Partner API Reference - v1.0.0</a>
+<div id="tsd-toolbar-links"></div><button id="tsd-search-trigger" class="tsd-widget" aria-label="Search"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-search"></use></svg></button><dialog id="tsd-search" aria-label="Search"><input role="combobox" id="tsd-search-input" aria-controls="tsd-search-results" aria-autocomplete="list" aria-expanded="true" autocapitalize="off" autocomplete="off" placeholder="Search the docs" maxLength="100"/>
+<ul role="listbox" id="tsd-search-results"></ul>
+<div id="tsd-search-status" aria-live="polite" aria-atomic="true">
+<div>Preparing search index...</div></div></dialog><a href="#" class="tsd-widget menu" id="tsd-toolbar-menu-trigger" data-toggle="menu" aria-label="Menu"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-menu"></use></svg></a></div></header>
+<div class="container container-main">
+<div class="col-content">
+<div class="tsd-page-title">
+<ul class="tsd-breadcrumb" aria-label="Breadcrumb">
+<li><a href="" aria-current="page">Embedding the patient UI</a></li></ul></div>
+<div class="tsd-panel tsd-typography"><h1 id="embedding-the-patient-ui" class="tsd-anchor-link">Embedding the patient UI<a href="#embedding-the-patient-ui" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h1>
+<p>Two custom elements let you drop the full Natzar patient experience into
+your own pages instead of building chat/video UIs yourself:</p>
+<ul>
+<li><code>&lt;natzar-async&gt;</code> — the async-consult chat: consent prompt, message
+thread, attachments, rating sheet. The composer is live as soon as the
+patient consents — even while the consult is still <code>queued</code> waiting for
+a physician, the patient can send context (symptoms, photos) and it
+persists to the transcript as the physician's intake.</li>
+<li><code>&lt;natzar-telehealth&gt;</code> — the live video consult: waiting room, camera
+check, the call itself, rating.</li>
+</ul>
+<h2 id="quickstart" class="tsd-anchor-link">Quickstart<a href="#quickstart" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>Two lines per widget. Load the embed script once, then render the tag with
+a session token your <strong>server</strong> minted:</p>
+<pre><code class="html"><span class="hl-13">&lt;</span><span class="hl-14">script</span><span class="hl-11"> </span><span class="hl-15">src</span><span class="hl-11">=</span><span class="hl-16">&quot;https://us.app.natzar.ai/embed/v1/embed.js&quot;</span><span class="hl-13">&gt;&lt;/</span><span class="hl-14">script</span><span class="hl-13">&gt;</span><br/><span class="hl-13">&lt;</span><span class="hl-14">natzar-telehealth</span><span class="hl-1"> </span><span class="hl-15">session-token</span><span class="hl-1">=</span><span class="hl-16">&quot;…&quot;</span><span class="hl-1"> </span><span class="hl-15">locale</span><span class="hl-1">=</span><span class="hl-16">&quot;en&quot;</span><span class="hl-1"> </span><span class="hl-15">theme</span><span class="hl-1">=</span><span class="hl-16">&quot;auto&quot;</span><span class="hl-13">&gt;&lt;/</span><span class="hl-14">natzar-telehealth</span><span class="hl-13">&gt;</span>
+</code><button type="button">Copy</button></pre>
+
+<pre><code class="html"><span class="hl-13">&lt;</span><span class="hl-14">script</span><span class="hl-11"> </span><span class="hl-15">src</span><span class="hl-11">=</span><span class="hl-16">&quot;https://us.app.natzar.ai/embed/v1/embed.js&quot;</span><span class="hl-13">&gt;&lt;/</span><span class="hl-14">script</span><span class="hl-13">&gt;</span><br/><span class="hl-13">&lt;</span><span class="hl-14">natzar-async</span><span class="hl-1"> </span><span class="hl-15">session-token</span><span class="hl-1">=</span><span class="hl-16">&quot;…&quot;</span><span class="hl-1"> </span><span class="hl-15">locale</span><span class="hl-1">=</span><span class="hl-16">&quot;en&quot;</span><span class="hl-1"> </span><span class="hl-15">theme</span><span class="hl-1">=</span><span class="hl-16">&quot;auto&quot;</span><span class="hl-13">&gt;&lt;/</span><span class="hl-14">natzar-async</span><span class="hl-13">&gt;</span>
+</code><button type="button">Copy</button></pre>
+
+<h3 id="which-host" class="tsd-anchor-link">Which host<a href="#which-host" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<p>The script and the widget iframe are served by the Natzar app origin for the
+environment your API key belongs to. Load the script from the origin matching
+the key that minted the token — a <code>pp_test_…</code> token will not open in the
+production widget.</p>
+<table>
+<thead>
+<tr>
+<th>Environment</th>
+<th>Embed origin</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>prod</td>
+<td><code>https://us.app.natzar.ai</code></td>
+</tr>
+<tr>
+<td>stage</td>
+<td><code>https://stage.us.app.natzar.ai</code></td>
+</tr>
+<tr>
+<td>dev</td>
+<td><code>https://dev.us.app.natzar.ai</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>@natzar/client</code> carries the same table, so you can build the URL instead of
+hardcoding it:</p>
+<pre><code class="ts"><span class="hl-10">import</span><span class="hl-1"> {</span><span class="hl-2">resolveEndpoints</span><span class="hl-1">} </span><span class="hl-10">from</span><span class="hl-1"> </span><span class="hl-3">&#39;@natzar/client&#39;</span><span class="hl-1">;</span><br/><br/><span class="hl-0">const</span><span class="hl-1"> {</span><span class="hl-8">embedOrigin</span><span class="hl-1">} = </span><span class="hl-4">resolveEndpoints</span><span class="hl-1">({</span><span class="hl-2">environment:</span><span class="hl-1"> </span><span class="hl-3">&#39;prod&#39;</span><span class="hl-1">});</span><br/><span class="hl-0">const</span><span class="hl-1"> </span><span class="hl-8">src</span><span class="hl-1"> = </span><span class="hl-3">`</span><span class="hl-0">${</span><span class="hl-2">embedOrigin</span><span class="hl-0">}</span><span class="hl-3">/embed/v1/embed.js`</span><span class="hl-1">;</span>
+</code><button type="button">Copy</button></pre>
+
+<p>Getting the token (server-side, with your API key — never in the
+browser):</p>
+<ul>
+<li>Telehealth: <code>POST /v1/telehealth-consults/{id}/embed-session</code></li>
+<li>Async: <code>POST /v1/async-consults/{id}/embed-session</code>, or take the
+<code>sessionToken</code> returned directly by <code>POST /v1/async-consults</code> when you
+create the consult with <code>consent: &quot;embed&quot;</code>.</li>
+</ul>
+<p>The response carries <code>{sessionToken, expiresAt}</code>. Tokens are
+<strong>consult-scoped</strong> (they open exactly one consult) and <strong>short-lived</strong>
+(1 hour by default; <code>ttlSeconds</code> 60–86400 on the mint request). The
+token's kind must match the tag — a telehealth token in <code>&lt;natzar-async&gt;</code>
+refuses to load.</p>
+<p>For clinics that charge for a visit, the widget presents a secure card form
+inside its frame and resumes the consultation after Natzar confirms payment.
+The host page does not need a checkout redirect, a payment return route or
+any code: the element gives the form room by itself (see
+<a href="#the-payment-step">The payment step</a>). It is one press for the patient: the
+invite reads &quot;Yes &amp; pay CA$100&quot; (or &quot;Join &amp; pay …&quot;, &quot;Confirm 3:00 PM · Pay …&quot;),
+and that press opens the card form directly — see <a href="Payments.html">Payments</a> for
+how the same flow is built without the widget.
+Natzar deployments that enable this flow must set
+<code>VITE_STRIPE_PUBLISHABLE_KEY</code> to the publishable key for the same Stripe
+account as the backend <code>STRIPE_SECRET_KEY</code>. Local Vite development reads it
+from <code>.env.local</code>; restart Vite after changing that file.</p>
+<h2 id="requirements-the-origin-allowlist" class="tsd-anchor-link">Requirements &amp; the origin allowlist<a href="#requirements-the-origin-allowlist" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<ul>
+<li><strong>HTTPS only.</strong> The widgets run in an iframe on a secure origin, and the
+telehealth widget needs <code>getUserMedia</code> — browsers only grant camera and
+microphone access in a secure context. A plain-HTTP host page cannot run
+the video widget (localhost is exempt for development).</li>
+<li><strong>Your page's origin must be allowlisted.</strong> The widget verifies the
+embedding page's origin against your partner account's <code>allowedOrigins</code>
+list and refuses to load from anywhere else (<code>origin_not_allowed</code>,
+surfaced as a <code>natzar:error</code> event). Register every origin you embed
+from — scheme + host + port, e.g. <code>https://portal.your-clinic.com</code>.
+The check covers the widget's ancestor origins; note that tokens being
+consult-scoped and short-lived is the primary containment — treat the
+allowlist as defense in depth, not as a substitute for keeping tokens
+out of untrusted pages.</li>
+</ul>
+<h2 id="camera-microphone-location-payment" class="tsd-anchor-link">Camera, microphone, location &amp; payment<a href="#camera-microphone-location-payment" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>The embed script sets <code>allow=&quot;camera; microphone; display-capture; geolocation; payment&quot;</code>
+on the iframe it creates, so <strong>no host-page changes are usually needed</strong> —
+the browser prompts the patient inside your page and the stream stays in
+the iframe. Camera and microphone serve the telehealth call; <code>geolocation</code>
+serves the pharmacy picker (see <a href="#prescriptions">Prescriptions</a> below),
+which offers to use the device's location when the patient has no home
+address on file — without the delegation the browser refuses silently, and
+the picker falls back to a coarse IP-based location. <code>payment</code> serves the
+in-frame checkout: Apple Pay and Google Pay run on the Payment Request API,
+which a cross-origin frame may only use when delegated, so without it the
+card form simply offers no wallets.</p>
+<p>The exception: if your embedding page is <em>itself</em> inside an iframe (your
+page is nested in yet another product), every ancestor frame must also
+delegate camera/microphone/geolocation/payment via its own <code>allow</code>
+attribute — permissions policy delegation is per-hop. Same if your site
+sends a restrictive <code>Permissions-Policy</code> response header: it must not deny
+<code>camera</code> / <code>microphone</code> / <code>geolocation</code> / <code>payment</code> for the embed to work.</p>
+<h2 id="attributes" class="tsd-anchor-link">Attributes<a href="#attributes" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>All attributes are observed — changing one re-renders the widget (changing
+<code>session-token</code> is equivalent to calling <code>refresh</code>).</p>
+<table>
+<thead>
+<tr>
+<th>Attribute</th>
+<th>Required</th>
+<th>Values</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>session-token</code></td>
+<td>yes</td>
+<td>JWT from <code>/embed-session</code></td>
+<td>Which consult the widget shows. Mint server-side only.</td>
+</tr>
+<tr>
+<td><code>locale</code></td>
+<td>no</td>
+<td><code>en</code> <code>es</code> <code>de</code> <code>fr</code> <code>it</code></td>
+<td>UI language. Default: browser language, falling back to <code>en</code>.</td>
+</tr>
+<tr>
+<td><code>theme</code></td>
+<td>no</td>
+<td><code>light</code> <code>dark</code> <code>auto</code></td>
+<td>Color scheme. Default <code>auto</code> (follows <code>prefers-color-scheme</code>).</td>
+</tr>
+</tbody>
+</table>
+<h2 id="element-api" class="tsd-anchor-link">Element API<a href="#element-api" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<table>
+<thead>
+<tr>
+<th>Member</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>refresh(sessionToken)</code></td>
+<td>Swap in a freshly minted token without tearing down the widget — the intended reaction to <code>natzar:expired</code>. In-flight calls and a live video call continue uninterrupted.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="events" class="tsd-anchor-link">Events<a href="#events" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>The widget dispatches DOM <code>CustomEvent</code>s on the element, named
+<code>natzar:&lt;event&gt;</code>; the payload is in <code>event.detail</code> (shapes:
+<a href="../interfaces/index.EmbedEventDetailMap.html" class="tsd-kind-interface"> EmbedEventDetailMap</a>).</p>
+<pre><code class="js"><span class="hl-0">const</span><span class="hl-1"> </span><span class="hl-8">el</span><span class="hl-1"> = </span><span class="hl-2">document</span><span class="hl-1">.</span><span class="hl-4">querySelector</span><span class="hl-1">(</span><span class="hl-3">&#39;natzar-async&#39;</span><span class="hl-1">);</span><br/><span class="hl-2">el</span><span class="hl-1">.</span><span class="hl-4">addEventListener</span><span class="hl-1">(</span><span class="hl-3">&#39;natzar:message&#39;</span><span class="hl-1">, (</span><span class="hl-2">e</span><span class="hl-1">) </span><span class="hl-0">=&gt;</span><span class="hl-1"> </span><span class="hl-2">console</span><span class="hl-1">.</span><span class="hl-4">log</span><span class="hl-1">(</span><span class="hl-2">e</span><span class="hl-1">.</span><span class="hl-2">detail</span><span class="hl-1">.</span><span class="hl-2">message</span><span class="hl-1">));</span><br/><span class="hl-2">el</span><span class="hl-1">.</span><span class="hl-4">addEventListener</span><span class="hl-1">(</span><span class="hl-3">&#39;natzar:expired&#39;</span><span class="hl-1">, </span><span class="hl-0">async</span><span class="hl-1"> () </span><span class="hl-0">=&gt;</span><span class="hl-1"> </span><span class="hl-2">el</span><span class="hl-1">.</span><span class="hl-4">refresh</span><span class="hl-1">(</span><span class="hl-10">await</span><span class="hl-1"> </span><span class="hl-4">mintToken</span><span class="hl-1">()));</span>
+</code><button type="button">Copy</button></pre>
+
+<table>
+<thead>
+<tr>
+<th>Event</th>
+<th>Surface</th>
+<th><code>detail</code></th>
+<th>When</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>natzar:ready</code></td>
+<td>both</td>
+<td><code>{type, consultId}</code></td>
+<td>Widget loaded, verified its token, rendered.</td>
+</tr>
+<tr>
+<td><code>natzar:consented</code></td>
+<td>async</td>
+<td><code>{consultId}</code></td>
+<td>Patient accepted the consent prompt.</td>
+</tr>
+<tr>
+<td><code>natzar:queued</code></td>
+<td>both</td>
+<td><code>{consultId}</code></td>
+<td>Waiting for a physician (async: no capacity yet — the chat still accepts messages, which persist for the physician; telehealth: waiting room).</td>
+</tr>
+<tr>
+<td><code>natzar:assigned</code></td>
+<td>both</td>
+<td><code>{consultId, physicianName?}</code></td>
+<td>A physician took the consult.</td>
+</tr>
+<tr>
+<td><code>natzar:message</code></td>
+<td>async</td>
+<td><code>{consultId, message}</code></td>
+<td>A new message appeared on the thread (any author) — useful for host-page unread badges.</td>
+</tr>
+<tr>
+<td><code>natzar:joined</code></td>
+<td>telehealth</td>
+<td><code>{consultId}</code></td>
+<td>The patient entered the live call.</td>
+</tr>
+<tr>
+<td><code>natzar:ended</code></td>
+<td>telehealth</td>
+<td><code>{consultId}</code></td>
+<td>The call ended (rating step may follow).</td>
+</tr>
+<tr>
+<td><code>natzar:rated</code></td>
+<td>both</td>
+<td><code>{consultId, stars?}</code></td>
+<td>The patient submitted a rating.</td>
+</tr>
+<tr>
+<td><code>natzar:closed</code></td>
+<td>both</td>
+<td><code>{consultId, closedReason?}</code></td>
+<td>Terminal state (a declined consent surfaces here with <code>closedReason: 'declined'</code>).</td>
+</tr>
+<tr>
+<td><code>natzar:expired</code></td>
+<td>both</td>
+<td><code>{consultId}</code></td>
+<td>The session token expired; the widget freezes read-only until you <code>refresh(token)</code>.</td>
+</tr>
+<tr>
+<td><code>natzar:error</code></td>
+<td>both</td>
+<td><code>{code?, message}</code></td>
+<td>Something went wrong (invalid token, disallowed origin, network…).</td>
+</tr>
+<tr>
+<td><code>natzar:payment</code></td>
+<td>all</td>
+<td><code>{consultId, phase}</code></td>
+<td>The payment step opened (<code>phase: 'started'</code>) or closed (<code>'ended'</code> — paid, backed out of, failed, expired, or the frame reloaded). The element shows the step as a dialog on its own; cancelable — see <a href="#the-payment-step">The payment step</a>.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="the-payment-step" class="tsd-anchor-link">The payment step<a href="#the-payment-step" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>When the clinic charges for a visit, the widget swaps its conversation for a
+Stripe checkout — straight from the patient's first press on the priced
+invite, which already names the amount. A frame sized for a chat is cramped for a checkout, so for
+as long as the step is open the element presents itself as a modal dialog
+over your page — a large centered panel on desktop, a bottom sheet on
+phones — and puts itself back when the step closes: paid, backed out of
+(the step has its own back bar, and Escape), failed or expired. <strong>There is
+nothing to add to your page.</strong> While the dialog is open the rest of your
+page is inert and doesn't scroll; both are restored when it closes, and if
+your page removes the element mid-checkout.</p>
+<p>The element announces the step with <code>natzar:payment</code> (<code>phase: 'started'</code>,
+then <code>'ended'</code>), handy for analytics. To present the step yourself instead,
+cancel the start and the widget stays inline:</p>
+<pre><code class="js"><span class="hl-2">el</span><span class="hl-1">.</span><span class="hl-4">addEventListener</span><span class="hl-1">(</span><span class="hl-3">&#39;natzar:payment&#39;</span><span class="hl-1">, (</span><span class="hl-2">e</span><span class="hl-1">) </span><span class="hl-0">=&gt;</span><span class="hl-1"> {</span><br/><span class="hl-1">  </span><span class="hl-10">if</span><span class="hl-1"> (</span><span class="hl-2">e</span><span class="hl-1">.</span><span class="hl-2">detail</span><span class="hl-1">.</span><span class="hl-2">phase</span><span class="hl-1"> === </span><span class="hl-3">&#39;started&#39;</span><span class="hl-1">) </span><span class="hl-2">e</span><span class="hl-1">.</span><span class="hl-4">preventDefault</span><span class="hl-1">();</span><br/><span class="hl-1">});</span>
+</code><button type="button">Copy</button></pre>
+
+<p>If you do, don't move the element into your own dialog: re-inserting an
+iframe reloads it, and the checkout in progress goes with it. (A reload
+never costs the patient a second payment — the checkout is bound to the
+invite, and pressing again resumes it or, once paid, lets them straight in —
+but it does make them start the form over.)</p>
+<h2 id="prescriptions" class="tsd-anchor-link">Prescriptions<a href="#prescriptions" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>When a physician issues a prescription on an async consult, the
+<code>/pharmacy?id=</code> link in the notice (<a href="Prescriptions.html">Prescriptions</a> §1)
+is resolved <strong>inside the widget</strong>: both <code>&lt;natzar-async&gt;</code> and <code>&lt;natzar-agent&gt;</code>
+render the notice as a card with a &quot;Choose a pharmacy&quot; button that opens the
+picker (list + map, search, add-a-pharmacy where faxing applies) in the same
+frame, then shows the send outcome. The card stays reachable on the
+thread's rating and closed screens for as long as the link is valid (24 h),
+and it re-labels itself (&quot;Sent to …&quot;, &quot;Link expired&quot;, &quot;Withdrawn&quot;) as the
+prescription moves. <strong>No host action is needed</strong> — the notice arrives on
+your webhook as an ordinary <code>async_consult.message</code> with
+<code>classification: 'async:prescription_*'</code>, but the patient never has to
+leave your page to act on it. The picker's device-location step needs the
+<code>geolocation</code> delegation described above.</p>
+<h2 id="token-expiry-in-practice" class="tsd-anchor-link">Token expiry in practice<a href="#token-expiry-in-practice" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>Plan for sessions longer than one token lifetime (a patient can sit in a
+chat or waiting room for a while):</p>
+<pre><code class="js"><span class="hl-2">el</span><span class="hl-1">.</span><span class="hl-4">addEventListener</span><span class="hl-1">(</span><span class="hl-3">&#39;natzar:expired&#39;</span><span class="hl-1">, </span><span class="hl-0">async</span><span class="hl-1"> ({</span><span class="hl-2">detail</span><span class="hl-1">}) </span><span class="hl-0">=&gt;</span><span class="hl-1"> {</span><br/><span class="hl-1">  </span><span class="hl-12">// Your endpoint calls POST /v1/…/{consultId}/embed-session with YOUR key.</span><br/><span class="hl-1">  </span><span class="hl-0">const</span><span class="hl-1"> {</span><span class="hl-8">sessionToken</span><span class="hl-1">} = </span><span class="hl-10">await</span><span class="hl-1"> </span><span class="hl-4">fetch</span><span class="hl-1">(</span><span class="hl-3">`/api/natzar-token?consult=</span><span class="hl-0">${</span><span class="hl-2">detail</span><span class="hl-11">.</span><span class="hl-2">consultId</span><span class="hl-0">}</span><span class="hl-3">`</span><span class="hl-1">)</span><br/><span class="hl-1">    .</span><span class="hl-4">then</span><span class="hl-1">((</span><span class="hl-2">r</span><span class="hl-1">) </span><span class="hl-0">=&gt;</span><span class="hl-1"> </span><span class="hl-2">r</span><span class="hl-1">.</span><span class="hl-4">json</span><span class="hl-1">());</span><br/><span class="hl-1">  </span><span class="hl-2">el</span><span class="hl-1">.</span><span class="hl-4">refresh</span><span class="hl-1">(</span><span class="hl-2">sessionToken</span><span class="hl-1">);</span><br/><span class="hl-1">});</span>
+</code><button type="button">Copy</button></pre>
+
+<p>Rotating your API key coarsely invalidates outstanding embed tokens (see
+<a href="Authentication.html">Authentication</a>) — the same <code>natzar:expired</code> /
+<code>refresh</code> path covers that too.</p>
+<h2 id="building-your-own-plumbing" class="tsd-anchor-link">Building your own plumbing<a href="#building-your-own-plumbing" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>If you'd rather manage the iframe yourself, the underlying protocol is
+<code>window.postMessage</code>: the iframe posts envelopes
+<code>{source: 'natzar-embed', event, data}</code> (<a href="../types/index.EmbedPostMessage.html" class="tsd-kind-type-alias"> EmbedPostMessage</a>) to its
+parent. Always check <code>source === 'natzar-embed'</code> AND the message origin
+before trusting one. The custom elements are exactly this plumbing plus
+origin checks and the <code>natzar:</code>-prefixed re-dispatch — prefer them.</p>
+<p>If you do build the iframe yourself, give it the same
+<code>allow=&quot;camera; microphone; display-capture; geolocation; payment&quot;</code> attribute
+the elements set: without it the call has no camera or microphone, the
+pharmacy picker's device-location step fails silently (no prompt) and falls
+through to a coarse IP-based location, and the checkout offers no wallets.</p>
+</div></div>
+<div class="col-sidebar">
+<div class="page-menu">
+<div class="tsd-navigation settings">
+<details class="tsd-accordion"><summary class="tsd-accordion-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
+<h3>Settings</h3></summary>
+<div class="tsd-accordion-details">
+<div class="tsd-filter-visibility"><span class="settings-label">Member Visibility</span>
+<ul id="tsd-filter-options">
+<li class="tsd-filter-item"><label class="tsd-filter-input"><input type="checkbox" id="tsd-filter-protected" name="protected"/><svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect class="tsd-checkbox-background" width="30" height="30" x="1" y="1" rx="6" fill="none"></rect><path class="tsd-checkbox-checkmark" d="M8.35422 16.8214L13.2143 21.75L24.6458 10.25" stroke="none" stroke-width="3.5" stroke-linejoin="round" fill="none"></path></svg><span>Protected</span></label></li>
+<li class="tsd-filter-item"><label class="tsd-filter-input"><input type="checkbox" id="tsd-filter-inherited" name="inherited" checked/><svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect class="tsd-checkbox-background" width="30" height="30" x="1" y="1" rx="6" fill="none"></rect><path class="tsd-checkbox-checkmark" d="M8.35422 16.8214L13.2143 21.75L24.6458 10.25" stroke="none" stroke-width="3.5" stroke-linejoin="round" fill="none"></path></svg><span>Inherited</span></label></li></ul></div>
+<div class="tsd-theme-toggle"><label class="settings-label" for="tsd-theme">Theme</label><select id="tsd-theme"><option value="os">OS</option><option value="light">Light</option><option value="dark">Dark</option></select></div></div></details></div>
+<details open class="tsd-accordion tsd-page-navigation"><summary class="tsd-accordion-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
+<h3>On This Page</h3></summary>
+<div class="tsd-accordion-details"><a href="#embedding-the-patient-ui"><span>Embedding the patient <wbr/>UI</span></a>
+<ul>
+<li><a href="#quickstart"><span>Quickstart</span></a></li>
+<li>
+<ul>
+<li><a href="#which-host"><span>Which host</span></a></li></ul></li>
+<li><a href="#requirements-the-origin-allowlist"><span>Requirements &amp; the origin allowlist</span></a></li>
+<li><a href="#camera-microphone-location-payment"><span>Camera, microphone, location &amp; payment</span></a></li>
+<li><a href="#attributes"><span>Attributes</span></a></li>
+<li><a href="#element-api"><span>Element <wbr/>API</span></a></li>
+<li><a href="#events"><span>Events</span></a></li>
+<li><a href="#the-payment-step"><span>The payment step</span></a></li>
+<li><a href="#prescriptions"><span>Prescriptions</span></a></li>
+<li><a href="#token-expiry-in-practice"><span>Token expiry in practice</span></a></li>
+<li><a href="#building-your-own-plumbing"><span>Building your own plumbing</span></a></li></ul></div></details></div>
+<div class="site-menu">
+<nav class="tsd-navigation"><a href="../index.html">Natzar Partner API Reference - v1.0.0</a>
+<ul class="tsd-small-nested-navigation" id="tsd-nav-container">
+<li>Loading...</li></ul></nav></div></div></div><footer>
+<p class="tsd-generator">Generated using <a href="https://typedoc.org/" target="_blank">TypeDoc</a></p></footer>
+<div class="overlay"></div></body></html>

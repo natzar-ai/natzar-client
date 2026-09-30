@@ -1,0 +1,757 @@
+<!DOCTYPE html><html class="default" lang="en" data-base="../"><head><meta charset="utf-8"/><meta http-equiv="x-ua-compatible" content="IE=edge"/><title>Embedding the clinician workspace | Natzar Partner API Reference - v1.0.0</title><meta name="description" content="Documentation for Natzar Partner API Reference"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="stylesheet" href="../assets/style.css"/><link rel="stylesheet" href="../assets/highlight.css"/><script defer src="../assets/main.js"></script><script async src="../assets/icons.js" id="tsd-icons-script"></script><script async src="../assets/search.js" id="tsd-search-script"></script><script async src="../assets/navigation.js" id="tsd-nav-script"></script><script async src="../assets/hierarchy.js" id="tsd-hierarchy-script"></script></head><body><script>document.documentElement.dataset.theme = localStorage.getItem("tsd-theme") || "os";document.body.style.display="none";setTimeout(() => window.app?app.showPage():document.body.style.removeProperty("display"),500)</script><header class="tsd-page-toolbar">
+<div class="tsd-toolbar-contents container"><a href="../index.html" class="title">Natzar Partner API Reference - v1.0.0</a>
+<div id="tsd-toolbar-links"></div><button id="tsd-search-trigger" class="tsd-widget" aria-label="Search"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-search"></use></svg></button><dialog id="tsd-search" aria-label="Search"><input role="combobox" id="tsd-search-input" aria-controls="tsd-search-results" aria-autocomplete="list" aria-expanded="true" autocapitalize="off" autocomplete="off" placeholder="Search the docs" maxLength="100"/>
+<ul role="listbox" id="tsd-search-results"></ul>
+<div id="tsd-search-status" aria-live="polite" aria-atomic="true">
+<div>Preparing search index...</div></div></dialog><a href="#" class="tsd-widget menu" id="tsd-toolbar-menu-trigger" data-toggle="menu" aria-label="Menu"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-menu"></use></svg></a></div></header>
+<div class="container container-main">
+<div class="col-content">
+<div class="tsd-page-title">
+<ul class="tsd-breadcrumb" aria-label="Breadcrumb">
+<li><a href="" aria-current="page">Embedding the clinician workspace</a></li></ul></div>
+<div class="tsd-panel tsd-typography"><h1 id="embedding-the-clinician-workspace" class="tsd-anchor-link">Embedding the clinician workspace<a href="#embedding-the-clinician-workspace" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h1>
+<p><code>&lt;natzar-provider&gt;</code> puts the Natzar clinician workspace inside <strong>your</strong> portal: your clinicians sign in to your app,
+and your server tells us which clinician they are. The element renders an iframe served from a dedicated provider
+origin. The clinical UI, the patient data and the session credential stay inside that frame; your page receives only
+ids, counts and states.</p>
+<p>This guide is the integration contract. It is stricter than the <a href="Embedding_the_patient_UI.html">patient embed</a> on purpose: sessions are
+short-lived and renewed by your server, never put in a URL, bound to one clinician, one parent origin and one partner,
+and revocable at any time.</p>
+<blockquote>
+<p><strong>Release status.</strong> The provider embed is enabled per partner by an explicit policy (absent policy = disabled). In
+this release the scoped clinical <strong>reads</strong> are available. Replies, completion, uploads, referrals, prescriptions,
+cancellation and availability are implemented but <strong>not yet released</strong>: Natzar lists them in no partner policy until
+their release gate passes (signing referrals and prescriptions additionally waits for a staging verification), so a
+session cannot hold them and an optional request for one comes back in the grant's <code>unavailable</code> list
+(<code>not_in_policy</code>). <strong>Video, readiness and presence are disabled</strong> (see <a href="#live-calls">Live calls</a>); patient mode is
+disabled. The tables below say which capability is available today.</p>
+</blockquote>
+<h2 id="quickstart" class="tsd-anchor-link">Quickstart<a href="#quickstart" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>Load the loader from the provider origin (a classic script) and place the element once, in your persistent app shell:</p>
+<pre><code class="html"><span class="hl-13">&lt;</span><span class="hl-14">script</span><span class="hl-11"> </span><span class="hl-15">src</span><span class="hl-11">=</span><span class="hl-16">&quot;https://PROVIDER_EMBED_ORIGIN/provider/v1/embed.js&quot;</span><span class="hl-13">&gt;&lt;/</span><span class="hl-14">script</span><span class="hl-13">&gt;</span><br/><span class="hl-13">&lt;</span><span class="hl-14">natzar-provider</span><span class="hl-1"> </span><span class="hl-15">id</span><span class="hl-1">=</span><span class="hl-16">&quot;care&quot;</span><span class="hl-1"> </span><span class="hl-15">theme</span><span class="hl-1">=</span><span class="hl-16">&quot;auto&quot;</span><span class="hl-1"> </span><span class="hl-15">locale</span><span class="hl-1">=</span><span class="hl-16">&quot;en&quot;</span><span class="hl-13">&gt;&lt;/</span><span class="hl-14">natzar-provider</span><span class="hl-13">&gt;</span>
+</code><button type="button">Copy</button></pre>
+
+<pre><code class="js"><span class="hl-0">const</span><span class="hl-1"> </span><span class="hl-8">care</span><span class="hl-1"> = </span><span class="hl-2">document</span><span class="hl-1">.</span><span class="hl-4">querySelector</span><span class="hl-1">(</span><span class="hl-3">&#39;#care&#39;</span><span class="hl-1">);</span><br/><span class="hl-10">await</span><span class="hl-1"> </span><span class="hl-2">customElements</span><span class="hl-1">.</span><span class="hl-4">whenDefined</span><span class="hl-1">(</span><span class="hl-3">&#39;natzar-provider&#39;</span><span class="hl-1">);</span><br/><span class="hl-10">await</span><span class="hl-1"> </span><span class="hl-2">care</span><span class="hl-1">.</span><span class="hl-4">connect</span><span class="hl-1">({</span><br/><span class="hl-1">  </span><span class="hl-4">getSession</span><span class="hl-2">:</span><span class="hl-1"> </span><span class="hl-0">async</span><span class="hl-1"> ({</span><span class="hl-2">sessionId</span><span class="hl-1">, </span><span class="hl-2">signal</span><span class="hl-1">}) </span><span class="hl-0">=&gt;</span><span class="hl-1"> {</span><br/><span class="hl-1">    </span><span class="hl-12">// YOUR endpoint. It derives the clinician from YOUR authenticated server</span><br/><span class="hl-1">    </span><span class="hl-12">// session, checks CSRF, and mints or renews server-to-server.</span><br/><span class="hl-1">    </span><span class="hl-0">const</span><span class="hl-1"> </span><span class="hl-8">response</span><span class="hl-1"> = </span><span class="hl-10">await</span><span class="hl-1"> </span><span class="hl-4">fetch</span><span class="hl-1">(</span><span class="hl-3">&#39;/api/natzar/provider-session&#39;</span><span class="hl-1">, {</span><br/><span class="hl-1">      </span><span class="hl-2">method:</span><span class="hl-1"> </span><span class="hl-3">&#39;POST&#39;</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-2">signal</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-2">credentials:</span><span class="hl-1"> </span><span class="hl-3">&#39;same-origin&#39;</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-2">headers:</span><span class="hl-1"> {</span><span class="hl-3">&#39;Content-Type&#39;</span><span class="hl-2">:</span><span class="hl-1"> </span><span class="hl-3">&#39;application/json&#39;</span><span class="hl-1">, </span><span class="hl-3">&#39;X-CSRF-Token&#39;</span><span class="hl-2">:</span><span class="hl-1"> </span><span class="hl-4">csrfToken</span><span class="hl-1">()},</span><br/><span class="hl-1">      </span><span class="hl-2">body:</span><span class="hl-1"> </span><span class="hl-8">JSON</span><span class="hl-1">.</span><span class="hl-4">stringify</span><span class="hl-1">({</span><span class="hl-2">sessionId</span><span class="hl-1">}),</span><br/><span class="hl-1">    });</span><br/><span class="hl-1">    </span><span class="hl-10">if</span><span class="hl-1"> (!</span><span class="hl-2">response</span><span class="hl-1">.</span><span class="hl-2">ok</span><span class="hl-1">) </span><span class="hl-10">throw</span><span class="hl-1"> </span><span class="hl-0">new</span><span class="hl-1"> </span><span class="hl-4">Error</span><span class="hl-1">(</span><span class="hl-3">&#39;Provider session unavailable&#39;</span><span class="hl-1">);</span><br/><span class="hl-1">    </span><span class="hl-10">return</span><span class="hl-1"> </span><span class="hl-2">response</span><span class="hl-1">.</span><span class="hl-4">json</span><span class="hl-1">();</span><br/><span class="hl-1">  },</span><br/><span class="hl-1">});</span>
+</code><button type="button">Copy</button></pre>
+
+<p>The browser sends only <code>{sessionId}</code> (<code>null</code> to start, the current id to renew). Never send a physician id from the
+browser, and never ship an endpoint that mints a session for a submitted physician id.</p>
+<h2 id="which-host" class="tsd-anchor-link">Which host<a href="#which-host" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>Each deployment (environment and residency zone) has its own provider origin and provider API. Read both from the
+deployment outputs (<code>custom.providerEmbed</code> in <code>amplify_outputs.json</code>: <code>origin</code>, <code>apiUrl</code>, <code>zone</code>, <code>environment</code>, and
+<code>hosting.loaderUrl</code> / <code>hosting.frameBaseUrl</code> once hosting is enabled), or ask your Natzar contact.</p>
+<ul>
+<li>Load the loader only from <code>https://&lt;provider origin&gt;/provider/v1/embed.js</code> (or a pinned release, see
+<a href="#pinned-loader-releases-and-sri">Pinned loader releases and SRI</a>). A copy served from your own origin is refused.</li>
+<li>Your server calls <code>https://&lt;api host&gt;/&lt;stage&gt;/provider-embed/...</code>: the <code>apiUrl</code> of the same deployment.</li>
+<li>The grant tells the loader which frame URL and API URL to use; both belong to the deployment and are checked by the
+loader and the frame. A grant for another deployment or zone is refused.</li>
+</ul>
+<h2 id="minting-on-your-server" class="tsd-anchor-link">Minting on your server<a href="#minting-on-your-server" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>Two server-only routes, called with your <strong>current</strong> partner API key (<code>Authorization: Bearer pp_live_…</code>):</p>
+<ul>
+<li><code>POST /v1/provider-embed/sessions</code> mints a logical session: <code>{mode, clinician, parentOrigin, capabilities, optionalCapabilities?, maxAbsoluteSeconds?, idleTimeoutSeconds?, clinicianToken?}</code> (plus <code>resource</code> for a narrow
+consultation session). It answers <code>201</code> with the grant.</li>
+<li><code>POST /v1/provider-embed/sessions/{sessionId}/renew</code> rotates the credential of that session: <code>{clinician, clinicianToken?}</code>. It answers <code>200</code> with a new grant for the <strong>same</strong> session, scope and clinician.</li>
+<li><code>DELETE /v1/provider-embed/sessions/{sessionId}</code> revokes it (<code>204</code>).</li>
+</ul>
+<p>Rules your endpoint must follow:</p>
+<ul>
+<li><strong>Current key only.</strong> Minting and renewing are refused with a key that is inside the legacy rotation grace window.
+This is stricter than the rest of the partner API: rotate, deploy the new key, then rotate the provider sessions.</li>
+<li><strong>Server-side mapping.</strong> Decide <code>clinician</code> (<code>{externalPhysicianId}</code> for API-provisioned clinicians, or
+<code>{physicianId}</code>) from your own login. The request body from the browser is <code>{sessionId}</code> and nothing else.</li>
+<li><strong>Checks before every mint and renew:</strong> the login is valid and unexpired (otherwise answer 401 and DELETE every
+session that login minted), the user's role is a clinician role, the user belongs to the tenant that may embed, and
+your MFA requirement is satisfied.</li>
+<li><strong>Lifetimes.</strong> Send <code>maxAbsoluteSeconds = min(28800, seconds left in your login)</code>; below 300 ask the user to sign in
+again. Send your idle policy as <code>idleTimeoutSeconds</code> (60–900). Both can only shorten what the policy allows.</li>
+<li><strong>CSRF.</strong> Your endpoint is cookie-authenticated: require your CSRF token and the exact <code>Origin</code> of your portal.</li>
+<li><strong><code>Cache-Control: no-store</code></strong> on the grant response. Never log the grant, the token or the key.</li>
+<li><strong>Offboarding and logout.</strong> Keep a server-side map from your login to every session id it minted. Renew only those;
+DELETE all of them at logout and when you offboard a clinician.</li>
+</ul>
+<h2 id="the-server-only-header-rule" class="tsd-anchor-link">The server-only header rule<a href="#the-server-only-header-rule" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>The mint, renew and revoke routes refuse any request that carries <code>Origin</code>, <code>Sec-Fetch-Site</code> or <code>Sec-Fetch-Dest</code>: those
+come from a browser, and these routes are for your server only. Call them with Node's global <code>fetch</code> (or any server
+HTTP client) and build the headers yourself. Node's own <code>sec-fetch-mode: cors</code> is expected and accepted. <strong>Never proxy
+the browser's headers</strong> to Natzar.</p>
+<h2 id="mfa-assumptions" class="tsd-anchor-link">MFA assumptions<a href="#mfa-assumptions" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<ul>
+<li><strong>Delegated mode</strong> (you assert the clinician) does not verify MFA. Your login is the clinician's authentication:
+enforce MFA there before you mint or renew.</li>
+<li><strong>Verified mode</strong> (you relay the clinician's current Natzar ID token as <code>clinicianToken</code>, refreshed on each renew):
+the production user pool requires MFA; non-production pools do not. The ID token carries no MFA claim, so verified
+mode proves the clinician's Natzar login, not a particular second factor.</li>
+</ul>
+<h2 id="modes-scope-and-capabilities" class="tsd-anchor-link">Modes, scope and capabilities<a href="#modes-scope-and-capabilities" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>A session has one immutable scope, fixed at mint:</p>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Scope</th>
+<th>Use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>workspace</code></td>
+<td>the clinician's own work</td>
+<td>Inbox, agenda and the clinician's consultations</td>
+</tr>
+<tr>
+<td><code>consultation</code></td>
+<td>one consultation (<code>{kind, consultationId}</code>)</td>
+<td>A narrow session for one case of yours</td>
+</tr>
+<tr>
+<td><code>patient</code></td>
+<td>one patient</td>
+<td>Disabled in this release</td>
+</tr>
+</tbody>
+</table>
+<p>Capabilities are named, never wildcards. A session holds <code>session ∩ policy ∩ deployment ∩ tenant features</code>, checked on
+every request. Required capabilities that cannot be granted make the mint fail (<code>403 capability_not_granted</code>);
+optional ones are reported in the grant's <code>unavailable</code> list with a reason.</p>
+<table>
+<thead>
+<tr>
+<th>Capability</th>
+<th>What it allows</th>
+<th>Availability</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>workspace.read</code></td>
+<td>Workspace lists</td>
+<td>Available</td>
+</tr>
+<tr>
+<td><code>consult.read</code></td>
+<td>Consultation lists, detail, messages, clinical actions</td>
+<td>Available</td>
+</tr>
+<tr>
+<td><code>appointments.read</code></td>
+<td>Own agenda</td>
+<td>Available</td>
+</tr>
+<tr>
+<td><code>attachments.read</code></td>
+<td>Short-lived file grants for the episode's attachments and documents</td>
+<td>Available</td>
+</tr>
+<tr>
+<td><code>patient.read</code></td>
+<td>Patient identity (name, date of birth) on the clinician's own episodes</td>
+<td>Not yet available (patient-mode stage); without it lists and details show &quot;Patient details not available&quot;</td>
+</tr>
+<tr>
+<td><code>consult.reply</code>, <code>consult.complete</code>, <code>attachments.write</code></td>
+<td>Replies (accepted for delivery, then delivered), resolve/close, one attachment per reply</td>
+<td>Not yet released (implemented; in no partner policy until its release gate passes)</td>
+</tr>
+<tr>
+<td><code>referrals.preview</code>, <code>referrals.issue</code></td>
+<td>Referral preview and signing</td>
+<td>Not yet released (implemented; signing also waits for a staging verification)</td>
+</tr>
+<tr>
+<td><code>prescriptions.preview</code>, <code>prescriptions.issue</code></td>
+<td>Prescription preview and signing (fax zones only)</td>
+<td>Not yet released (implemented; signing also waits for a staging verification)</td>
+</tr>
+<tr>
+<td><code>appointments.cancel</code>, <code>availability.write</code></td>
+<td>Cancel an own booked appointment that has not started; own async availability</td>
+<td>Not yet released (implemented; in no partner policy until its release gate passes)</td>
+</tr>
+<tr>
+<td><code>telehealth.join</code>, <code>telehealth.end</code>, <code>presence.write</code></td>
+<td>Video, readiness, presence</td>
+<td>Disabled (media revocation not proven)</td>
+</tr>
+<tr>
+<td><code>patient.history.read</code></td>
+<td>Longitudinal history</td>
+<td>Disabled (patient mode)</td>
+</tr>
+</tbody>
+</table>
+<p>Prescribing is offered only where the zone's transport is fax; in zones that use electronic prescribing it is
+unavailable (<code>transport_unsupported</code>). Consultation escalation is not part of the provider embed.</p>
+<h2 id="policy-defaults-ranges-and-who-may-change-them" class="tsd-anchor-link">Policy defaults, ranges and who may change them<a href="#policy-defaults-ranges-and-who-may-change-them" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>Your Natzar tenant administrator sets the policy per partner; Natzar operators can disable a partner or every partner.</p>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Default</th>
+<th>Range</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Enabled</td>
+<td>off (no policy = disabled)</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Allowed parent origins</td>
+<td>none</td>
+<td>1–10 exact origins (<code>https://host[:port]</code>), no wildcards</td>
+</tr>
+<tr>
+<td>Delegation</td>
+<td><code>verified</code></td>
+<td><code>delegated</code>, <code>verified</code> or <code>either</code></td>
+</tr>
+<tr>
+<td>Access credential lifetime</td>
+<td>300 s</td>
+<td>60–300 s</td>
+</tr>
+<tr>
+<td>Absolute session lifetime</td>
+<td>28 800 s (8 h)</td>
+<td>900–28 800 s</td>
+</tr>
+<tr>
+<td>Idle lock</td>
+<td>900 s (15 min)</td>
+<td>60–900 s</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>Every policy change revokes the sessions minted under the previous version.</li>
+<li>Delegated mode is limited to API-provisioned clinicians (those you created through the partner API).</li>
+<li>If your partner's physician assertion is switched off, delegated minting keeps working only when the administrator
+acknowledged that <strong>while it was off</strong>; an acknowledgement given earlier does not count.</li>
+</ul>
+<h2 id="security-model" class="tsd-anchor-link">Security model<a href="#security-model" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<ul>
+<li><strong>Trusted delegation.</strong> In delegated mode Natzar trusts your server's statement of who the clinician is. Protect
+the mint endpoint like a login: CSRF, exact origin, server-side mapping, role, tenant and MFA checks.</li>
+<li><strong>Host page CSP.</strong> Allow the provider origin in <code>script-src</code> and <code>frame-src</code> only; the frame needs nothing else from
+your page. <code>connect-src 'self'</code> is enough for your own endpoint.</li>
+<li><strong>Origin binding.</strong> A session is bound to one exact parent origin and one partner. The loader refuses a grant for
+another origin; the frame refuses a grant for another partner. Origin binding cannot stop code already running on
+your page: keep your page free of third-party script you do not trust.</li>
+<li><strong>No tokens in URLs.</strong> The credential travels only in a <code>postMessage</code> to the exact frame origin and in the frame's
+<code>Authorization</code> header. It is never in a URL, an attribute, storage, a cookie or an event.</li>
+<li><strong>Stolen-token replay.</strong> A stolen access credential works until it expires (≤ 300 s), the session is revoked, or
+the idle lock triggers; after a renewal the previous secret stops working after 30 s. Revoke promptly.</li>
+</ul>
+<h2 id="host-headers" class="tsd-anchor-link">Host headers<a href="#host-headers" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<ul>
+<li>To delegate camera and microphone (once video is enabled), send
+<code>Permissions-Policy: camera=(self &quot;&lt;provider origin&gt;&quot;), microphone=(self &quot;&lt;provider origin&gt;&quot;)</code> on your page, and
+delegate at <strong>every</strong> nesting level if your portal is itself framed.</li>
+<li>Pages that send <code>Cross-Origin-Embedder-Policy: require-corp</code> are not supported.</li>
+<li>The provider API's web application firewall blocks by request rate only; it never serves a challenge page.</li>
+</ul>
+<h2 id="framing-and-permissions" class="tsd-anchor-link">Framing and permissions<a href="#framing-and-permissions" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<ul>
+<li>The frame is served with <code>frame-ancestors</code> set to exactly your policy's origins, and <code>Cache-Control: no-store</code>: a
+policy change applies to the very next frame load. Every ancestor counts: your allowed page framed by a page that
+is not in the policy is refused.</li>
+<li>An unknown partner, a disabled policy or a kill switch gets the same error page with <code>frame-ancestors 'none'</code>.</li>
+<li>The loader creates the iframe with the sandbox tokens <code>allow-scripts allow-same-origin allow-forms allow-downloads</code>,
+<code>referrerpolicy</code> <code>no-referrer</code>, and the permission list <code>fullscreen</code> (plus <code>camera; microphone</code> only when video is
+enabled for the deployment).</li>
+<li>Do not wrap the element in your own sandboxed or credentialless iframe.</li>
+</ul>
+<h2 id="element-api" class="tsd-anchor-link">Element API<a href="#element-api" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<table>
+<thead>
+<tr>
+<th>Member</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>connect({getSession})</code></td>
+<td>Establish the connection. <code>getSession({sessionId, reason, signal})</code> returns a grant from your server.</td>
+</tr>
+<tr>
+<td><code>navigate(target)</code></td>
+<td>Select a view inside the grant (<code>{view: 'workspace'}</code> or <code>{kind, consultationId}</code>); resolves <code>{ok}</code> or a reason.</td>
+</tr>
+<tr>
+<td><code>refresh(grant)</code></td>
+<td>Hand over a renewal of the <strong>same</strong> session yourself (optional; the loader renews by itself).</td>
+</tr>
+<tr>
+<td><code>canLeave()</code></td>
+<td><code>{canLeave, dirty, inCall}</code> for your navigation guard; never draft content.</td>
+</tr>
+<tr>
+<td><code>disconnect()</code></td>
+<td>Release this instance (not a logout).</td>
+</tr>
+<tr>
+<td><code>logout()</code></td>
+<td>Revoke the session, lock and clear the UI; resolves <code>{revoked}</code>. Your backend logout still revokes independently.</td>
+</tr>
+<tr>
+<td><code>state</code></td>
+<td><code>disconnected</code>, <code>bootstrapping</code>, <code>authenticating</code>, <code>ready</code>, <code>renewing</code>, <code>locked</code>, <code>revoked</code> or <code>failed</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>Attributes <code>theme</code> (<code>light</code>, <code>dark</code>, <code>auto</code>), <code>locale</code> (<code>en</code>, <code>es</code>, <code>de</code>, <code>fr</code>, <code>it</code>), <code>accent</code> (<code>#rgb</code>/<code>#rrggbb</code>),
+<code>radius</code> (0–24) and <code>density</code> (<code>comfortable</code>, <code>compact</code>) apply in place; the frame never reloads for them.</p>
+<h2 id="events" class="tsd-anchor-link">Events<a href="#events" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p><code>CustomEvent</code>s named <code>natzar:provider:&lt;name&gt;</code> on the element (not bubbling). Details carry ids, counts and states only.</p>
+<table>
+<thead>
+<tr>
+<th>Event</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ready</code></td>
+<td><code>{sessionId, mode, protocolVersion}</code></td>
+</tr>
+<tr>
+<td><code>error</code></td>
+<td><code>{code, recoverable, correlationId?}</code></td>
+</tr>
+<tr>
+<td><code>expired</code></td>
+<td><code>{reason: 'access' | 'absolute' | 'idle' | 'revoked'}</code></td>
+</tr>
+<tr>
+<td><code>unread-change</code></td>
+<td><code>{count}</code> (workspace mode)</td>
+</tr>
+<tr>
+<td><code>navigation-request</code></td>
+<td><code>{target}</code></td>
+</tr>
+<tr>
+<td><code>consultation-completed</code></td>
+<td><code>{kind, consultationId, outcome}</code></td>
+</tr>
+<tr>
+<td><code>call-state-change</code></td>
+<td><code>{consultationId, state}</code></td>
+</tr>
+<tr>
+<td><code>dirty-state-change</code></td>
+<td><code>{dirty}</code></td>
+</tr>
+<tr>
+<td><code>disconnected</code></td>
+<td><code>{reason: 'host' | 'logout' | 'revoked' | 'protocol_error' | 'failed'}</code></td>
+</tr>
+</tbody>
+</table>
+<p>The patient embed's events use the prefix <code>natzar:</code>; a listener that matches every <code>natzar:</code> event sees both.</p>
+<h2 id="behavior-notes" class="tsd-anchor-link">Behavior notes<a href="#behavior-notes" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<ul>
+<li><code>ready</code> can fire more than once for one element (after an idle-lock reconnect or a frame reload); treat it as &quot;live
+again&quot;, not as a first connection.</li>
+<li>Moving the element with <code>Element.moveBefore()</code> keeps the connection. Removing it, or re-appending it elsewhere,
+disconnects (<code>disconnected {host}</code>); call <code>connect()</code> again afterwards.</li>
+<li>Loading the loader twice is harmless: the first definition wins. The element class exposes <code>loaderVersion</code> and
+<code>loaderOrigin</code> for diagnostics.</li>
+</ul>
+<h2 id="lifecycle" class="tsd-anchor-link">Lifecycle<a href="#lifecycle" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<ul>
+<li>The access credential lasts ≤ 300 s (policy). The loader asks your <code>getSession</code> to renew about 60 s before expiry,
+never more often than every 30 s, with bounded retries.</li>
+<li>The logical session ends at its absolute expiry (≤ 8 h); renewal never extends it.</li>
+<li>After the idle timeout (≤ 15 min) the frame locks and clears clinical content; the clinician continues with a
+button, which starts a new session through your <code>getSession</code>.</li>
+<li>After a renewal the previous secret keeps working for 30 s, so requests in flight complete.</li>
+<li>A revoked session clears everything and shows guidance without retrying.</li>
+</ul>
+<h2 id="live-calls" class="tsd-anchor-link">Live calls<a href="#live-calls" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>Video, readiness and presence are <strong>disabled</strong> in this release: the media revocation guarantees have not been proven
+against the deployed media service, so no policy may grant <code>telehealth.join</code>, <code>telehealth.end</code> or <code>presence.write</code>.
+Appointments are still listed. When video is enabled in a later release, keep the element mounted during calls:
+removing it ends the call.</p>
+<h2 id="presence-ownership-and-the-shared-presence-record" class="tsd-anchor-link">Presence ownership and the shared presence record<a href="#presence-ownership-and-the-shared-presence-record" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>A clinician's presence (&quot;ready for calls&quot;) is one shared record, also used by the standalone portal. When presence is
+enabled, one provider session at a time owns it through a lease; another tab or session cannot clear a presence it
+does not own. Presence is disabled in this release together with video.</p>
+<h2 id="residual-signed-file-limitations" class="tsd-anchor-link">Residual signed-file limitations<a href="#residual-signed-file-limitations" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>Files open through short-lived signed URLs (≤ 60 s) issued to the frame. A signed URL cannot be recalled before it
+expires, and bytes a clinician downloaded stay on their device after the session ends.</p>
+<h2 id="errors" class="tsd-anchor-link">Errors<a href="#errors" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>Error bodies are <code>{error: {code, message, requestId, retryAfterSeconds?, details?}}</code>; <code>message</code> is a fixed sentence per
+code and never echoes input.</p>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Status</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>invalid_request</code></td>
+<td>400</td>
+<td>The request is invalid</td>
+</tr>
+<tr>
+<td><code>cursor_invalid</code></td>
+<td>400</td>
+<td>The cursor is invalid or expired</td>
+</tr>
+<tr>
+<td><code>unauthorized</code></td>
+<td>401</td>
+<td>The API key is missing, invalid or not current</td>
+</tr>
+<tr>
+<td><code>provider_session_invalid</code></td>
+<td>401</td>
+<td>Missing or invalid session credential</td>
+</tr>
+<tr>
+<td><code>provider_session_expired</code></td>
+<td>401</td>
+<td>The access credential expired: renew</td>
+</tr>
+<tr>
+<td><code>provider_session_ended</code></td>
+<td>401</td>
+<td>The absolute lifetime was reached</td>
+</tr>
+<tr>
+<td><code>provider_session_revoked</code></td>
+<td>401</td>
+<td>The session was revoked</td>
+</tr>
+<tr>
+<td><code>provider_session_locked</code></td>
+<td>401</td>
+<td>Locked after inactivity</td>
+</tr>
+<tr>
+<td><code>clinician_proof_invalid</code></td>
+<td>401</td>
+<td>The clinician token is invalid or for another clinician</td>
+</tr>
+<tr>
+<td><code>forbidden</code></td>
+<td>403</td>
+<td>Not allowed (for example a browser request to a server route)</td>
+</tr>
+<tr>
+<td><code>origin_not_allowed</code></td>
+<td>403</td>
+<td>The parent origin is not in the policy</td>
+</tr>
+<tr>
+<td><code>provider_embed_disabled</code></td>
+<td>403</td>
+<td>No enabled policy, operator disable or kill switch</td>
+</tr>
+<tr>
+<td><code>delegation_not_allowed</code></td>
+<td>403</td>
+<td>The authentication method is not permitted</td>
+</tr>
+<tr>
+<td><code>clinician_unavailable</code></td>
+<td>403</td>
+<td>The clinician cannot use the embed</td>
+</tr>
+<tr>
+<td><code>capability_not_granted</code></td>
+<td>403</td>
+<td>The session lacks the capability</td>
+</tr>
+<tr>
+<td><code>operation_not_available</code></td>
+<td>403</td>
+<td>The operation is not available for this session or release</td>
+</tr>
+<tr>
+<td><code>not_found</code></td>
+<td>404</td>
+<td>Not found (also for anything outside the clinician's reach)</td>
+</tr>
+<tr>
+<td><code>thread_not_active</code>, <code>request_thread</code>, <code>not_assigned</code>, <code>already_closed</code>, <code>message_rejected</code>, <code>consult_not_cancellable</code></td>
+<td>409</td>
+<td>The consultation's state does not allow the operation</td>
+</tr>
+<tr>
+<td><code>idempotency_conflict</code>, <code>idempotency_in_progress</code></td>
+<td>409</td>
+<td>See <a href="#idempotency-key-usage">Idempotency-Key usage</a></td>
+</tr>
+<tr>
+<td><code>lease_conflict</code>, <code>renew_conflict</code>, <code>prescriber_not_eligible</code></td>
+<td>409</td>
+<td>Concurrent ownership, concurrent renewal, prescriber eligibility</td>
+</tr>
+<tr>
+<td><code>upload_rejected</code></td>
+<td>422</td>
+<td>The uploaded file was rejected</td>
+</tr>
+<tr>
+<td><code>rate_limited</code></td>
+<td>429</td>
+<td>Retry after <code>Retry-After</code></td>
+</tr>
+<tr>
+<td><code>internal_error</code></td>
+<td>500</td>
+<td>Internal error</td>
+</tr>
+<tr>
+<td><code>dependency_unavailable</code></td>
+<td>503</td>
+<td>Retry after <code>Retry-After</code></td>
+</tr>
+</tbody>
+</table>
+<p>The <code>error</code> event's <code>code</code> is one of the codes the loader and the frame raise themselves
+(<code>PROVIDER_EMBED_CLIENT_ERROR_CODES</code>). <code>recoverable: false</code> means repeating the same step will not help.</p>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Recoverable</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>handshake_timeout</code></td>
+<td>yes</td>
+<td>The frame did not answer the loader in time</td>
+</tr>
+<tr>
+<td><code>protocol_mismatch</code></td>
+<td>no</td>
+<td>The loader, frame and API versions do not match</td>
+</tr>
+<tr>
+<td><code>origin_rejected</code></td>
+<td>no</td>
+<td>This page's origin is not allowed for the session</td>
+</tr>
+<tr>
+<td><code>frame_url_rejected</code></td>
+<td>no</td>
+<td>The grant's frame address was refused</td>
+</tr>
+<tr>
+<td><code>api_url_mismatch</code></td>
+<td>no</td>
+<td>The grant's API address does not match the frame's configuration</td>
+</tr>
+<tr>
+<td><code>session_callback_failed</code></td>
+<td>yes</td>
+<td>Your <code>getSession</code> failed</td>
+</tr>
+<tr>
+<td><code>session_grant_invalid</code></td>
+<td>yes</td>
+<td>Your <code>getSession</code> returned an invalid grant</td>
+</tr>
+<tr>
+<td><code>session_mismatch</code></td>
+<td>no</td>
+<td>The grant was minted for another parent origin, environment or zone</td>
+</tr>
+<tr>
+<td><code>session_unavailable</code></td>
+<td>no</td>
+<td>The session is no longer valid</td>
+</tr>
+<tr>
+<td><code>not_connected</code></td>
+<td>yes</td>
+<td>The element is not connected</td>
+</tr>
+<tr>
+<td><code>already_connected</code></td>
+<td>yes</td>
+<td>The element, or this session, is already connected</td>
+</tr>
+<tr>
+<td><code>navigation_refused</code></td>
+<td>yes</td>
+<td>The view is not available in this grant</td>
+</tr>
+<tr>
+<td><code>media_permission_denied</code></td>
+<td>depends on the cause</td>
+<td>Camera or microphone access was denied; not recoverable when your page's <code>allow</code> or Permissions Policy blocks the devices, or the page is not a secure context</td>
+</tr>
+<tr>
+<td><code>network_error</code>, <code>server_error</code></td>
+<td>yes</td>
+<td>A connection or service problem</td>
+</tr>
+<tr>
+<td><code>session_expired</code>, <code>session_locked</code></td>
+<td>yes</td>
+<td>The session expired or locked after inactivity</td>
+</tr>
+<tr>
+<td><code>session_revoked</code></td>
+<td>no</td>
+<td>The session was revoked</td>
+</tr>
+<tr>
+<td><code>embed_disabled</code></td>
+<td>no</td>
+<td>No enabled policy, operator disable or kill switch</td>
+</tr>
+<tr>
+<td><code>connect_aborted</code></td>
+<td>yes</td>
+<td><code>disconnect()</code> interrupted <code>connect()</code></td>
+</tr>
+<tr>
+<td><code>media_admission_failed</code></td>
+<td>yes</td>
+<td>Video (disabled in this release): the media server did not admit the clinician to the call in time, even after one retry with a fresh grant. The consultation continues; the clinician can rejoin</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-a-provider-session-may-call" class="tsd-anchor-link">What a provider session may call<a href="#what-a-provider-session-may-call" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>The frame calls these browser routes with the session credential; your server calls the three server routes. The
+server decides every request; the frame only hides what it cannot do. Natzar keeps a route-by-route authorization
+table tied to its tests for every row below.</p>
+<table>
+<thead>
+<tr>
+<th>Route</th>
+<th>Capability</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>POST /v1/provider-embed/sessions</code>, <code>…/sessions/{id}/renew</code>, <code>DELETE …/sessions/{id}</code></td>
+<td>your server, current API key</td>
+</tr>
+<tr>
+<td><code>GET /v1/provider-embed/session</code>, <code>POST …/session/activity</code>, <code>POST …/session/logout</code></td>
+<td>the session itself</td>
+</tr>
+<tr>
+<td><code>GET /v1/provider-embed/workspace</code></td>
+<td><code>workspace.read</code></td>
+</tr>
+<tr>
+<td><code>GET /v1/provider-embed/agenda</code></td>
+<td><code>appointments.read</code></td>
+</tr>
+<tr>
+<td><code>GET /v1/provider-embed/consultations</code>, <code>…/consultations/{kind}/{id}</code>, <code>…/async/{id}/messages</code>, <code>…/async/{id}/clinical-actions</code></td>
+<td><code>consult.read</code></td>
+</tr>
+<tr>
+<td><code>GET …/consultations/{kind}/{id}/files/{fileId}</code></td>
+<td><code>attachments.read</code></td>
+</tr>
+<tr>
+<td><code>POST …/async/{id}/replies</code> · <code>…/resolve</code>, <code>…/close</code> · <code>…/uploads</code>, <code>…/finalize</code></td>
+<td><code>consult.reply</code> · <code>consult.complete</code> · <code>attachments.write</code> (not yet released)</td>
+</tr>
+<tr>
+<td><code>POST …/async/{id}/referrals/preview</code>, <code>…/referrals</code> · <code>…/prescriptions/preview</code>, <code>…/prescriptions</code></td>
+<td><code>referrals.*</code> · <code>prescriptions.*</code> (not yet released)</td>
+</tr>
+<tr>
+<td><code>POST …/telehealth/{id}/cancel</code> · <code>POST /v1/provider-embed/availability</code></td>
+<td><code>appointments.cancel</code> · <code>availability.write</code> (not yet released)</td>
+</tr>
+<tr>
+<td><code>POST …/telehealth/{id}/room</code>, <code>…/ready</code>, <code>…/end</code> · <code>POST …/presence</code>, <code>…/heartbeat</code></td>
+<td>media capabilities (disabled)</td>
+</tr>
+<tr>
+<td><code>GET /v1/provider-embed/patient</code>, <code>…/patient/history</code></td>
+<td>patient mode (disabled)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="idempotency-key-usage" class="tsd-anchor-link">Idempotency-Key usage<a href="#idempotency-key-usage" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>Clinical mutations (replies, resolve, close, referral and prescription issue, appointment cancel and call end) require
+an <code>Idempotency-Key</code> header of 16–128 URL-safe characters. The frame mints one per user action and reuses it for
+retries of that action, so a double click, a lost response or a retry produces one result. Reusing a key with a
+different body answers <code>409 idempotency_conflict</code>; a key whose first request is still running answers
+<code>409 idempotency_in_progress</code>. A replayed response carries <code>Idempotent-Replayed: true</code>. Your server never sends these
+requests; the frame does.</p>
+<h2 id="pinned-loader-releases-and-sri" class="tsd-anchor-link">Pinned loader releases and SRI<a href="#pinned-loader-releases-and-sri" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p><code>/provider/v1/embed.js</code> is updated compatibly. If you need deterministic updates, load a pinned release
+<code>/provider/v1/embed.&lt;version&gt;.js</code> with its published <code>integrity</code> value and <code>crossorigin=&quot;anonymous&quot;</code>. Each release
+lists its file, <code>integrity</code> (<code>sha384-…</code>) and size. A pinned loader still obeys the current server policy.</p>
+<h2 id="samples-and-the-patient-switch-recipe" class="tsd-anchor-link">Samples and the patient-switch recipe<a href="#samples-and-the-patient-switch-recipe" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>The repository's two-origin harness (<code>scripts/provider-embed-harness/</code>) contains a complete customer backend sample
+(<code>customer-backend.ts</code>: CSRF, server-side mapping, lifetime clamp, offboarding, verified mode, Node <code>fetch</code>), a plain
+HTML sample (<code>samples/plain.html</code>, <code>samples/plain.js</code>) and a React sample (<code>samples/react-example.tsx</code> with
+<code>samples/natzar-provider.d.ts</code>).</p>
+<p><strong>Patient switch.</strong> A narrow <code>consultation</code> session is bound to one case for its whole life. To show another case or
+patient: <code>disconnect()</code> the element, have your backend revoke the previous narrow session and mint one for the new
+case (after checking the user may open it), and <code>connect()</code> again. Never reuse a session across patients.</p>
+<p><strong>React StrictMode</strong> mounts effects twice in development, so the first <code>connect()</code> mints an orphan session that is
+never used; your backend revokes it at logout from its login-to-sessions map.</p>
+<h2 id="ehr-task-on-resolve" class="tsd-anchor-link">EHR task on resolve<a href="#ehr-task-on-resolve" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>Resolving a consultation from the embed does not create an EHR task. This matches the partner REST API: create the
+task from your own system if you need one.</p>
+</div></div>
+<div class="col-sidebar">
+<div class="page-menu">
+<div class="tsd-navigation settings">
+<details class="tsd-accordion"><summary class="tsd-accordion-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
+<h3>Settings</h3></summary>
+<div class="tsd-accordion-details">
+<div class="tsd-filter-visibility"><span class="settings-label">Member Visibility</span>
+<ul id="tsd-filter-options">
+<li class="tsd-filter-item"><label class="tsd-filter-input"><input type="checkbox" id="tsd-filter-protected" name="protected"/><svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect class="tsd-checkbox-background" width="30" height="30" x="1" y="1" rx="6" fill="none"></rect><path class="tsd-checkbox-checkmark" d="M8.35422 16.8214L13.2143 21.75L24.6458 10.25" stroke="none" stroke-width="3.5" stroke-linejoin="round" fill="none"></path></svg><span>Protected</span></label></li>
+<li class="tsd-filter-item"><label class="tsd-filter-input"><input type="checkbox" id="tsd-filter-inherited" name="inherited" checked/><svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect class="tsd-checkbox-background" width="30" height="30" x="1" y="1" rx="6" fill="none"></rect><path class="tsd-checkbox-checkmark" d="M8.35422 16.8214L13.2143 21.75L24.6458 10.25" stroke="none" stroke-width="3.5" stroke-linejoin="round" fill="none"></path></svg><span>Inherited</span></label></li></ul></div>
+<div class="tsd-theme-toggle"><label class="settings-label" for="tsd-theme">Theme</label><select id="tsd-theme"><option value="os">OS</option><option value="light">Light</option><option value="dark">Dark</option></select></div></div></details></div>
+<details open class="tsd-accordion tsd-page-navigation"><summary class="tsd-accordion-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
+<h3>On This Page</h3></summary>
+<div class="tsd-accordion-details"><a href="#embedding-the-clinician-workspace"><span>Embedding the clinician workspace</span></a>
+<ul>
+<li><a href="#quickstart"><span>Quickstart</span></a></li>
+<li><a href="#which-host"><span>Which host</span></a></li>
+<li><a href="#minting-on-your-server"><span>Minting on your server</span></a></li>
+<li><a href="#the-server-only-header-rule"><span>The server-<wbr/>only header rule</span></a></li>
+<li><a href="#mfa-assumptions"><span>MFA assumptions</span></a></li>
+<li><a href="#modes-scope-and-capabilities"><span>Modes, scope and capabilities</span></a></li>
+<li><a href="#policy-defaults-ranges-and-who-may-change-them"><span>Policy defaults, ranges and who may change them</span></a></li>
+<li><a href="#security-model"><span>Security model</span></a></li>
+<li><a href="#host-headers"><span>Host headers</span></a></li>
+<li><a href="#framing-and-permissions"><span>Framing and permissions</span></a></li>
+<li><a href="#element-api"><span>Element <wbr/>API</span></a></li>
+<li><a href="#events"><span>Events</span></a></li>
+<li><a href="#behavior-notes"><span>Behavior notes</span></a></li>
+<li><a href="#lifecycle"><span>Lifecycle</span></a></li>
+<li><a href="#live-calls"><span>Live calls</span></a></li>
+<li><a href="#presence-ownership-and-the-shared-presence-record"><span>Presence ownership and the shared presence record</span></a></li>
+<li><a href="#residual-signed-file-limitations"><span>Residual signed-<wbr/>file limitations</span></a></li>
+<li><a href="#errors"><span>Errors</span></a></li>
+<li><a href="#what-a-provider-session-may-call"><span>What a provider session may call</span></a></li>
+<li><a href="#idempotency-key-usage"><span>Idempotency-<wbr/>Key usage</span></a></li>
+<li><a href="#pinned-loader-releases-and-sri"><span>Pinned loader releases and <wbr/>SRI</span></a></li>
+<li><a href="#samples-and-the-patient-switch-recipe"><span>Samples and the patient-<wbr/>switch recipe</span></a></li>
+<li><a href="#ehr-task-on-resolve"><span>EHR task on resolve</span></a></li></ul></div></details></div>
+<div class="site-menu">
+<nav class="tsd-navigation"><a href="../index.html">Natzar Partner API Reference - v1.0.0</a>
+<ul class="tsd-small-nested-navigation" id="tsd-nav-container">
+<li>Loading...</li></ul></nav></div></div></div><footer>
+<p class="tsd-generator">Generated using <a href="https://typedoc.org/" target="_blank">TypeDoc</a></p></footer>
+<div class="overlay"></div></body></html>

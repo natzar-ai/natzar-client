@@ -1,0 +1,289 @@
+<!DOCTYPE html><html class="default" lang="en" data-base="../"><head><meta charset="utf-8"/><meta http-equiv="x-ua-compatible" content="IE=edge"/><title>Errors &amp; pagination | Natzar Partner API Reference - v1.0.0</title><meta name="description" content="Documentation for Natzar Partner API Reference"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="stylesheet" href="../assets/style.css"/><link rel="stylesheet" href="../assets/highlight.css"/><script defer src="../assets/main.js"></script><script async src="../assets/icons.js" id="tsd-icons-script"></script><script async src="../assets/search.js" id="tsd-search-script"></script><script async src="../assets/navigation.js" id="tsd-nav-script"></script><script async src="../assets/hierarchy.js" id="tsd-hierarchy-script"></script></head><body><script>document.documentElement.dataset.theme = localStorage.getItem("tsd-theme") || "os";document.body.style.display="none";setTimeout(() => window.app?app.showPage():document.body.style.removeProperty("display"),500)</script><header class="tsd-page-toolbar">
+<div class="tsd-toolbar-contents container"><a href="../index.html" class="title">Natzar Partner API Reference - v1.0.0</a>
+<div id="tsd-toolbar-links"></div><button id="tsd-search-trigger" class="tsd-widget" aria-label="Search"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-search"></use></svg></button><dialog id="tsd-search" aria-label="Search"><input role="combobox" id="tsd-search-input" aria-controls="tsd-search-results" aria-autocomplete="list" aria-expanded="true" autocapitalize="off" autocomplete="off" placeholder="Search the docs" maxLength="100"/>
+<ul role="listbox" id="tsd-search-results"></ul>
+<div id="tsd-search-status" aria-live="polite" aria-atomic="true">
+<div>Preparing search index...</div></div></dialog><a href="#" class="tsd-widget menu" id="tsd-toolbar-menu-trigger" data-toggle="menu" aria-label="Menu"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-menu"></use></svg></a></div></header>
+<div class="container container-main">
+<div class="col-content">
+<div class="tsd-page-title">
+<ul class="tsd-breadcrumb" aria-label="Breadcrumb">
+<li><a href="" aria-current="page">Errors &amp; pagination</a></li></ul></div>
+<div class="tsd-panel tsd-typography"><h1 id="errors-pagination" class="tsd-anchor-link">Errors &amp; pagination<a href="#errors-pagination" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h1>
+<h2 id="the-error-envelope" class="tsd-anchor-link">The error envelope<a href="#the-error-envelope" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>Every non-2xx response carries a JSON body of one shape:</p>
+<pre><code class="json"><span class="hl-1">{</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;error&quot;</span><span class="hl-1">: {</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;code&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;has_open_thread&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;message&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;Patient already has an open async consult&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;details&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;asyncConsultId&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;aB3xK9mQpZ4r&quot;</span><span class="hl-1">}</span><br/><span class="hl-1">  }</span><br/><span class="hl-1">}</span>
+</code><button type="button">Copy</button></pre>
+
+<p>Branch on <code>code</code> — it is machine-readable and stable. <code>message</code> is for
+logs (wording may change without notice), and <code>details</code> is optional
+structured context: validation issues for <code>invalid_request</code>, a conflicting
+resource id for some 409s. New codes may be added within <code>/v1</code>; treat an
+unknown code by its HTTP class (4xx = your request, 5xx = ours).</p>
+<h2 id="error-code-catalog" class="tsd-anchor-link">Error code catalog<a href="#error-code-catalog" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>The HTTP status is fully determined by the code (the server derives it
+from the same table, <a href="../variables/index.ERROR_HTTP_STATUS.html" class="tsd-kind-variable"> ERROR_HTTP_STATUS</a>, so the two cannot
+disagree). Full per-code semantics live on <a href="../types/index.ErrorCode.html" class="tsd-kind-type-alias"> ErrorCode</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>HTTP</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>invalid_request</code></td>
+<td>400</td>
+<td>The body/query failed validation; <code>details</code> carries the per-field issues. Retrying unchanged will fail again.</td>
+</tr>
+<tr>
+<td><code>unauthorized</code></td>
+<td>401</td>
+<td>API key missing, malformed, revoked, wrong environment, or account suspended.</td>
+</tr>
+<tr>
+<td><code>embed_token_invalid</code></td>
+<td>401</td>
+<td>Embed only: session token failed verification (bad signature, suspended partner, invalidated by key rotation). Mint a fresh one.</td>
+</tr>
+<tr>
+<td><code>embed_token_expired</code></td>
+<td>401</td>
+<td>Embed only: session token <code>exp</code> passed. Mint a fresh one and call <code>refresh(token)</code>.</td>
+</tr>
+<tr>
+<td><code>origin_not_allowed</code></td>
+<td>403</td>
+<td>Embed only: the embedding page's origin is not on your allowed-origins list.</td>
+</tr>
+<tr>
+<td><code>not_found</code></td>
+<td>404</td>
+<td>No such resource in your tenant (including ids that belong to other tenants — never a 403).</td>
+</tr>
+<tr>
+<td><code>feature_disabled</code></td>
+<td>409</td>
+<td>Your tenant does not have the product enabled (<code>asyncEnabled</code> / <code>telehealthEnabled</code>). Contact us; retrying won't help.</td>
+</tr>
+<tr>
+<td><code>phone_unavailable</code></td>
+<td>409</td>
+<td><code>POST /v1/patients</code>: the phone is registered to a patient outside your tenant, or to a different patient inside it. No further detail is disclosed.</td>
+</tr>
+<tr>
+<td><code>email_in_use</code></td>
+<td>409</td>
+<td><code>POST /v1/physicians</code>: a portal account with this email already exists (posted under a new <code>externalId</code>).</td>
+</tr>
+<tr>
+<td><code>external_id_conflict</code></td>
+<td>409</td>
+<td><code>POST /v1/physicians</code>: this <code>externalId</code> is already registered under a <strong>different</strong> email. Repeats are idempotent only when identical; email changes are not supported over the API.</td>
+</tr>
+<tr>
+<td><code>has_open_thread</code></td>
+<td>409</td>
+<td><code>POST /v1/async-consults</code>: the patient already has an open consult (<code>details.asyncConsultId</code> identifies it). One open thread per patient.</td>
+</tr>
+<tr>
+<td><code>thread_not_active</code></td>
+<td>409</td>
+<td>The consult isn't in an open, routable state for this operation (e.g. messaging a <code>closed</code> or still-<code>invited</code> thread); a consult-keyed <code>POST /v1/billing/visit-checkout</code>, <code>/slots</code> or <code>/book</code> on an invite that can no longer be taken (<code>details.status</code>, <code>&quot;expired&quot;</code> for a lapsed invite); or a decline (<code>consent</code>, <code>accept: false</code>) of an invite already paid for (<code>details.reason: &quot;payment_settled&quot;</code> — accept it instead).</td>
+</tr>
+<tr>
+<td><code>not_assigned</code></td>
+<td>409</td>
+<td>The acting physician is not the current assignee (assignment may have moved). Re-read; use claim/takeover.</td>
+</tr>
+<tr>
+<td><code>already_rated</code></td>
+<td>409</td>
+<td>Ratings are write-once.</td>
+</tr>
+<tr>
+<td><code>already_closed</code></td>
+<td>409</td>
+<td>The consult is already terminal; <code>closedReason</code>/<code>status</code> say how it ended.</td>
+</tr>
+<tr>
+<td><code>sla_not_overdue</code></td>
+<td>409</td>
+<td><code>takeover</code>: the current assignee's response SLA hasn't elapsed yet.</td>
+</tr>
+<tr>
+<td><code>message_rejected</code></td>
+<td>409</td>
+<td>A posted message couldn't be accepted (thread closed between read and write, or empty after normalization). See the asynchronous sibling below.</td>
+</tr>
+<tr>
+<td><code>consult_not_cancellable</code></td>
+<td>409</td>
+<td>Telehealth <code>cancel</code> is only allowed from <code>invited</code>/<code>waiting</code>.</td>
+</tr>
+<tr>
+<td><code>payment_required</code></td>
+<td>402</td>
+<td>The clinic charges for this visit (consent, the first on-demand video join, a booking) and no payment covers it. <code>details</code> carry <code>amountCents</code>, <code>currency</code>, <code>modality</code>, <code>mode</code> — what to check out. See <a href="Payments.html">Payments</a>.</td>
+</tr>
+<tr>
+<td><code>payment_invalid</code></td>
+<td>402</td>
+<td>The payment presented (or the checkout in progress for this consult) does not entitle the visit yet; <code>details.reason</code> is <code>payment_not_completed</code> (wait for <code>paid</code> — never start a second checkout), <code>payment_mismatch</code>, <code>payment_already_used</code> or <code>payment_check_failed</code> (retryable). A decline can draw <code>payment_not_completed</code> (the invite's checkout is still in progress) and <code>payment_check_failed</code> too. See <a href="Payments.html">Payments</a>.</td>
+</tr>
+<tr>
+<td><code>pharmacy_not_found</code></td>
+<td>404</td>
+<td><code>POST /v1/prescriptions/{id}/pharmacy</code>: no pharmacy answers to that <code>directoryId</code>. The prescription resolved — re-run the search and choose again.</td>
+</tr>
+<tr>
+<td><code>prescription_not_choosable</code></td>
+<td>409</td>
+<td>The prescription is no longer waiting for a pharmacy — chosen, sent, revoked, or its 24-hour link lapsed (including a choice that lost the race to another surface). <code>details.status</code> is the effective status; re-read the prescription and render its <code>action</code>.</td>
+</tr>
+<tr>
+<td><code>pharmacy_unreachable</code></td>
+<td>409</td>
+<td>The chosen pharmacy cannot be delivered to (a fax jurisdiction, no verified fax line on file). The listing said so (<code>reachable: false</code>).</td>
+</tr>
+<tr>
+<td><code>pharmacy_add_unavailable</code></td>
+<td>409</td>
+<td>Adding a pharmacy by hand is not offered here (e-prescribed prescription, or no directory on this deployment). Retrying will not help.</td>
+</tr>
+<tr>
+<td><code>invalid_location</code></td>
+<td>422</td>
+<td><code>POST …/home-location</code>: the coordinates are not a place on Earth. The shape was fine — the values are not a location.</td>
+</tr>
+<tr>
+<td><code>invalid_pharmacy</code></td>
+<td>422</td>
+<td><code>POST …/pharmacies</code>: the pharmacy as typed cannot be placed; <code>details.code</code> says why.</td>
+</tr>
+<tr>
+<td><code>rate_limited</code></td>
+<td>429</td>
+<td>Back off with jitter. The gateway may also 429 without a JSON body.</td>
+</tr>
+<tr>
+<td><code>internal_error</code></td>
+<td>500</td>
+<td>Our fault. Safe to retry idempotent requests.</td>
+</tr>
+<tr>
+<td><code>dependency_unavailable</code></td>
+<td>503</td>
+<td>A dependency the platform must consult first did not answer, so the request was refused rather than guessed at. Retry with backoff. On the video routes (<code>/join</code>, <code>/room</code>, <code>/ready</code>) it means the call's current room could not be confirmed: pull again, it never means the call is over (<a href="../media/video-calls.md">Video calls</a>).</td>
+</tr>
+</tbody>
+</table>
+<h3 id="how-to-think-about-409s" class="tsd-anchor-link">How to think about 409s<a href="#how-to-think-about-409s" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<p>Every 409 (other than <code>feature_disabled</code> and <code>pharmacy_add_unavailable</code>) is
+a <strong>state conflict</strong>: the consult — or the prescription — moved between
+your last read and your write — the underlying store applies lifecycle
+transitions as conditional writes, so a stale operation fails loudly
+instead of double-applying. The recovery is always the same: <strong>re-read the
+resource, then retry only if the operation still makes sense.</strong> A retry that finds the work already done gets a descriptive 409
+(<code>already_closed</code>, <code>not_assigned</code>, …), never a double-application.</p>
+<h2 id="idempotency-retry-safety" class="tsd-anchor-link">Idempotency &amp; retry safety<a href="#idempotency-retry-safety" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<table>
+<thead>
+<tr>
+<th>Operation</th>
+<th>Behavior on retry</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>POST /v1/patients</code></td>
+<td>True <strong>upsert keyed on <code>externalId</code></strong> — repeats update mutable fields, never duplicate. Always safe to retry.</td>
+</tr>
+<tr>
+<td><code>POST /v1/physicians</code></td>
+<td>Idempotent for an <strong>identical</strong> repeat (same <code>externalId</code> + same email → 200, names refreshed), so retries are safe. A repeat with a different email → <code>409 external_id_conflict</code>; a new <code>externalId</code> with an in-use email → <code>409 email_in_use</code>. Never a duplicate account.</td>
+</tr>
+<tr>
+<td><code>POST …/messages</code>, <code>POST …/replies</code></td>
+<td>Accepted with 202 and deduplicated inside the per-patient FIFO pipeline; a retry after a 5xx will not double-deliver.</td>
+</tr>
+<tr>
+<td>Lifecycle posts (<code>claim</code>/<code>takeover</code>/<code>resolve</code>/<code>close</code>/<code>cancel</code>)</td>
+<td>Conditional writes — a repeat gets a descriptive 409, never a second application.</td>
+</tr>
+<tr>
+<td>All GETs</td>
+<td>Naturally safe.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="the-202-message-flow" class="tsd-anchor-link">The 202 message flow<a href="#the-202-message-flow" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p><code>POST /v1/async-consults/{id}/messages</code> and <code>…/replies</code> return
+<strong><code>202 Accepted</code></strong>: the message passed validation and was <strong>enqueued</strong> into
+the per-patient FIFO pipeline — it had not yet been processed when the
+response was sent, but it <em>will</em> appear on the transcript in order. The
+202 body reports the <code>messageId</code> the message will carry on the transcript
+and in webhooks.</p>
+<p>To observe delivery:</p>
+<ul>
+<li><strong>Push</strong>: the <code>async_consult.message</code> webhook fires when the message
+lands on the transcript.</li>
+<li><strong>Pull</strong>: re-read <code>GET /v1/async-consults/{id}/messages</code>.</li>
+</ul>
+<p>One asynchronous edge: if the thread closes <em>after</em> your 202 but <em>before</em>
+the message processes, the message cannot be routed — you receive an
+<code>async_consult.message_rejected</code> webhook naming your <code>messageId</code>. An
+accepted patient message is never silently dropped; surface the rejection
+in your patient UI. (The synchronous sibling — the thread was already
+closed at post time — is the immediate <code>409 message_rejected</code> /
+<code>409 thread_not_active</code> instead.)</p>
+<h2 id="pagination" class="tsd-anchor-link">Pagination<a href="#pagination" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>Every list endpoint uses the same cursor contract (<a href="../interfaces/index.Page.html" class="tsd-kind-interface"> Page</a>):</p>
+<pre><code><span class="hl-8">GET</span><span class="hl-1"> /</span><span class="hl-2">v1</span><span class="hl-1">/</span><span class="hl-2">async</span><span class="hl-1">-</span><span class="hl-2">consults</span><span class="hl-1">?</span><span class="hl-2">status</span><span class="hl-1">=</span><span class="hl-2">active</span><span class="hl-1">&amp;</span><span class="hl-2">limit</span><span class="hl-1">=</span><span class="hl-9">50</span><br/><span class="hl-1">→ {</span><span class="hl-3">&quot;items&quot;</span><span class="hl-2">:</span><span class="hl-1"> [...], </span><span class="hl-3">&quot;nextCursor&quot;</span><span class="hl-2">:</span><span class="hl-1"> </span><span class="hl-3">&quot;eyJ...&quot;</span><span class="hl-1">}</span><br/><br/><span class="hl-8">GET</span><span class="hl-1"> /</span><span class="hl-2">v1</span><span class="hl-1">/</span><span class="hl-2">async</span><span class="hl-1">-</span><span class="hl-2">consults</span><span class="hl-1">?</span><span class="hl-2">status</span><span class="hl-1">=</span><span class="hl-2">active</span><span class="hl-1">&amp;</span><span class="hl-2">limit</span><span class="hl-1">=</span><span class="hl-9">50</span><span class="hl-1">&amp;</span><span class="hl-2">cursor</span><span class="hl-1">=</span><span class="hl-2">eyJ</span><span class="hl-1">...</span><br/><span class="hl-1">→ {</span><span class="hl-3">&quot;items&quot;</span><span class="hl-2">:</span><span class="hl-1"> [...]}            ← </span><span class="hl-2">no</span><span class="hl-1"> </span><span class="hl-2">nextCursor</span><span class="hl-1">: </span><span class="hl-2">last</span><span class="hl-1"> </span><span class="hl-2">page</span>
+</code><button>Copy</button></pre>
+
+<p>Rules:</p>
+<ul>
+<li><code>limit</code> is 1–100; a server default applies when omitted.</li>
+<li><code>nextCursor</code> present ⇒ more results; pass it back verbatim as <code>cursor</code>.
+Absent ⇒ you've reached the end. (An empty <code>items</code> with no <code>nextCursor</code>
+is also a valid end.)</li>
+<li>Cursors are <strong>opaque and endpoint-specific</strong>: don't parse them, don't
+store them long-term, and never reuse a cursor across endpoints or with
+different filter parameters.</li>
+<li>Sort orders are fixed per endpoint: async consults by <code>lastActivityAt</code>
+descending, telehealth consults newest first, transcripts
+(<code>…/messages</code>) oldest first, events (<code>GET /v1/events</code>) oldest first.</li>
+</ul>
+</div></div>
+<div class="col-sidebar">
+<div class="page-menu">
+<div class="tsd-navigation settings">
+<details class="tsd-accordion"><summary class="tsd-accordion-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
+<h3>Settings</h3></summary>
+<div class="tsd-accordion-details">
+<div class="tsd-filter-visibility"><span class="settings-label">Member Visibility</span>
+<ul id="tsd-filter-options">
+<li class="tsd-filter-item"><label class="tsd-filter-input"><input type="checkbox" id="tsd-filter-protected" name="protected"/><svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect class="tsd-checkbox-background" width="30" height="30" x="1" y="1" rx="6" fill="none"></rect><path class="tsd-checkbox-checkmark" d="M8.35422 16.8214L13.2143 21.75L24.6458 10.25" stroke="none" stroke-width="3.5" stroke-linejoin="round" fill="none"></path></svg><span>Protected</span></label></li>
+<li class="tsd-filter-item"><label class="tsd-filter-input"><input type="checkbox" id="tsd-filter-inherited" name="inherited" checked/><svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect class="tsd-checkbox-background" width="30" height="30" x="1" y="1" rx="6" fill="none"></rect><path class="tsd-checkbox-checkmark" d="M8.35422 16.8214L13.2143 21.75L24.6458 10.25" stroke="none" stroke-width="3.5" stroke-linejoin="round" fill="none"></path></svg><span>Inherited</span></label></li></ul></div>
+<div class="tsd-theme-toggle"><label class="settings-label" for="tsd-theme">Theme</label><select id="tsd-theme"><option value="os">OS</option><option value="light">Light</option><option value="dark">Dark</option></select></div></div></details></div>
+<details open class="tsd-accordion tsd-page-navigation"><summary class="tsd-accordion-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
+<h3>On This Page</h3></summary>
+<div class="tsd-accordion-details"><a href="#errors-pagination"><span>Errors &amp; pagination</span></a>
+<ul>
+<li><a href="#the-error-envelope"><span>The error envelope</span></a></li>
+<li><a href="#error-code-catalog"><span>Error code catalog</span></a></li>
+<li>
+<ul>
+<li><a href="#how-to-think-about-409s"><span>How to think about 409s</span></a></li></ul></li>
+<li><a href="#idempotency-retry-safety"><span>Idempotency &amp; retry safety</span></a></li>
+<li><a href="#the-202-message-flow"><span>The 202 message flow</span></a></li>
+<li><a href="#pagination"><span>Pagination</span></a></li></ul></div></details></div>
+<div class="site-menu">
+<nav class="tsd-navigation"><a href="../index.html">Natzar Partner API Reference - v1.0.0</a>
+<ul class="tsd-small-nested-navigation" id="tsd-nav-container">
+<li>Loading...</li></ul></nav></div></div></div><footer>
+<p class="tsd-generator">Generated using <a href="https://typedoc.org/" target="_blank">TypeDoc</a></p></footer>
+<div class="overlay"></div></body></html>

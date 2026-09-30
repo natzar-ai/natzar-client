@@ -1,0 +1,245 @@
+<!DOCTYPE html><html class="default" lang="en" data-base="../"><head><meta charset="utf-8"/><meta http-equiv="x-ua-compatible" content="IE=edge"/><title>Prescriptions | Natzar Partner API Reference - v1.0.0</title><meta name="description" content="Documentation for Natzar Partner API Reference"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="stylesheet" href="../assets/style.css"/><link rel="stylesheet" href="../assets/highlight.css"/><script defer src="../assets/main.js"></script><script async src="../assets/icons.js" id="tsd-icons-script"></script><script async src="../assets/search.js" id="tsd-search-script"></script><script async src="../assets/navigation.js" id="tsd-nav-script"></script><script async src="../assets/hierarchy.js" id="tsd-hierarchy-script"></script></head><body><script>document.documentElement.dataset.theme = localStorage.getItem("tsd-theme") || "os";document.body.style.display="none";setTimeout(() => window.app?app.showPage():document.body.style.removeProperty("display"),500)</script><header class="tsd-page-toolbar">
+<div class="tsd-toolbar-contents container"><a href="../index.html" class="title">Natzar Partner API Reference - v1.0.0</a>
+<div id="tsd-toolbar-links"></div><button id="tsd-search-trigger" class="tsd-widget" aria-label="Search"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-search"></use></svg></button><dialog id="tsd-search" aria-label="Search"><input role="combobox" id="tsd-search-input" aria-controls="tsd-search-results" aria-autocomplete="list" aria-expanded="true" autocapitalize="off" autocomplete="off" placeholder="Search the docs" maxLength="100"/>
+<ul role="listbox" id="tsd-search-results"></ul>
+<div id="tsd-search-status" aria-live="polite" aria-atomic="true">
+<div>Preparing search index...</div></div></dialog><a href="#" class="tsd-widget menu" id="tsd-toolbar-menu-trigger" data-toggle="menu" aria-label="Menu"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-menu"></use></svg></a></div></header>
+<div class="container container-main">
+<div class="col-content">
+<div class="tsd-page-title">
+<ul class="tsd-breadcrumb" aria-label="Breadcrumb">
+<li><a href="" aria-current="page">Prescriptions</a></li></ul></div>
+<div class="tsd-panel tsd-typography"><h1 id="prescriptions-the-patients-pharmacy-choice" class="tsd-anchor-link">Prescriptions — the patient's pharmacy choice<a href="#prescriptions-the-patients-pharmacy-choice" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h1>
+<p>A physician writing on an async consult can issue a prescription without
+leaving the thread. What the <strong>patient</strong> then has to do is choose the
+pharmacy it goes to — and a partner rendering its own chat has to offer
+that choice, because the platform's public <code>/pharmacy</code> page refuses
+consults that belong to a partner. This guide is the whole loop: detect
+the link, resolve it, list pharmacies, choose one, watch the outcome.</p>
+<p>Everything below assumes the <a href="Getting_started.html">getting-started</a> setup:</p>
+<pre><code class="bash"><span class="hl-0">export</span><span class="hl-1"> </span><span class="hl-2">NATZAR_API</span><span class="hl-1">=</span><span class="hl-3">&quot;https://&lt;your-assigned-api-host&gt;&quot;</span><br/><span class="hl-0">export</span><span class="hl-1"> </span><span class="hl-2">NATZAR_KEY</span><span class="hl-1">=</span><span class="hl-3">&quot;pp_test_...&quot;</span>
+</code><button type="button">Copy</button></pre>
+
+<p>The embed widget (<code>&lt;natzar-async&gt;</code>, <code>&lt;natzar-agent&gt;</code>) does all of this
+itself — the routes here exist for the headless integration.</p>
+<h2 id="1-what-lands-on-the-transcript" class="tsd-anchor-link">1. What lands on the transcript<a href="#1-what-lands-on-the-transcript" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>Four system notices, all ordinary <code>async_consult.message</code> events (there
+is <strong>no</strong> prescription event type — your existing webhook handler already
+receives them), distinguished by their <code>classification</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Classification</th>
+<th>When</th>
+<th>What the body carries</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>async:prescription_issued</code></td>
+<td>The physician signed the prescription.</td>
+<td>The <strong>pharmacy link</strong> <code>&lt;host&gt;/pharmacy?id=&lt;prescriptionId&gt;</code> and its validity (&quot;active for the next 24 hours&quot;).</td>
+</tr>
+<tr>
+<td><code>async:prescription_sent</code></td>
+<td>The transport delivered it.</td>
+<td>The pharmacy's name.</td>
+</tr>
+<tr>
+<td><code>async:prescription_failed</code></td>
+<td>The transport gave up after its retries.</td>
+<td>The pharmacy's name <strong>and the link again</strong> — the choice is re-opened.</td>
+</tr>
+<tr>
+<td><code>async:prescription_revoked</code></td>
+<td>The physician withdrew it.</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p>Detect the link with <a href="../variables/index.PHARMACY_LINK_REGEX.html" class="tsd-kind-variable"> PHARMACY_LINK_REGEX</a>: group 1 is the
+prescription id, the whole match is the URL to strip from the prose before
+you render the message — the same treatment as the consent, video and
+booking links:</p>
+<pre><code class="ts"><span class="hl-10">import</span><span class="hl-1"> {</span><span class="hl-2">PHARMACY_LINK_REGEX</span><span class="hl-1">} </span><span class="hl-10">from</span><span class="hl-1"> </span><span class="hl-3">&#39;@natzar/client/contract&#39;</span><span class="hl-1">;</span><br/><br/><span class="hl-0">const</span><span class="hl-1"> </span><span class="hl-8">m</span><span class="hl-1"> = </span><span class="hl-8">PHARMACY_LINK_REGEX</span><span class="hl-1">.</span><span class="hl-4">exec</span><span class="hl-1">(</span><span class="hl-2">message</span><span class="hl-1">.</span><span class="hl-2">body</span><span class="hl-1">);</span><br/><span class="hl-10">if</span><span class="hl-1"> (</span><span class="hl-2">m</span><span class="hl-1">) {</span><br/><span class="hl-1">  </span><span class="hl-0">const</span><span class="hl-1"> </span><span class="hl-8">prescriptionId</span><span class="hl-1"> = </span><span class="hl-2">m</span><span class="hl-1">[</span><span class="hl-9">1</span><span class="hl-1">];</span><br/><span class="hl-1">  </span><span class="hl-0">const</span><span class="hl-1"> </span><span class="hl-8">text</span><span class="hl-1"> = </span><span class="hl-2">message</span><span class="hl-1">.</span><span class="hl-2">body</span><span class="hl-1">.</span><span class="hl-4">replace</span><span class="hl-1">(</span><span class="hl-2">m</span><span class="hl-1">[</span><span class="hl-9">0</span><span class="hl-1">], </span><span class="hl-3">&#39;&#39;</span><span class="hl-1">).</span><span class="hl-4">trim</span><span class="hl-1">();</span><br/><span class="hl-1">  </span><span class="hl-12">// render `text` + a &quot;Choose your pharmacy&quot; button bound to prescriptionId</span><br/><span class="hl-1">}</span>
+</code><button type="button">Copy</button></pre>
+
+<p>(The runtime contract symbols live at <code>@natzar/client/contract</code>; the
+package root exports only their types. The root's <code>detectLink</code>, <code>stripLink</code>
+and <code>pharmacyActionFor</code> do the same detect-and-strip without the raw regex —
+see the SDK README.)</p>
+<h2 id="2-resolve-the-link" class="tsd-anchor-link">2. Resolve the link<a href="#2-resolve-the-link" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-s</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/prescriptions/aB3xK9mQpZ4r&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$NATZAR_KEY</span><span class="hl-3">&quot;</span>
+</code><button type="button">Copy</button></pre>
+
+<pre><code class="json"><span class="hl-1">{</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;prescription&quot;</span><span class="hl-1">: {</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;id&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;aB3xK9mQpZ4r&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;externalPatientId&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;pat-001&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;consultId&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;kQ7wN2pT9xLm&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;status&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;awaiting_pharmacy&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;expired&quot;</span><span class="hl-1">: </span><span class="hl-0">false</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;expiresAt&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;2026-09-19T09:30:00.000Z&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;transport&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;fax&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;pharmacyName&quot;</span><span class="hl-1">: </span><span class="hl-0">null</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;action&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;choose&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;createdAt&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;2026-09-18T09:30:00.000Z&quot;</span><br/><span class="hl-1">  }</span><br/><span class="hl-1">}</span>
+</code><button type="button">Copy</button></pre>
+
+<p>Render from <code>action</code> (<a href="../types/index.PharmacyLinkAction.html" class="tsd-kind-type-alias"> PharmacyLinkAction</a>); it is decided
+server-side from the <strong>effective</strong> state, so your screen, the app and the
+widget can never disagree:</p>
+<table>
+<thead>
+<tr>
+<th><code>action</code></th>
+<th>Button</th>
+<th>Actionable</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>choose</code></td>
+<td>&quot;Choose your pharmacy&quot;</td>
+<td><strong>yes</strong> — open the picker (§3–4)</td>
+</tr>
+<tr>
+<td><code>sent</code></td>
+<td>&quot;Sent to {pharmacyName}&quot; (or &quot;Sent&quot;)</td>
+<td>no</td>
+</tr>
+<tr>
+<td><code>expired</code></td>
+<td>&quot;Link expired&quot;</td>
+<td>no</td>
+</tr>
+<tr>
+<td><code>revoked</code></td>
+<td>&quot;Withdrawn&quot;</td>
+<td>no</td>
+</tr>
+</tbody>
+</table>
+<p>Keep the button visible for the non-actionable values, with the label
+saying what happened. A prescription of yours whose 24-hour link lapsed
+answers <code>action: 'expired'</code>, <strong>not</strong> a 404 — the state read is a probe your
+chat fires for every pharmacy link it renders, and a dead link is an
+ordinary answer. <code>404 not_found</code> means the id is not a prescription of
+this tenant (or of a patient you provisioned).</p>
+<p><code>GET /v1/patients/state</code> also carries the newest prescription still
+waiting for a choice as <code>prescription</code>, so a screen opening cold can offer
+the picker without first scanning the transcript.</p>
+<h2 id="3-list-the-pharmacies" class="tsd-anchor-link">3. List the pharmacies<a href="#3-list-the-pharmacies" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-s</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/prescriptions/aB3xK9mQpZ4r/pharmacies?lat=45.4215&amp;lng=-75.6972&amp;source=device&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$NATZAR_KEY</span><span class="hl-3">&quot;</span>
+</code><button type="button">Copy</button></pre>
+
+<pre><code class="json"><span class="hl-1">{</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;prescription&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;id&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;aB3xK9mQpZ4r&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;action&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;choose&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;...&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;...&quot;</span><span class="hl-1">},</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;origin&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;lat&quot;</span><span class="hl-1">: </span><span class="hl-9">45.4215</span><span class="hl-1">, </span><span class="hl-6">&quot;lng&quot;</span><span class="hl-1">: </span><span class="hl-9">-75.6972</span><span class="hl-1">, </span><span class="hl-6">&quot;source&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;device&quot;</span><span class="hl-1">},</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;pharmacies&quot;</span><span class="hl-1">: [</span><br/><span class="hl-1">    {</span><br/><span class="hl-1">      </span><span class="hl-6">&quot;directoryId&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;ca:ON:305123&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-6">&quot;name&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;Shoppers Drug Mart&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-6">&quot;address&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;1 Rideau St&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-6">&quot;city&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;Ottawa&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-6">&quot;region&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;ON&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-6">&quot;postalCode&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;K1N 8S7&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-6">&quot;phone&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;+16135550100&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-6">&quot;reachable&quot;</span><span class="hl-1">: </span><span class="hl-0">true</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-6">&quot;lat&quot;</span><span class="hl-1">: </span><span class="hl-9">45.4262</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-6">&quot;lng&quot;</span><span class="hl-1">: </span><span class="hl-9">-75.6925</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-6">&quot;distanceKm&quot;</span><span class="hl-1">: </span><span class="hl-9">0.6</span><br/><span class="hl-1">    }</span><br/><span class="hl-1">  ]</span><br/><span class="hl-1">}</span>
+</code><button type="button">Copy</button></pre>
+
+<p>The list is ranked by distance from the <strong>origin</strong>, resolved in this
+order — the same order the platform's own picker uses:</p>
+<ol>
+<li><strong>What you pass</strong>: <code>lat</code>/<code>lng</code> (both or neither), with <code>source</code> saying
+how you got it (<code>device</code> for geolocation, <code>manual</code> for a typed place,
+<code>address</code> for a home address you geocoded) and an optional <code>label</code>. A
+pair that is not a place on Earth (latitude beyond ±90, longitude beyond
+±180, or <code>0,0</code>) is <code>422 invalid_location</code> — never silently replaced by
+the cached home.</li>
+<li><strong>The patient's cached home</strong>, when the platform holds one (see §5).</li>
+<li><strong>Nothing</strong> — the response has no <code>origin</code>, the list is unranked, and
+<code>homeAddress</code> carries the patient's one-line address on file for you to
+geocode; store the result with <code>POST …/home-location</code> and the next
+search (yours, the app's, the widget's) starts from it.</li>
+</ol>
+<p><code>query</code> filters by name, city or postal code; <code>radiusKm</code> widens the search
+in the steps of <a href="../variables/index.PHARMACY_SEARCH_RADII_KM.html" class="tsd-kind-variable"> PHARMACY_SEARCH_RADII_KM</a> (<code>25</code>, <code>50</code>, <code>100</code> —
+&quot;search wider&quot;). <code>reachable: false</code> means the transport cannot deliver
+there (a fax jurisdiction with no verified fax line on file): show it
+greyed out, or not at all — choosing it is <code>409 pharmacy_unreachable</code>.</p>
+<p>Once the prescription is no longer choosable the list is <strong>empty</strong> and
+<code>prescription.action</code> says why — render that instead of an empty picker.</p>
+<h2 id="4-choose" class="tsd-anchor-link">4. Choose<a href="#4-choose" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-s</span><span class="hl-1"> </span><span class="hl-0">-X</span><span class="hl-1"> </span><span class="hl-3">POST</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/prescriptions/aB3xK9mQpZ4r/pharmacy&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$NATZAR_KEY</span><span class="hl-3">&quot;</span><span class="hl-1"> </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&#39;Content-Type: application/json&#39;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-d</span><span class="hl-1"> </span><span class="hl-3">&#39;{&quot;directoryId&quot;: &quot;ca:ON:305123&quot;}&#39;</span>
+</code><button type="button">Copy</button></pre>
+
+<pre><code class="json"><span class="hl-1">{</span><span class="hl-6">&quot;prescription&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;id&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;aB3xK9mQpZ4r&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;status&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;transmitting&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;pharmacyName&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;Shoppers Drug Mart&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;action&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;sent&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;...&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;...&quot;</span><span class="hl-1">}}</span>
+</code><button type="button">Copy</button></pre>
+
+<p>The choice is <strong>atomic</strong> — one conditional transition shared with every
+other surface — so a choice from your screen and one from the widget
+cannot both succeed. The loser gets <code>409 prescription_not_choosable</code> with
+the effective <code>status</code> in <code>details</code>; the same code answers a lapsed link
+and an already-settled prescription. Re-read <code>GET /v1/prescriptions/{id}</code>
+and render its <code>action</code>. <code>404 pharmacy_not_found</code> is a <code>directoryId</code> no
+listing of this deployment produced.</p>
+<p>Then watch the outcome: poll <code>GET /v1/prescriptions/{id}</code> until <code>status</code>
+is <code>sent</code> or <code>failed</code>, or simply keep rendering the transcript —
+<code>prescription_sent</code> names the pharmacy; <code>prescription_failed</code> re-opens the
+choice (<code>action</code> is <code>choose</code> again, with the link in the body).</p>
+<h2 id="5-cache-the-home-location" class="tsd-anchor-link">5. Cache the home location<a href="#5-cache-the-home-location" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>When you geocoded the patient's home address (<code>homeAddress</code> from §3, or an
+address they typed), hand the point back so no surface has to geocode it
+again:</p>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-s</span><span class="hl-1"> </span><span class="hl-0">-X</span><span class="hl-1"> </span><span class="hl-3">POST</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/prescriptions/aB3xK9mQpZ4r/home-location&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$NATZAR_KEY</span><span class="hl-3">&quot;</span><span class="hl-1"> </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&#39;Content-Type: application/json&#39;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-d</span><span class="hl-1"> </span><span class="hl-3">&#39;{&quot;lat&quot;: 45.4215, &quot;lng&quot;: -75.6972}&#39;</span>
+</code><button type="button">Copy</button></pre>
+
+<p><code>{&quot;ok&quot;: true}</code>, or <code>422 invalid_location</code> for coordinates that are not a
+place on Earth. The write is gated on a prescription you can see, so it is
+only reachable from a live picker.</p>
+<h2 id="6-a-pharmacy-the-directory-does-not-list" class="tsd-anchor-link">6. A pharmacy the directory does not list<a href="#6-a-pharmacy-the-directory-does-not-list" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>Fax jurisdictions only (<code>transport: 'fax'</code>): the directory is the
+platform's own, fed by the provincial registers, and a pharmacy may be
+missing from it. The patient can add one:</p>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-s</span><span class="hl-1"> </span><span class="hl-0">-X</span><span class="hl-1"> </span><span class="hl-3">POST</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/prescriptions/aB3xK9mQpZ4r/pharmacies&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$NATZAR_KEY</span><span class="hl-3">&quot;</span><span class="hl-1"> </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&#39;Content-Type: application/json&#39;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-d</span><span class="hl-1"> </span><span class="hl-3">&#39;{&quot;name&quot;: &quot;Pharmacie du Coin&quot;, &quot;address&quot;: &quot;12 rue Principale&quot;, &quot;city&quot;: &quot;Gatineau&quot;, &quot;region&quot;: &quot;QC&quot;, &quot;postalCode&quot;: &quot;J8X 1A1&quot;, &quot;fax&quot;: &quot;(819) 555-0199&quot;}&#39;</span>
+</code><button type="button">Copy</button></pre>
+
+<pre><code class="json"><span class="hl-1">{</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;pharmacy&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;directoryId&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;ca:manual:7hQ2pL9x&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;name&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;Pharmacie du Coin&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;reachable&quot;</span><span class="hl-1">: </span><span class="hl-0">false</span><span class="hl-1">, </span><span class="hl-6">&quot;...&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;...&quot;</span><span class="hl-1">},</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;status&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;pending_verification&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;probe&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;sent&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;faxIssue&quot;</span><span class="hl-1">: </span><span class="hl-0">null</span><br/><span class="hl-1">}</span>
+</code><button type="button">Copy</button></pre>
+
+<p><code>201</code>: the pharmacy now exists (<code>reachable: false</code>) and appears in searches
+at once. The prescription is <strong>not</strong> chosen for it yet — no prescription is
+ever faxed to an unverified line. <code>probe: 'sent'</code> means the platform has
+dispatched a one-page verification fax to the line; the moment the line
+acknowledges it, the platform chooses this pharmacy for the prescription on
+its own (poll <code>GET /v1/prescriptions/{id}</code> — the state moves to
+<code>action: 'sent'</code>). <code>probe: 'not_sent'</code> means no line to verify: the fax was
+missing or dropped (<code>faxIssue</code>), and a clinician adds it from the portal.
+Tell the patient the pharmacy is being verified; until then the
+prescription stays choosable, and they may still pick a listed pharmacy
+instead.</p>
+<p><code>409 pharmacy_add_unavailable</code> on an e-prescribed prescription (the network
+already lists every pharmacy it can reach) or a deployment without a
+directory; <code>409 prescription_not_choosable</code> once settled;
+<code>422 invalid_pharmacy</code> with <code>details.code</code> when the address cannot be
+placed in a province; <code>faxIssue</code> (<code>same_as_phone</code>, <code>toll_free</code>, <code>invalid</code>)
+when the fax line as typed was dropped while the rest was kept.</p>
+<h2 id="what-this-surface-deliberately-does-not-do" class="tsd-anchor-link">What this surface deliberately does not do<a href="#what-this-surface-deliberately-does-not-do" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<ul>
+<li><strong>No clinical content.</strong> <a href="../interfaces/index.PrescriptionResource.html" class="tsd-kind-interface"> PrescriptionResource</a> is the link state:
+what was prescribed is between the physician and the pharmacy.</li>
+<li><strong>No listing.</strong> A prescription is reached by the id in its transcript
+link, or as <code>prescription</code> on <code>GET /v1/patients/state</code>.</li>
+<li><strong>Physician sessions</strong> cannot call these routes — they are patient-side,
+tenant-key only (<code>403 forbidden</code> to a session).</li>
+</ul>
+<p>In an <code>erx</code> deployment the pharmacy search is answered by the e-prescribing
+network, in a <code>fax</code> one by the platform's own directory — the same search,
+with the same credentials, the platform's <code>/pharmacy</code> page and app run.</p>
+</div></div>
+<div class="col-sidebar">
+<div class="page-menu">
+<div class="tsd-navigation settings">
+<details class="tsd-accordion"><summary class="tsd-accordion-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
+<h3>Settings</h3></summary>
+<div class="tsd-accordion-details">
+<div class="tsd-filter-visibility"><span class="settings-label">Member Visibility</span>
+<ul id="tsd-filter-options">
+<li class="tsd-filter-item"><label class="tsd-filter-input"><input type="checkbox" id="tsd-filter-protected" name="protected"/><svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect class="tsd-checkbox-background" width="30" height="30" x="1" y="1" rx="6" fill="none"></rect><path class="tsd-checkbox-checkmark" d="M8.35422 16.8214L13.2143 21.75L24.6458 10.25" stroke="none" stroke-width="3.5" stroke-linejoin="round" fill="none"></path></svg><span>Protected</span></label></li>
+<li class="tsd-filter-item"><label class="tsd-filter-input"><input type="checkbox" id="tsd-filter-inherited" name="inherited" checked/><svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect class="tsd-checkbox-background" width="30" height="30" x="1" y="1" rx="6" fill="none"></rect><path class="tsd-checkbox-checkmark" d="M8.35422 16.8214L13.2143 21.75L24.6458 10.25" stroke="none" stroke-width="3.5" stroke-linejoin="round" fill="none"></path></svg><span>Inherited</span></label></li></ul></div>
+<div class="tsd-theme-toggle"><label class="settings-label" for="tsd-theme">Theme</label><select id="tsd-theme"><option value="os">OS</option><option value="light">Light</option><option value="dark">Dark</option></select></div></div></details></div>
+<details open class="tsd-accordion tsd-page-navigation"><summary class="tsd-accordion-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
+<h3>On This Page</h3></summary>
+<div class="tsd-accordion-details"><a href="#prescriptions-the-patients-pharmacy-choice"><span>Prescriptions — the patient&#39;s pharmacy choice</span></a>
+<ul>
+<li><a href="#1-what-lands-on-the-transcript"><span>1. <wbr/>What lands on the transcript</span></a></li>
+<li><a href="#2-resolve-the-link"><span>2. <wbr/>Resolve the link</span></a></li>
+<li><a href="#3-list-the-pharmacies"><span>3. <wbr/>List the pharmacies</span></a></li>
+<li><a href="#4-choose"><span>4. <wbr/>Choose</span></a></li>
+<li><a href="#5-cache-the-home-location"><span>5. <wbr/>Cache the home location</span></a></li>
+<li><a href="#6-a-pharmacy-the-directory-does-not-list"><span>6. <wbr/>A pharmacy the directory does not list</span></a></li>
+<li><a href="#what-this-surface-deliberately-does-not-do"><span>What this surface deliberately does not do</span></a></li></ul></div></details></div>
+<div class="site-menu">
+<nav class="tsd-navigation"><a href="../index.html">Natzar Partner API Reference - v1.0.0</a>
+<ul class="tsd-small-nested-navigation" id="tsd-nav-container">
+<li>Loading...</li></ul></nav></div></div></div><footer>
+<p class="tsd-generator">Generated using <a href="https://typedoc.org/" target="_blank">TypeDoc</a></p></footer>
+<div class="overlay"></div></body></html>

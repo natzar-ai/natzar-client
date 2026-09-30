@@ -1,0 +1,283 @@
+<!DOCTYPE html><html class="default" lang="en" data-base="../"><head><meta charset="utf-8"/><meta http-equiv="x-ua-compatible" content="IE=edge"/><title>Scheduled consultations | Natzar Partner API Reference - v1.0.0</title><meta name="description" content="Documentation for Natzar Partner API Reference"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="stylesheet" href="../assets/style.css"/><link rel="stylesheet" href="../assets/highlight.css"/><script defer src="../assets/main.js"></script><script async src="../assets/icons.js" id="tsd-icons-script"></script><script async src="../assets/search.js" id="tsd-search-script"></script><script async src="../assets/navigation.js" id="tsd-nav-script"></script><script async src="../assets/hierarchy.js" id="tsd-hierarchy-script"></script></head><body><script>document.documentElement.dataset.theme = localStorage.getItem("tsd-theme") || "os";document.body.style.display="none";setTimeout(() => window.app?app.showPage():document.body.style.removeProperty("display"),500)</script><header class="tsd-page-toolbar">
+<div class="tsd-toolbar-contents container"><a href="../index.html" class="title">Natzar Partner API Reference - v1.0.0</a>
+<div id="tsd-toolbar-links"></div><button id="tsd-search-trigger" class="tsd-widget" aria-label="Search"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-search"></use></svg></button><dialog id="tsd-search" aria-label="Search"><input role="combobox" id="tsd-search-input" aria-controls="tsd-search-results" aria-autocomplete="list" aria-expanded="true" autocapitalize="off" autocomplete="off" placeholder="Search the docs" maxLength="100"/>
+<ul role="listbox" id="tsd-search-results"></ul>
+<div id="tsd-search-status" aria-live="polite" aria-atomic="true">
+<div>Preparing search index...</div></div></dialog><a href="#" class="tsd-widget menu" id="tsd-toolbar-menu-trigger" data-toggle="menu" aria-label="Menu"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-menu"></use></svg></a></div></header>
+<div class="container container-main">
+<div class="col-content">
+<div class="tsd-page-title">
+<ul class="tsd-breadcrumb" aria-label="Breadcrumb">
+<li><a href="" aria-current="page">Scheduled consultations</a></li></ul></div>
+<div class="tsd-panel tsd-typography"><h1 id="scheduled-consultations" class="tsd-anchor-link">Scheduled consultations<a href="#scheduled-consultations" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h1>
+<p>A video consultation at a time the patient chose, with a named physician —
+alongside (or instead of) the on-demand queue.</p>
+<p>The two modalities differ only in how the physician is decided. On demand, a
+matcher pairs the patient with the first eligible clinician who presses Ready.
+Scheduled, the clinician is chosen <strong>with the time</strong>, days in advance, and the
+call starts when both sides are in the appointment's waiting room.</p>
+<p>Everything below assumes the <a href="Getting_started.html">getting-started</a> setup:</p>
+<pre><code class="bash"><span class="hl-0">export</span><span class="hl-1"> </span><span class="hl-2">NATZAR_API</span><span class="hl-1">=</span><span class="hl-3">&quot;https://&lt;your-assigned-api-host&gt;&quot;</span><br/><span class="hl-0">export</span><span class="hl-1"> </span><span class="hl-2">NATZAR_KEY</span><span class="hl-1">=</span><span class="hl-3">&quot;pp_test_...&quot;</span>
+</code><button type="button">Copy</button></pre>
+
+<p>Your tenant must have <code>telehealthEnabled</code> <strong>and</strong> scheduled booking switched on
+(<code>Consultation → Settings</code> in the portal). Without it every route below answers
+<code>409 feature_disabled</code>.</p>
+<h2 id="1-publish-availability" class="tsd-anchor-link">1. Publish availability<a href="#1-publish-availability" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>Patients can only book time a physician has published. A schedule is stored
+as <strong>intent</strong>, never as slots: recurring <strong>rules</strong> (&quot;Tuesdays 09:00–12:00&quot;,
+every week or every N weeks, optionally between two dates) plus dated
+<strong>exceptions</strong> — time off (<code>block</code>) or extra hours (<code>open</code>) on one date or
+across a range of dates. Blocks always beat opens.</p>
+<h3 id="replace-the-whole-rota" class="tsd-anchor-link">Replace the whole rota<a href="#replace-the-whole-rota" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<p>For a rostering system that owns the schedule, <code>PUT</code> replaces <strong>everything</strong>
+the physician has — every rule and every exception, whatever its date — with
+what you send:</p>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-X</span><span class="hl-1"> </span><span class="hl-3">PUT</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/physicians/</span><span class="hl-2">$PHYSICIAN_ID</span><span class="hl-3">/schedule&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$NATZAR_KEY</span><span class="hl-3">&quot;</span><span class="hl-1"> </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&#39;Content-Type: application/json&#39;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-d</span><span class="hl-1"> </span><span class="hl-3">&#39;{</span><br/><span class="hl-3">    &quot;rules&quot;: [</span><br/><span class="hl-3">      {&quot;weekday&quot;: 1, &quot;startMinute&quot;: 540, &quot;endMinute&quot;: 720},</span><br/><span class="hl-3">      {&quot;weekday&quot;: 3, &quot;startMinute&quot;: 540, &quot;endMinute&quot;: 720},</span><br/><span class="hl-3">      {&quot;weekday&quot;: 3, &quot;startMinute&quot;: 840, &quot;endMinute&quot;: 1020, &quot;specialty&quot;: &quot;gastroenterology&quot;},</span><br/><span class="hl-3">      {&quot;weekday&quot;: 6, &quot;startMinute&quot;: 540, &quot;endMinute&quot;: 780, &quot;intervalWeeks&quot;: 2, &quot;effectiveFrom&quot;: &quot;2026-09-19&quot;}</span><br/><span class="hl-3">    ],</span><br/><span class="hl-3">    &quot;exceptions&quot;: [</span><br/><span class="hl-3">      {&quot;date&quot;: &quot;2026-07-14&quot;, &quot;kind&quot;: &quot;block&quot;, &quot;reason&quot;: &quot;Conference&quot;},</span><br/><span class="hl-3">      {&quot;date&quot;: &quot;2026-12-21&quot;, &quot;endDate&quot;: &quot;2027-01-04&quot;, &quot;kind&quot;: &quot;block&quot;, &quot;reason&quot;: &quot;Leave&quot;}</span><br/><span class="hl-3">    ]</span><br/><span class="hl-3">  }&#39;</span>
+</code><button type="button">Copy</button></pre>
+
+<p><code>weekday</code> is 0 = Sunday … 6 = Saturday. <code>startMinute</code>/<code>endMinute</code> are minutes
+from <strong>local midnight</strong> in the physician's calendar zone — not instants, which
+is what makes a rule survive daylight saving instead of sliding by an hour
+twice a year. That zone is ONE per physician: their own (<code>timezone</code> on this
+body or on <code>PATCH</code>, <code>null</code> to go back to the clinic's) when set, else the
+clinic's. Do not put a <code>timezone</code> on a rule: one that names a different zone
+from the physician's is refused (<code>rule_zone_mismatch</code>) — set the physician's
+zone instead. A zone change keeps every rule's wall-clock meaning.
+A rule with a <code>specialty</code> serves only that specialty (a dedicated clinic); one
+without serves whatever the physician covers. <code>intervalWeeks: 2</code> is a
+fortnightly clinic: the first occurrence is the first <code>weekday</code> on or after
+<code>effectiveFrom</code> (required for N &gt; 1), then every 14 days. An exception with
+<code>endDate</code> covers every day of the range — a three-week leave is one row.</p>
+<h3 id="edit-like-a-calendar" class="tsd-anchor-link">Edit like a calendar<a href="#edit-like-a-calendar" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<p>A calendar does not re-send the rota to block one afternoon. <code>PATCH</code> applies a
+<strong>change set</strong> — rows with an <code>id</code> (from a prior read) are updated, rows
+without are created, and the two id lists are deleted; everything else stays
+exactly as it was, however far ahead it lies:</p>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-X</span><span class="hl-1"> </span><span class="hl-3">PATCH</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/physicians/</span><span class="hl-2">$PHYSICIAN_ID</span><span class="hl-3">/schedule?from=2026-09-01&amp;to=2026-09-30&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$NATZAR_KEY</span><span class="hl-3">&quot;</span><span class="hl-1"> </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&#39;Content-Type: application/json&#39;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-d</span><span class="hl-1"> </span><span class="hl-3">&#39;{</span><br/><span class="hl-3">    &quot;exceptions&quot;: [</span><br/><span class="hl-3">      {&quot;date&quot;: &quot;2026-09-14&quot;, &quot;kind&quot;: &quot;block&quot;, &quot;startMinute&quot;: 840, &quot;endMinute&quot;: 960, &quot;reason&quot;: &quot;Dentist&quot;},</span><br/><span class="hl-3">      {&quot;id&quot;: &quot;e_1&quot;, &quot;date&quot;: &quot;2026-09-19&quot;, &quot;kind&quot;: &quot;open&quot;, &quot;startMinute&quot;: 540, &quot;endMinute&quot;: 720}</span><br/><span class="hl-3">    ],</span><br/><span class="hl-3">    &quot;deletedRuleIds&quot;: [&quot;r_9&quot;]</span><br/><span class="hl-3">  }&#39;</span>
+</code><button type="button">Copy</button></pre>
+
+<p>One malformed row refuses the whole call (<code>400 invalid_request</code> naming the
+row and the problem); an <code>id</code> that is not this physician's is refused on
+update and ignored on delete.</p>
+<p>The <strong>schedule engine</strong> that turns a calendar gesture into the right change
+set ships in <code>@natzar/client/contract</code> and is the same code the platform
+runs: <code>openWindow</code> / <code>closeWindow</code> (&quot;make me available / unavailable 14:00–16:00
+on the 14th&quot; — cutting back time off or extra hours first, never touching a
+rule), <code>blockDates</code> (leave), <code>unblockDate</code>, <code>endRuleBefore</code> (stop a pattern
+from a date, keeping the past it was booked against), <code>resolveDays</code> (rules +
+exceptions → bookable intervals per date, for a live preview) and
+<code>diffSchedule</code> (loaded document → edited document → PATCH body). See the
+<code>@natzar/client</code> README.</p>
+<h3 id="read-it" class="tsd-anchor-link">Read it<a href="#read-it" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/physicians/</span><span class="hl-2">$PHYSICIAN_ID</span><span class="hl-3">/schedule?from=2026-09-01&amp;to=2026-10-31&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$NATZAR_KEY</span><span class="hl-3">&quot;</span>
+</code><button type="button">Copy</button></pre>
+
+<pre><code class="json"><span class="hl-1">{</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;physicianId&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;…&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;rules&quot;</span><span class="hl-1">: [{</span><span class="hl-6">&quot;id&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;r_1&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;weekday&quot;</span><span class="hl-1">: </span><span class="hl-9">1</span><span class="hl-1">, </span><span class="hl-6">&quot;startMinute&quot;</span><span class="hl-1">: </span><span class="hl-9">540</span><span class="hl-1">, </span><span class="hl-6">&quot;endMinute&quot;</span><span class="hl-1">: </span><span class="hl-9">720</span><span class="hl-1">, </span><span class="hl-6">&quot;intervalWeeks&quot;</span><span class="hl-1">: </span><span class="hl-9">1</span><span class="hl-1">, </span><span class="hl-6">&quot;…&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;…&quot;</span><span class="hl-1">}],</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;exceptions&quot;</span><span class="hl-1">: [{</span><span class="hl-6">&quot;id&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;e_1&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;date&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;2026-09-14&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;kind&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;block&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;startMinute&quot;</span><span class="hl-1">: </span><span class="hl-9">840</span><span class="hl-1">, </span><span class="hl-6">&quot;endMinute&quot;</span><span class="hl-1">: </span><span class="hl-9">960</span><span class="hl-1">, </span><span class="hl-6">&quot;…&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;…&quot;</span><span class="hl-1">}],</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;days&quot;</span><span class="hl-1">: [{</span><span class="hl-6">&quot;date&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;2026-09-01&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;intervals&quot;</span><span class="hl-1">: []}, {</span><span class="hl-6">&quot;date&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;2026-09-07&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;intervals&quot;</span><span class="hl-1">: [{</span><span class="hl-6">&quot;start&quot;</span><span class="hl-1">: </span><span class="hl-9">540</span><span class="hl-1">, </span><span class="hl-6">&quot;end&quot;</span><span class="hl-1">: </span><span class="hl-9">720</span><span class="hl-1">, </span><span class="hl-6">&quot;specialty&quot;</span><span class="hl-1">: </span><span class="hl-0">null</span><span class="hl-1">}]}, </span><span class="hl-3">&quot;…&quot;</span><span class="hl-1">],</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;from&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;2026-09-01&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;to&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;2026-10-31&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;today&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;2026-09-15&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;timezone&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;America/Toronto&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;clinicTimezone&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;Europe/Zurich&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;schedulingTimezone&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;America/Toronto&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;upcomingAppointments&quot;</span><span class="hl-1">: </span><span class="hl-9">3</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;slotMinutes&quot;</span><span class="hl-1">: </span><span class="hl-9">20</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;scheduleHorizonDays&quot;</span><span class="hl-1">: </span><span class="hl-9">28</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;requiredThrough&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;2026-10-13&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;coveredThrough&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;2026-10-13&quot;</span><br/><span class="hl-1">}</span>
+</code><button type="button">Copy</button></pre>
+
+<p><code>timezone</code> is the physician's effective calendar zone (<code>schedulingTimezone</code>
+when they set one, else <code>clinicTimezone</code>); <code>today</code>, <code>from</code>/<code>to</code>, every rule
+minute and every exception date are read in it. <code>upcomingAppointments</code> is how
+many booked appointments lie ahead — the number to show before a zone change,
+since those keep their instants and re-render on the new clock.</p>
+<p><code>rules</code> are always the whole rota. <code>exceptions</code> and <code>days</code> describe <code>from</code>..<code>to</code>
+(inclusive local dates; default today → <code>requiredThrough</code>; at most 400 days per
+read — page by range to look further). <code>days</code> is the engine's resolution for
+every date of the range, so you can draw the calendar without running the
+engine yourself.</p>
+<p><code>coveredThrough</code> is the last date covered <strong>without a gap</strong> — a rota with
+Mondays booked for a year but nothing else is not a covered schedule, and
+reporting the far Monday would tell a physician they were done when they had
+published one day a week. Compare it with <code>requiredThrough</code> to surface a
+shortfall.</p>
+<h2 id="1b-record-state-licences-if-your-tenant-enforces-them" class="tsd-anchor-link">1b. Record state licences (if your tenant enforces them)<a href="#1b-record-state-licences-if-your-tenant-enforces-them" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>A tenant can require that a physician only be routed patients in a state they
+hold a current licence for. It is <strong>off by default</strong>; ask us to enable it, and
+record licences <em>before</em> we do — with it on, a physician with none is offered
+nothing.</p>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-X</span><span class="hl-1"> </span><span class="hl-3">PUT</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/physicians/</span><span class="hl-2">$PHYSICIAN_ID</span><span class="hl-3">/licenses&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$NATZAR_KEY</span><span class="hl-3">&quot;</span><span class="hl-1"> </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&#39;Content-Type: application/json&#39;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-d</span><span class="hl-1"> </span><span class="hl-3">&#39;{</span><br/><span class="hl-3">    &quot;licenses&quot;: [</span><br/><span class="hl-3">      {&quot;state&quot;: &quot;CA&quot;, &quot;licenseNumber&quot;: &quot;A-123456&quot;, &quot;expiresAt&quot;: &quot;2027-03-31&quot;},</span><br/><span class="hl-3">      {&quot;state&quot;: &quot;NY&quot;, &quot;licenseNumber&quot;: &quot;NY-98765&quot;, &quot;expiresAt&quot;: &quot;2026-09-30&quot;}</span><br/><span class="hl-3">    ]</span><br/><span class="hl-3">  }&#39;</span>
+</code><button type="button">Copy</button></pre>
+
+<p><code>state</code> is an ISO 3166-2 subdivision code <strong>without</strong> the country prefix (<code>CA</code>,
+not <code>US-CA</code>); <code>country</code> defaults to your tenant's own. The pair is what matters —
+<code>CA</code> is California to a US tenant and Canada to a Canadian one.</p>
+<p>The response separates out what is about to lapse:</p>
+<pre><code class="json"><span class="hl-1">{</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;physicianId&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;…&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;licenses&quot;</span><span class="hl-1">: [ </span><span class="hl-17">…</span><span class="hl-1"> ],</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;expiringSoon&quot;</span><span class="hl-1">: [{</span><span class="hl-6">&quot;state&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;NY&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;expiresAt&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;2026-09-30&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;…&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;…&quot;</span><span class="hl-1">}],</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;licenseEnforcement&quot;</span><span class="hl-1">: </span><span class="hl-0">true</span><br/><span class="hl-1">}</span>
+</code><button type="button">Copy</button></pre>
+
+<p><strong>Surface <code>expiringSoon</code>.</strong> An expired licence stops routing automatically on
+its expiry date — which is the point — but it does so with no error anywhere,
+and the first symptom is a patient being told nobody can see them.</p>
+<p>A <code>state</code> we cannot resolve to a real jurisdiction is <strong>refused</strong> (<code>400 invalid_request</code>), not quietly dropped: a licence list that silently lost an
+entry looks like coverage that is not there.</p>
+<h3 id="tell-us-where-the-patient-is" class="tsd-anchor-link">Tell us where the patient is<a href="#tell-us-where-the-patient-is" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<p>Under enforcement, a consult for a patient whose state we do not know <strong>cannot
+be routed at all</strong> — failing open on an empty address field is the failure the
+setting exists to prevent. So send it on the patient upsert:</p>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-X</span><span class="hl-1"> </span><span class="hl-3">POST</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/patients&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$NATZAR_KEY</span><span class="hl-3">&quot;</span><span class="hl-1"> </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&#39;Content-Type: application/json&#39;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-d</span><span class="hl-1"> </span><span class="hl-3">&#39;{&quot;externalId&quot;: &quot;your-patient-42&quot;, &quot;…&quot;: &quot;…&quot;, &quot;state&quot;: &quot;CA&quot;, &quot;country&quot;: &quot;US&quot;}&#39;</span>
+</code><button type="button">Copy</button></pre>
+
+<p>If you do not, nothing breaks: <code>GET /slots</code> answers with
+<code>licenseBlock: {&quot;reason&quot;: &quot;unknown_jurisdiction&quot;}</code> and our own booking page asks
+the patient directly — which is the more correct question anyway, since the
+jurisdiction that governs a telemedicine encounter is where the patient
+physically is at the time, not their billing address.</p>
+<p>When we know the state and nobody is licensed there, <code>/slots</code> says so plainly
+rather than returning an empty calendar:</p>
+<pre><code class="json"><span class="hl-1">{</span><span class="hl-6">&quot;slots&quot;</span><span class="hl-1">: [], </span><span class="hl-6">&quot;noEligiblePhysicians&quot;</span><span class="hl-1">: </span><span class="hl-0">true</span><span class="hl-1">,</span><br/><span class="hl-1"> </span><span class="hl-6">&quot;licenseBlock&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;reason&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;no_licensed_physician&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;state&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;CA&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;label&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;California&quot;</span><span class="hl-1">}}</span>
+</code><button type="button">Copy</button></pre>
+
+<p>That is a permanent answer, not &quot;try again later&quot; — tell the patient so.</p>
+<h2 id="2-create-a-scheduled-consult" class="tsd-anchor-link">2. Create a scheduled consult<a href="#2-create-a-scheduled-consult" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>Same endpoint as the on-demand one, plus <code>mode</code>:</p>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-X</span><span class="hl-1"> </span><span class="hl-3">POST</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/telehealth-consults&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$NATZAR_KEY</span><span class="hl-3">&quot;</span><span class="hl-1"> </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&#39;Content-Type: application/json&#39;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-d</span><span class="hl-1"> </span><span class="hl-3">&#39;{</span><br/><span class="hl-3">    &quot;externalPatientId&quot;: &quot;your-patient-42&quot;,</span><br/><span class="hl-3">    &quot;mode&quot;: &quot;scheduled&quot;,</span><br/><span class="hl-3">    &quot;specialty&quot;: &quot;gastroenterology&quot;,</span><br/><span class="hl-3">    &quot;context&quot;: &quot;3 weeks of epigastric pain, worse after meals. On omeprazole 20mg.&quot;</span><br/><span class="hl-3">  }&#39;</span>
+</code><button type="button">Copy</button></pre>
+
+<p><code>specialty</code> is a routing hint, not a constraint you must get right: an unknown
+or inactive slug degrades to the tenant's catch-all specialty rather than
+failing the request. A bad guess costs the patient a generalist, never a
+consultation. Omit it to leave the consult unrouted.</p>
+<p>The consult comes back <code>status: &quot;invited&quot;</code> with no time yet.</p>
+<h2 id="3-offer-the-times" class="tsd-anchor-link">3. Offer the times<a href="#3-offer-the-times" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/telehealth-consults/</span><span class="hl-2">$CONSULT_ID</span><span class="hl-3">/slots?timezone=America/Los_Angeles&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$NATZAR_KEY</span><span class="hl-3">&quot;</span>
+</code><button type="button">Copy</button></pre>
+
+<pre><code class="json"><span class="hl-1">{</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;slots&quot;</span><span class="hl-1">: [</span><br/><span class="hl-1">    {</span><span class="hl-6">&quot;startsAt&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;2026-06-16T07:00:00.000Z&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;endsAt&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;2026-06-16T07:20:00.000Z&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">     </span><span class="hl-6">&quot;localDate&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;2026-06-16&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;practitionerIds&quot;</span><span class="hl-1">: [</span><span class="hl-3">&quot;doc_1&quot;</span><span class="hl-1">, </span><span class="hl-3">&quot;doc_7&quot;</span><span class="hl-1">]}</span><br/><span class="hl-1">  ],</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;timezone&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;America/Los_Angeles&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;clinicTimezone&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;Europe/Zurich&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;truncated&quot;</span><span class="hl-1">: </span><span class="hl-0">false</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;nextFrom&quot;</span><span class="hl-1">: </span><span class="hl-0">null</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;slotMinutes&quot;</span><span class="hl-1">: </span><span class="hl-9">20</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;bookingHorizonDays&quot;</span><span class="hl-1">: </span><span class="hl-9">14</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;cancellationWindowMinutes&quot;</span><span class="hl-1">: </span><span class="hl-9">120</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;waitingRoomOpensMinutes&quot;</span><span class="hl-1">: </span><span class="hl-9">10</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;appointment&quot;</span><span class="hl-1">: </span><span class="hl-0">null</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;noEligiblePhysicians&quot;</span><span class="hl-1">: </span><span class="hl-0">false</span><br/><span class="hl-1">}</span>
+</code><button type="button">Copy</button></pre>
+
+<p>Four things to render correctly:</p>
+<ul>
+<li><strong>Pass the patient's zone, group by <code>localDate</code>, label with <code>timezone</code>.</strong>
+<code>timezone</code> is the zone the grid is expressed in — the one you sent (the
+patient's device zone, <code>Intl.DateTimeFormat().resolvedOptions().timeZone</code>),
+else the clinic's. Every <code>localDate</code> is a calendar day in it, so a 23:30
+clinic slot files under the patient's own evening, not tomorrow. <code>from</code>/<code>to</code>
+are read in it too. An unknown zone is <code>400 invalid_request</code>. When
+<code>clinicTimezone</code> differs, say so (&quot;the clinic is 9 h ahead&quot;) — the
+appointment is a commitment between two people, and the one thing that must
+never happen is the two of them reading different hours off the same screen
+without knowing it.</li>
+<li><strong><code>truncated: true</code> means the list was cut at the server's cap.</strong> Page with
+<code>?from=&lt;nextFrom&gt;</code> (a local date in <code>timezone</code>) rather than treating the end
+of the list as the end of availability.</li>
+<li><strong>Do not show <code>practitionerIds</code> as a choice.</strong> Identical starts from several
+physicians collapse into one offer; <code>book</code> picks the least-loaded of them.
+Showing a wall of names the patient has no basis to choose between makes a
+worse experience <em>and</em> a worse rota.</li>
+<li><strong><code>noEligiblePhysicians: true</code> is not an empty calendar.</strong> It means nobody in
+the tenant covers this specialty at all, and no amount of waiting will help.
+Say so, rather than showing an empty grid.</li>
+</ul>
+<h2 id="4-book" class="tsd-anchor-link">4. Book<a href="#4-book" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-X</span><span class="hl-1"> </span><span class="hl-3">POST</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/telehealth-consults/</span><span class="hl-2">$CONSULT_ID</span><span class="hl-3">/book&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$NATZAR_KEY</span><span class="hl-3">&quot;</span><span class="hl-1"> </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&#39;Content-Type: application/json&#39;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-d</span><span class="hl-1"> </span><span class="hl-3">&#39;{&quot;startsAt&quot;: &quot;2026-06-16T07:00:00.000Z&quot;, &quot;patientTimezone&quot;: &quot;America/Los_Angeles&quot;}&#39;</span>
+</code><button type="button">Copy</button></pre>
+
+<pre><code class="json"><span class="hl-1">{</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;consult&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;…&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;…&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;status&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;scheduled&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;scheduledAt&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;2026-06-16T07:00:00.000Z&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;patientTimezone&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;America/Los_Angeles&quot;</span><span class="hl-1">},</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;appointment&quot;</span><span class="hl-1">: {</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;startsAt&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;2026-06-16T07:00:00.000Z&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;practitionerName&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;Dr. Sarah Chen, MD&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;waitingRoomOpensAt&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;2026-06-16T06:50:00.000Z&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;cancellableUntil&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;2026-06-16T05:00:00.000Z&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;timezone&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;America/Los_Angeles&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;clinicTimezone&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;Europe/Zurich&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;physicianTimezone&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;Europe/Zurich&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;patientTimezone&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;America/Los_Angeles&quot;</span><br/><span class="hl-1">  },</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;rescheduled&quot;</span><span class="hl-1">: </span><span class="hl-0">false</span><br/><span class="hl-1">}</span>
+</code><button type="button">Copy</button></pre>
+
+<p><code>patientTimezone</code> is the zone the patient booked from. It is stamped on the
+consult, and every confirmation and reminder we send renders the time in it —
+with the physician's clock in brackets when the two read a different hour.
+The appointment's <code>timezone</code> is the zone this response is expressed in (the
+one you sent); <code>physicianTimezone</code> is the physician's calendar zone, for a
+&quot;their clock&quot; line.</p>
+<p>The reservation is atomic, and so is the <strong>overlap</strong> check: the physician's
+reserved intervals for the day are held in a version-conditioned ledger item
+written in the same transaction as the reservation and the consult update, so
+two bookings that overlap — identical starts or not — cannot both succeed.
+The same patient may hold at most <code>maxOpenBookingsPerPatient</code> upcoming
+appointments (<code>409 too_many_open_bookings</code>). The loser of a race gets:</p>
+<pre><code class="json"><span class="hl-1">{</span><span class="hl-6">&quot;error&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;code&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;slot_taken&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;message&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;That time is no longer available&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">           </span><span class="hl-6">&quot;details&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;slots&quot;</span><span class="hl-1">: [ </span><span class="hl-17">…</span><span class="hl-1"> ]}}}</span>
+</code><button type="button">Copy</button></pre>
+
+<p>Retry with a <strong>different</strong> time from the attached fresh list, never the same one.</p>
+<p>Calling <code>book</code> again on a consult that already has a time <strong>reschedules</strong> it:
+same consult, same id, same embed session, a different slot. There is no
+cancel-then-rebook dance, precisely because that would drop the patient's
+appointment on the floor between the two calls.</p>
+<p><code>/slots</code> and <code>/book</code> work on <strong>any</strong> scheduled consult of a patient you
+provisioned — including a booking invite a physician or our agent sent the
+patient in conversation — not only the ones you created.</p>
+<p>Such an invite carries the same <strong>booking window</strong> its link does everywhere
+else: three days to choose a time. Once that lapses with nothing booked,
+<code>/slots</code> and <code>/book</code> answer <code>409 thread_not_active</code> with
+<code>details.status: &quot;expired&quot;</code> — the same answer the consult's checkout and
+every patient surface give it; have a new invite sent. The window only
+governs choosing: a booked appointment keeps working, rescheduling included.
+Two exceptions: consults you created carry no window at all, and an invite
+the patient already <strong>paid</strong> for stays bookable (the window restarts).</p>
+<h3 id="paid-bookings" class="tsd-anchor-link">Paid bookings<a href="#paid-bookings" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<p>When the clinic charges for a booked visit, <code>book</code> without a payment answers
+<code>402 payment_required</code> (<code>details</code>: <code>amountCents</code>, <code>currency</code>,
+<code>modality: &quot;telehealth&quot;</code>, <code>mode: &quot;book&quot;</code>) and books nothing. The consult's
+<code>payment</code> block shows the price beforehand, so the confirm button can read
+&quot;Confirm 3:00 PM · Pay CA$100&quot;. Start a checkout keyed on the consult —
+<code>POST /v1/billing/visit-checkout {&quot;telehealthConsultId&quot;: &quot;…&quot;}</code> — wait for
+<code>paid</code>, then <code>book</code> the same time again. The <code>paymentId</code> is optional there:
+the payment is bound to the consult and adopted. The slot is <strong>not</strong> held
+while the patient pays; if it is taken meanwhile, <code>409 slot_taken</code> comes back
+with a fresh grid and the payment stays bound to the consult for the next
+time they pick. See <a href="Payments.html">Payments</a>.</p>
+<h2 id="5-the-appointment" class="tsd-anchor-link">5. The appointment<a href="#5-the-appointment" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>Cancel with the ordinary cancel route — it releases the physician's slot in the
+same write that changes the status:</p>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-X</span><span class="hl-1"> </span><span class="hl-3">POST</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/telehealth-consults/</span><span class="hl-2">$CONSULT_ID</span><span class="hl-3">/cancel&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$NATZAR_KEY</span><span class="hl-3">&quot;</span>
+</code><button type="button">Copy</button></pre>
+
+<p>To let the patient attend, mint an embed session
+(<code>POST /v1/telehealth-consults/{id}/embed-session</code>) and render
+<code>&lt;natzar-telehealth&gt;</code> exactly as for an on-demand consult. The widget shows the
+slot grid before a time is chosen and the waiting room from
+<code>waitingRoomOpensAt</code> — you do not switch surfaces.</p>
+<p>A booked call <strong>never rings and is never matched</strong>. Both sides report presence
+in the waiting room, and the moment each sees the other, the call starts. That
+is why there is nothing for you to poll here beyond what the widget already
+does.</p>
+<h2 id="6-what-the-patient-hears-from-us" class="tsd-anchor-link">6. What the patient hears from us<a href="#6-what-the-patient-hears-from-us" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>If the tenant has messaging enabled, the platform sends the patient a booking
+confirmation, reminders (by default 24 hours and 30 minutes before), a
+cancellation notice and a no-show notice, on their own channel and in their own
+language, <strong>on their own clock</strong> — the <code>patientTimezone</code> sent with the booking,
+else the clinic's — with the physician's clock in brackets when it differs.
+You do not need to build any of it — and you should not duplicate it.</p>
+</div></div>
+<div class="col-sidebar">
+<div class="page-menu">
+<div class="tsd-navigation settings">
+<details class="tsd-accordion"><summary class="tsd-accordion-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
+<h3>Settings</h3></summary>
+<div class="tsd-accordion-details">
+<div class="tsd-filter-visibility"><span class="settings-label">Member Visibility</span>
+<ul id="tsd-filter-options">
+<li class="tsd-filter-item"><label class="tsd-filter-input"><input type="checkbox" id="tsd-filter-protected" name="protected"/><svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect class="tsd-checkbox-background" width="30" height="30" x="1" y="1" rx="6" fill="none"></rect><path class="tsd-checkbox-checkmark" d="M8.35422 16.8214L13.2143 21.75L24.6458 10.25" stroke="none" stroke-width="3.5" stroke-linejoin="round" fill="none"></path></svg><span>Protected</span></label></li>
+<li class="tsd-filter-item"><label class="tsd-filter-input"><input type="checkbox" id="tsd-filter-inherited" name="inherited" checked/><svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect class="tsd-checkbox-background" width="30" height="30" x="1" y="1" rx="6" fill="none"></rect><path class="tsd-checkbox-checkmark" d="M8.35422 16.8214L13.2143 21.75L24.6458 10.25" stroke="none" stroke-width="3.5" stroke-linejoin="round" fill="none"></path></svg><span>Inherited</span></label></li></ul></div>
+<div class="tsd-theme-toggle"><label class="settings-label" for="tsd-theme">Theme</label><select id="tsd-theme"><option value="os">OS</option><option value="light">Light</option><option value="dark">Dark</option></select></div></div></details></div>
+<details open class="tsd-accordion tsd-page-navigation"><summary class="tsd-accordion-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
+<h3>On This Page</h3></summary>
+<div class="tsd-accordion-details"><a href="#scheduled-consultations"><span>Scheduled consultations</span></a>
+<ul>
+<li><a href="#1-publish-availability"><span>1. <wbr/>Publish availability</span></a></li>
+<li>
+<ul>
+<li><a href="#replace-the-whole-rota"><span>Replace the whole rota</span></a></li>
+<li><a href="#edit-like-a-calendar"><span>Edit like a calendar</span></a></li>
+<li><a href="#read-it"><span>Read it</span></a></li></ul></li>
+<li><a href="#1b-record-state-licences-if-your-tenant-enforces-them"><span>1b. <wbr/>Record state licences (if your tenant enforces them)</span></a></li>
+<li>
+<ul>
+<li><a href="#tell-us-where-the-patient-is"><span>Tell us where the patient is</span></a></li></ul></li>
+<li><a href="#2-create-a-scheduled-consult"><span>2. <wbr/>Create a scheduled consult</span></a></li>
+<li><a href="#3-offer-the-times"><span>3. <wbr/>Offer the times</span></a></li>
+<li><a href="#4-book"><span>4. <wbr/>Book</span></a></li>
+<li>
+<ul>
+<li><a href="#paid-bookings"><span>Paid bookings</span></a></li></ul></li>
+<li><a href="#5-the-appointment"><span>5. <wbr/>The appointment</span></a></li>
+<li><a href="#6-what-the-patient-hears-from-us"><span>6. <wbr/>What the patient hears from us</span></a></li></ul></div></details></div>
+<div class="site-menu">
+<nav class="tsd-navigation"><a href="../index.html">Natzar Partner API Reference - v1.0.0</a>
+<ul class="tsd-small-nested-navigation" id="tsd-nav-container">
+<li>Loading...</li></ul></nav></div></div></div><footer>
+<p class="tsd-generator">Generated using <a href="https://typedoc.org/" target="_blank">TypeDoc</a></p></footer>
+<div class="overlay"></div></body></html>
