@@ -1,39 +1,28 @@
 // GENERATED FILE — do not edit.
 //
-// Copied verbatim from provider-portal's shared/partner-api by
+// Copied verbatim from natzar-core's shared/partner-api by
 // scripts/sync-contract.mjs. Edit the source there; this copy exists only so
 // the published package is self-contained.
 /**
- * Embed contract: the `<natzar-telehealth>` / `<natzar-async>` custom
- * elements, their attributes, the DOM events they dispatch, and the
- * `postMessage` protocol between the embedded iframe and its host page.
+ * Embed contract: the `<natzar-telehealth>` / `<natzar-async>` /
+ * `<natzar-agent>` custom elements, their attributes, the DOM events they
+ * dispatch, and the v1 `postMessage` envelope between the embedded iframe and
+ * its host page.
  *
- * ## Quickstart
+ * ## Quickstart (protocol v2, `./sessions`)
  *
  * ```html
- * <script src="https://us.app.natzar.ai/embed/v1/embed.js"></script>
- * <natzar-telehealth session-token="…" locale="en" theme="auto"></natzar-telehealth>
+ * <script src="/natzar/embed.js" async></script>
+ * <natzar-async locale="en" theme="auto"></natzar-async>
  * ```
  *
- * The script host is the Natzar app origin for the environment your key
- * belongs to — `https://us.app.natzar.ai` (prod in the US residency zone;
- * each zone has its own host),
- * `https://stage.us.app.natzar.ai`, `https://dev.us.app.natzar.ai`. It is also
- * `NATZAR_ENDPOINTS[env][zone].embedOrigin` in `@natzar/client`, so a host page
- * can read it from the same config object rather than hardcoding it.
- *
- * 1. Server-side, mint a session token:
- *    `POST /v1/telehealth-consults/{id}/embed-session` (or
- *    `/v1/async-consults/{id}/embed-session`, or take the `sessionToken` from
- *    an async-consult create with `consent: 'embed'`).
- * 2. Render the matching tag with the token in `session-token`.
- * 3. Listen for lifecycle events on the element (see
- *    {@link EmbedEventDetailMap}); on `natzar:expired`, mint a fresh token
- *    and call the element's `refresh(token)`.
- *
- * Tokens are consult-scoped and short-lived (1 h default). The embedding
- * page's origin must be on your partner account's `allowedOrigins` list or
- * the widget refuses to load (`origin_not_allowed`).
+ * Your server mounts the `natzar()` middleware of `@natzar/client/server` at
+ * `/natzar`; it maps your login to a patient in `identify` and mints the
+ * session through `POST /v1/sessions` (`./sessions`). The element finds
+ * `/natzar` on its own origin, obtains its credential sealed to its frame and
+ * renews it by itself: no credential ever appears in an attribute, a URL or
+ * the page. The embedding page's origin must be registered for your account
+ * (`PUT /v1/embed/origins`), or the element reports `origin_not_allowed`.
  *
  * The telehealth iframe requests camera/microphone access, the in-frame
  * pharmacy picker (a prescription's "choose a pharmacy" step) asks for the
@@ -45,22 +34,26 @@
  *
  * ## Event plumbing
  *
- * The iframe posts {@link EmbedPostMessage} envelopes to the host page; the
- * custom element verifies the message origin and re-dispatches each one as
- * a DOM `CustomEvent` named `natzar:<event>` (see {@link EmbedDomEventName})
- * whose `detail` is the envelope's `data`. Only `natzar:expired` needs an
- * answer (a fresh token, for sessions that outlive one); everything else —
- * presenting the payment step as a dialog included — the element does
- * itself. Listen on the element when you want to react:
+ * The element re-dispatches what its frame reports as DOM `CustomEvent`s
+ * named `natzar:<event>` (see {@link EmbedDomEventName}). The element renews
+ * its own session; `natzar:expired` fires only when renewal is impossible.
+ * Listen on the element when you want to react:
  *
  * ```js
  * const el = document.querySelector('natzar-async');
- * el.addEventListener('natzar:message', (e) => console.log(e.detail.message));
- * el.addEventListener('natzar:expired', async () => el.refresh(await mintToken()));
+ * el.addEventListener('natzar:message', (e) => bumpBadge(e.detail.consultId));
  * ```
  *
  * This module is imported by the embed script itself and by partner
  * TypeScript: it is intentionally runtime-free apart from string constants.
+ *
+ * REPLACED BY ./sessions (embed redesign M1/M4) — delete when the last consumer
+ * moves: the `session-token` attribute, `refresh()`, the raw
+ * `{source:'natzar-embed'}` postMessage protocol ({@link EmbedPostMessage}) and
+ * the `message`/`expired`/`error` details (D2). The tag names, the 12 event
+ * names, the other details and the presentation attributes stay. The
+ * per-consult `/embed-session` mint routes and the HS256 patient tokens are
+ * gone (M2).
  *
  * @packageDocumentation
  */
@@ -77,9 +70,8 @@ export const EMBED_TAG_ASYNC = 'natzar-async';
 /**
  * Tag name of the AI-agent chat element.
  *
- * Unlike the two consult tags, its session token is scoped to a PATIENT
- * rather than a consult — mint it with
- * `POST /v1/agent/embed-session`. The conversation continues across consults,
+ * Unlike the two consult tags, its session (surface `agent`) is scoped to a
+ * PATIENT rather than a consult. The conversation continues across consults,
  * so the same widget shows the agent's answers and any stretch where a
  * physician took over.
  */
@@ -121,8 +113,9 @@ export type EmbedTheme = 'light' | 'dark' | 'auto';
  */
 export interface EmbedAttributes {
   /**
-   * REQUIRED. The consult-scoped session token minted server-side via the
-   * `/embed-session` endpoint (never mint tokens in the browser — that
+   * REPLACED (v1 only; removed with the v2 loader, M4): v2 elements take no
+   * credential attribute. Was: the consult-scoped session token minted
+   * server-side (never mint tokens in the browser — that
    * would expose your API key). Determines which consult the widget shows;
    * the token's type must match the tag (`telehealth` vs `async`).
    */
@@ -175,7 +168,9 @@ export interface NatzarEmbedElementApi {
    * — the intended reaction to the `natzar:expired` event. In-flight calls
    * and (for telehealth) a live video call continue uninterrupted.
    *
-   * @param sessionToken - A fresh token from the `/embed-session` endpoint.
+   * REPLACED (v1 only): v2 elements renew by themselves (`connect({getSession})` in manual mode).
+   *
+   * @param sessionToken - A fresh v1 session token.
    */
   refresh(sessionToken: string): void;
 }
@@ -279,8 +274,9 @@ export interface EmbedEventDetailMap {
     closedReason?: AsyncClosedReason;
   };
   /**
-   * The session token expired. The widget freezes (read-only) until the
-   * host mints a fresh token server-side and calls `refresh(token)`.
+   * The session ended and could not be renewed (v2: `./sessions`
+   * `patientEventDetailSchemas.expired` adds the reason). The widget freezes
+   * (read-only).
    */
   expired: {consultId: string};
   /** Something went wrong (invalid token, disallowed origin, network…). */

@@ -1,12 +1,13 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {connectPhysician, NatzarSessionError} from '../dist/esm/physician/index.js';
-import type {PhysicianWorkspace} from '../dist/esm/physician/index.js';
+import type {ConnectOptions, ConnectPhysicianSource, PhysicianWorkspace, SessionAsk} from '../dist/esm/physician/index.js';
 
-// The physician surface — the half that runs in a clinician's browser on a
-// session token, with no API key. Everything here is stubbed at fetch, so
+// The physician surface — the half that runs in a clinician's browser on an
+// nz1 session, with no API key. Everything here is stubbed at fetch, so
 // these assert the SDK's OWN rules (headers, polling discipline, heartbeats,
-// expiry) rather than transport.
+// session end) rather than transport. Sessions come from a `getSession`
+// stand-in answering native grants; the broker itself is test/broker.test.ts.
 
 type Call = {method: string; path: string; url: string; headers: Record<string, string>; body: unknown; count: number};
 // `object`, not `unknown`: a union with `unknown` collapses to `unknown` and
@@ -56,12 +57,37 @@ function stubApi(routes: Record<string, RouteStub>) {
 
 const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** An unsigned JWT-shaped token — the SDK only checks the SHAPE locally. */
-const jwt = (claims: Record<string, unknown>) =>
-  `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.sig`;
+const CONFIG = {partnerId: 'partner_1', environment: 'sbx-test', zone: 'us' as const, apiUrl: 'https://api.test/v1'};
+const sid = (n: number) => `sess${String(n).padStart(17, '0')}A`;
+const tokenOf = (sessionId: string, n: number) => `nz1.${sessionId}.${String(n).padStart(42, 'k')}A`;
+const TOKEN = tokenOf(sid(1), 1);
 
-const TOKEN = jwt({typ: 'physician', sub: 'd_1', exp: 4102444800});
-const SESSION = {sessionToken: TOKEN, apiUrl: 'https://api.test/v1', expiresAt: '2100-01-01T00:00:00Z'};
+function grantFor(ask: SessionAsk, n: number) {
+  const now = Date.now();
+  const sessionId = ask.reason === 'renew' && ask.sessionId ? ask.sessionId : sid(n);
+  return {
+    protocolVersion: 2, audience: 'clinician', surface: 'native', sessionId, partnerId: CONFIG.partnerId,
+    sessionToken: tokenOf(sessionId, n),
+    expiresAt: new Date(now + 300_000).toISOString(), renewAfter: new Date(now + 240_000).toISOString(),
+    absoluteExpiresAt: new Date(now + 28_800_000).toISOString(), idleTimeoutSeconds: null,
+    // The grant's own URLs are never used: the client sends only to its config's apiUrl.
+    frameUrl: null, apiUrl: 'https://elsewhere.test/v1', graphqlUrl: 'https://elsewhere.test/graphql', parentOrigin: null,
+    environment: CONFIG.environment, zone: CONFIG.zone, scope: {},
+    capabilities: ['workspace.read', 'consult.read'], unavailable: [],
+  };
+}
+
+function connect(options: ConnectOptions = {}, extra: Partial<ConnectPhysicianSource> = {}, asks: SessionAsk[] = []) {
+  return connectPhysician({
+    getSession: (ask: SessionAsk) => {
+      asks.push(ask);
+      return grantFor(ask, asks.length) as never;
+    },
+    config: CONFIG,
+    native: true,
+    ...extra,
+  } as ConnectPhysicianSource, options);
+}
 
 const refused = (status: number, code?: string) =>
   new Response(code ? JSON.stringify({error: {code, message: code}}) : 'denied', {status});
@@ -117,9 +143,9 @@ const consult = (id: string, status = 'active') => ({
 const msg = (id: string, author: string, body: string) => ({id, author, body, sentAt: '2026-08-19T09:00:00Z'});
 
 describe('connectPhysician — transport', () => {
-  it('sends the session token as the bearer, against the session apiUrl, as `me`', async () => {
+  it('sends the session credential as the bearer, to the CONFIGURED apiUrl (never the grant\'s), as `me`', async () => {
     const {calls, fetchLike} = stubApi({'GET /physicians/me/workspace': workspace()});
-    const desk = connectPhysician(SESSION, {fetch: fetchLike});
+    const desk = await connect({fetch: fetchLike});
     const ws = await desk.workspace.get();
     assert.equal(ws.physician.id, 'd_1');
     assert.equal(calls.length, 1);
@@ -129,39 +155,33 @@ describe('connectPhysician — transport', () => {
     assert.equal(calls[0].headers['X-Natzar-Physician-Id'], undefined);
   });
 
-  it('refuses an unusable session at construction, before any request', () => {
-    assert.throws(() => connectPhysician({sessionToken: ''} as never), NatzarSessionError);
-    assert.throws(() => connectPhysician({sessionToken: 'pp_test_abcdefghijklmnop', apiUrl: 'https://api.test/v1'}), (e: Error) => {
-      assert.ok(e instanceof NatzarSessionError);
-      assert.match(e.message, /partner key/);
-      assert.match(e.message, /apiKey/);
-      return true;
-    });
-    assert.throws(() => connectPhysician({sessionToken: TOKEN}), (e: Error) => {
+  it('refuses a source it cannot use, before any request', async () => {
+    await assert.rejects(() => connectPhysician({getSession: () => ({}) as never} as never), NatzarSessionError);
+    await assert.rejects(() => connectPhysician({getSession: () => ({}) as never, config: {...CONFIG, apiUrl: undefined}, native: true} as never), (e: Error) => {
       assert.ok(e instanceof NatzarSessionError);
       assert.match(e.message, /apiUrl/);
       return true;
     });
-    assert.throws(() => connectPhysician({sessionToken: TOKEN, apiUrl: 'v1'}), /absolute http/);
+    await assert.rejects(() => connectPhysician({getSession: () => ({}) as never, config: {...CONFIG, apiUrl: 'v1'}, native: true} as never), NatzarSessionError);
+    await assert.rejects(() => connectPhysician({endpoint: 'https://api.acme.test/natzar', native: true}), /auth hook/);
+    await assert.rejects(() => connectPhysician({endpoint: 'natzar'}), (e: {code?: string}) => e.code === 'endpoint_invalid');
   });
 
-  it('accepts apiUrl from the options when the session carries none', async () => {
-    const {calls, fetchLike} = stubApi({'GET /physicians/me': {physician: physician()}});
-    const desk = connectPhysician({sessionToken: TOKEN}, {fetch: fetchLike, apiUrl: 'https://proxy.test/v1/'});
-    const me = await desk.me();
-    assert.equal(me.id, 'd_1');
-    assert.equal(calls[0].url, 'https://proxy.test/v1/physicians/me', 'a trailing slash is normalized away');
-  });
-
-  it('exposes the bound REST client for routes it does not model, rebound on refresh', async () => {
-    const {calls, fetchLike} = stubApi({'GET /async-consults': {items: [], hasMore: false}});
-    const desk = connectPhysician(SESSION, {fetch: fetchLike});
+  it('exposes the bound REST client for routes it does not model, rebound on renewal', async () => {
+    const {calls, fetchLike} = stubApi({
+      'GET /async-consults': {items: [], hasMore: false},
+      'GET /physicians/me/workspace': (c: Call) => (c.count === 1 ? refused(401, 'session_expired') : workspace()),
+    });
+    const asks: SessionAsk[] = [];
+    const desk = await connect({fetch: fetchLike}, {}, asks);
     assert.equal(desk.client.credential, 'sessionToken');
     await desk.client.asyncConsults.list({assignee: 'me'});
     assert.equal(calls[0].url, 'https://api.test/v1/async-consults?assignee=me');
-    desk.refresh({...SESSION, sessionToken: jwt({sub: 'd_1', n: 2})});
+    assert.equal(calls[0].headers.Authorization, `Bearer ${TOKEN}`);
+    await desk.workspace.get(); // session_expired → renewed → retried
     await desk.client.asyncConsults.list();
-    assert.notEqual(calls[1].headers.Authorization, calls[0].headers.Authorization, 'the new session is in force');
+    assert.equal(calls.at(-1)!.headers.Authorization, `Bearer ${tokenOf(sid(1), 2)}`, 'the renewed credential is in force');
+    assert.equal(desk.session?.sessionId, sid(1), 'same logical session');
   });
 });
 
@@ -172,7 +192,7 @@ describe('connectPhysician — workspace polling', () => {
   it('calls back only when something that drives a render changed', async () => {
     let queue: Array<{consultId: string; position: number}> = [];
     const {fetchLike, hitsFor} = stubApi({'GET /physicians/me/workspace': () => workspace({queue})});
-    const desk = connectPhysician(SESSION, {fetch: fetchLike, intervalMs: 5});
+    const desk = await connect({fetch: fetchLike, intervalMs: 5});
     const seen: string[] = [];
     const stop = desk.workspace.subscribe((snap, sync) => seen.push(snap ? `${sync.phase}:${snap.telehealth.queue.length}` : sync.phase), {
       pauseWhenHidden: false,
@@ -197,7 +217,7 @@ describe('connectPhysician — workspace polling', () => {
       'GET /physicians/me/workspace': workspace(),
       'POST /async-consults/t_1/claim': {consult: consult('t_1')},
     });
-    const desk = connectPhysician(SESSION, {fetch: fetchLike, intervalMs: 10_000});
+    const desk = await connect({fetch: fetchLike, intervalMs: 10_000});
     const stop = desk.workspace.subscribe(() => {}, {pauseWhenHidden: false});
     await tick(20);
     assert.equal(hitsFor('GET /physicians/me/workspace'), 1);
@@ -218,7 +238,7 @@ describe('connectPhysician — presence & heartbeat', () => {
       }),
       'POST /physicians/me/heartbeat': {presence: {status: 'ready'}, activeConsult: null},
     });
-    const desk = connectPhysician(SESSION, {fetch: fetchLike, intervalMs: 10_000, heartbeatIntervalMs: 10});
+    const desk = await connect({fetch: fetchLike, intervalMs: 10_000, heartbeatIntervalMs: 10});
     const stop = desk.workspace.subscribe(() => {}, {pauseWhenHidden: false});
     const res = await desk.presence.ready();
     assert.equal(res.presence.status, 'ready');
@@ -247,7 +267,7 @@ describe('connectPhysician — presence & heartbeat', () => {
       },
       'POST /physicians/me/heartbeat': () => ({presence: {status: onQueue ? 'ready' : 'busy'}, activeConsult: null}),
     });
-    const desk = connectPhysician(SESSION, {fetch: fetchLike, intervalMs: 10_000, heartbeatIntervalMs: 10});
+    const desk = await connect({fetch: fetchLike, intervalMs: 10_000, heartbeatIntervalMs: 10});
     await desk.presence.ready();
     await tick(40);
     assert.equal(hitsFor('POST /physicians/me/heartbeat'), 0, 'a subscription is the "screen is open" signal');
@@ -276,7 +296,7 @@ describe('connectPhysician — presence & heartbeat', () => {
       'POST /physicians/me/presence': {presence: {status: 'ready'}, activeConsult: null},
       'POST /physicians/me/heartbeat': {presence: {status: 'ready'}, activeConsult: null},
     });
-    const desk = connectPhysician(SESSION, {fetch: fetchLike, intervalMs: 10_000, heartbeatIntervalMs: 10});
+    const desk = await connect({fetch: fetchLike, intervalMs: 10_000, heartbeatIntervalMs: 10});
     const stop = desk.workspace.subscribe(() => {}, {pauseWhenHidden: false});
     await tick(5);
     await desk.presence.ready();
@@ -296,7 +316,7 @@ describe('connectPhysician — presence & heartbeat', () => {
         activeConsult: ringing ? {...consult('tele_9', 'ringing'), practitioner: {id: 'd_1'}} : null,
       }),
     });
-    const desk = connectPhysician(SESSION, {fetch: fetchLike, intervalMs: 10_000, heartbeatIntervalMs: 10});
+    const desk = await connect({fetch: fetchLike, intervalMs: 10_000, heartbeatIntervalMs: 10});
     const stop = desk.workspace.subscribe(() => {}, {pauseWhenHidden: false});
     await desk.presence.ready();
     await tick(30);
@@ -308,69 +328,84 @@ describe('connectPhysician — presence & heartbeat', () => {
   });
 });
 
-describe('connectPhysician — session expiry', () => {
-  it('fires onExpired once, parks polling and beats, and resumes on refresh with the new token', async () => {
-    let expiredNow = false;
-    let onExpiredCalls = 0;
+describe('connectPhysician — session end', () => {
+  it('fires onExpired once, parks polling and beats, and resumes on reconnect() with the new session', async () => {
+    let revokedNow = false;
+    const expiredInfo: unknown[] = [];
+    const asks: SessionAsk[] = [];
     const {calls, fetchLike, hitsFor} = stubApi({
-      'GET /physicians/me/workspace': () => (expiredNow ? refused(401, 'unauthorized') : workspace({presence: {status: 'ready'}})),
+      'GET /physicians/me/workspace': () => (revokedNow ? refused(401, 'session_revoked') : workspace({presence: {status: 'ready'}})),
       'POST /physicians/me/presence': {presence: {status: 'ready'}, activeConsult: null},
       'POST /physicians/me/heartbeat': () =>
-        expiredNow ? refused(401, 'unauthorized') : {presence: {status: 'ready'}, activeConsult: null},
-      'POST /async-consults/t_1/claim': () => (expiredNow ? refused(401, 'unauthorized') : {consult: consult('t_1')}),
+        revokedNow ? refused(401, 'session_revoked') : {presence: {status: 'ready'}, activeConsult: null},
+      'POST /async-consults/t_1/claim': () => (revokedNow ? refused(401, 'session_revoked') : {consult: consult('t_1')}),
     });
-    const desk = connectPhysician(SESSION, {fetch: fetchLike, intervalMs: 5, heartbeatIntervalMs: 10, onExpired: () => onExpiredCalls++});
+    const desk = await connect({fetch: fetchLike, intervalMs: 5, heartbeatIntervalMs: 10, onExpired: (info) => expiredInfo.push(info)}, {}, asks);
     const phases: string[] = [];
     const stop = desk.workspace.subscribe((_s, sync) => phases.push(sync.phase), {pauseWhenHidden: false});
     await desk.presence.ready();
     await tick(30);
-    assert.ok(hitsFor('GET /physicians/me/workspace') >= 2, 'polling before expiry');
-    assert.ok(hitsFor('POST /physicians/me/heartbeat') >= 1, 'beating before expiry');
+    assert.ok(hitsFor('GET /physicians/me/workspace') >= 2, 'polling before the revocation');
+    assert.ok(hitsFor('POST /physicians/me/heartbeat') >= 1, 'beating before the revocation');
 
-    expiredNow = true;
-    // An action hitting the dead token reports it too — and still only once.
-    await assert.rejects(() => desk.inbox.claim('t_1'), (e: {code?: string; status?: number}) => e.code === 'unauthorized' && e.status === 401);
+    revokedNow = true;
+    // An action hitting the dead session reports it too — and still only once.
+    await assert.rejects(() => desk.inbox.claim('t_1'), (e: {code?: string; status?: number}) => e.code === 'session_revoked' && e.status === 401);
     await tick(30);
-    assert.equal(onExpiredCalls, 1);
+    assert.deepEqual(expiredInfo, [{reason: 'revoked', code: 'session_revoked'}]);
     const parkedReads = hitsFor('GET /physicians/me/workspace');
     const parkedBeats = hitsFor('POST /physicians/me/heartbeat');
     await tick(40);
-    assert.equal(hitsFor('GET /physicians/me/workspace'), parkedReads, 'no polls while expired');
-    assert.equal(hitsFor('POST /physicians/me/heartbeat'), parkedBeats, 'no beats while expired');
-    assert.ok(!phases.includes('retrying'), 'an expired session is not a network problem');
+    assert.equal(hitsFor('GET /physicians/me/workspace'), parkedReads, 'no polls while ended');
+    assert.equal(hitsFor('POST /physicians/me/heartbeat'), parkedBeats, 'no beats while ended');
+    assert.ok(!phases.includes('retrying'), 'an ended session is not a network problem');
 
-    expiredNow = false;
-    const next = jwt({typ: 'physician', sub: 'd_1', exp: 4102444800, n: 2});
-    desk.refresh({...SESSION, sessionToken: next});
+    revokedNow = false;
+    await desk.reconnect();
     await tick(40);
     assert.ok(hitsFor('GET /physicians/me/workspace') > parkedReads, 'polling resumed');
     assert.ok(hitsFor('POST /physicians/me/heartbeat') > parkedBeats, 'beats resumed from what the platform reports');
-    assert.equal(calls.filter((c) => c.path === '/physicians/me/workspace').at(-1)!.headers.Authorization, `Bearer ${next}`);
+    assert.equal(asks.at(-1)!.reason, 'reconnect');
+    assert.equal(calls.filter((c) => c.path === '/physicians/me/workspace').at(-1)!.headers.Authorization, `Bearer ${tokenOf(sid(2), 2)}`);
     stop();
     assert.equal(phases.at(-1), 'stopped');
   });
 
-  it('a one-shot get() while expired rejects rather than hanging, reporting once', async () => {
-    // A fresh Response per call: a body can only be read once.
-    const {fetchLike} = stubApi({'GET /physicians/me/workspace': () => refused(401, 'unauthorized')});
+  it('renews on session_expired and retries once, without ending anything', async () => {
+    const asks: SessionAsk[] = [];
     let onExpiredCalls = 0;
-    const desk = connectPhysician(SESSION, {fetch: fetchLike, onExpired: () => onExpiredCalls++});
-    await assert.rejects(() => desk.workspace.get(), (e: {code?: string}) => e.code === 'unauthorized');
-    await assert.rejects(() => desk.workspace.get(), (e: {code?: string}) => e.code === 'unauthorized');
-    assert.equal(onExpiredCalls, 1);
+    const {calls, fetchLike} = stubApi({
+      'GET /physicians/me/workspace': (c: Call) => (c.headers.Authorization === `Bearer ${TOKEN}` ? refused(401, 'session_expired') : workspace()),
+    });
+    const desk = await connect({fetch: fetchLike, onExpired: () => onExpiredCalls++}, {}, asks);
+    const ws = await desk.workspace.get();
+    assert.equal(ws.physician.id, 'd_1');
+    assert.deepEqual(asks.map((a) => a.reason), ['initial', 'renew']);
+    assert.equal(calls.at(-1)!.headers.Authorization, `Bearer ${tokenOf(sid(1), 2)}`);
+    assert.equal(onExpiredCalls, 0);
+  });
+
+  it('a one-shot get() after the session ended rejects rather than hanging, reporting once', async () => {
+    // A fresh Response per call: a body can only be read once.
+    const {fetchLike} = stubApi({'GET /physicians/me/workspace': () => refused(401, 'session_locked')});
+    const expiredInfo: unknown[] = [];
+    const desk = await connect({fetch: fetchLike, onExpired: (info) => expiredInfo.push(info)});
+    await assert.rejects(() => desk.workspace.get(), (e: {code?: string}) => e.code === 'session_locked');
+    await assert.rejects(() => desk.workspace.get(), (e: {name?: string; code?: string}) => e.name === 'NatzarSessionError' && e.code === 'session_locked');
+    assert.deepEqual(expiredInfo, [{reason: 'idle', code: 'session_locked'}], 'the idle lock sticks: no automatic new session');
   });
 
   // A route outside what a session may call comes back 403 — from the
-  // application with an envelope, or from the gateway bare. Neither is expiry.
-  it('treats a 403 as forbidden, not as an expired session', async () => {
+  // application with an envelope, or from the gateway bare. Neither ends the session.
+  it('treats a 403 as forbidden, not as an ended session', async () => {
     const {fetchLike} = stubApi({
-      'POST /physicians/me/session': refused(403, 'forbidden'),
+      'GET /patients': refused(403, 'capability_not_granted'),
       'GET /events': refused(403),
       'GET /physicians/me/workspace': workspace(),
     });
     let onExpiredCalls = 0;
-    const desk = connectPhysician(SESSION, {fetch: fetchLike, onExpired: () => onExpiredCalls++});
-    await assert.rejects(() => desk.client.physicians.session('me'), (e: {code?: string; status?: number}) => e.code === 'forbidden' && e.status === 403);
+    const desk = await connect({fetch: fetchLike, onExpired: () => onExpiredCalls++});
+    await assert.rejects(() => desk.client.patients.list(), (e: {code?: string; status?: number}) => e.code === 'capability_not_granted' && e.status === 403);
     await assert.rejects(() => desk.client.events.list(), (e: {code?: string; status?: number}) => e.code === 'forbidden' && e.status === 403);
     assert.equal(onExpiredCalls, 0);
     const ws = await desk.workspace.get();
@@ -385,7 +420,7 @@ describe('connectPhysician — inbox', () => {
       'GET /async-consults/t_1': () => ({consult: consult('t_1', status)}),
       'GET /async-consults/t_1/messages': {items: [msg('m_1', 'patient', 'hello'), msg('m_2', 'physician', 'hi')], hasMore: false},
     });
-    const desk = connectPhysician(SESSION, {fetch: fetchLike, intervalMs: 5});
+    const desk = await connect({fetch: fetchLike, intervalMs: 5});
     const seen: string[] = [];
     const stop = desk.inbox.thread('t_1').subscribe((snap, sync) => seen.push(snap ? `${sync.phase}:${snap.consult.status}:${snap.messages.length}` : sync.phase), {
       pauseWhenHidden: false,
@@ -410,7 +445,7 @@ describe('connectPhysician — inbox', () => {
           ? {items: [msg('m_3', 'patient', 'page two')], hasMore: false}
           : {items: [msg('m_1', 'patient', 'one'), msg('m_2', 'physician', 'two')], cursor: 'c_1', hasMore: true},
     });
-    const desk = connectPhysician(SESSION, {fetch: fetchLike});
+    const desk = await connect({fetch: fetchLike});
     const thread = await desk.inbox.thread('t_1').get();
     assert.deepEqual(thread.messages.map((m) => m.id), ['m_1', 'm_2', 'm_3']);
     assert.equal(calls.filter((c) => c.path === '/async-consults/t_1/messages').length, 2);
@@ -423,7 +458,7 @@ describe('connectPhysician — inbox', () => {
       'GET /async-consults/t_1/messages': {items: [], hasMore: false},
       'POST /async-consults/t_1/replies': {accepted: true, messageId: 'm_9'},
     });
-    const desk = connectPhysician(SESSION, {fetch: fetchLike, intervalMs: 10_000});
+    const desk = await connect({fetch: fetchLike, intervalMs: 10_000});
     const stop = desk.inbox.thread('t_1').subscribe(() => {}, {pauseWhenHidden: false});
     await tick(20);
     const before = hitsFor('GET /async-consults/t_1');
@@ -453,7 +488,7 @@ describe('connectPhysician — inbox', () => {
       'POST /async-consults/t_1/escalate': {consult: consult('t_1', 'closed'), telehealthConsultId: 'tele_1'},
       'POST /telehealth-consults/tele_1/cancel': {consult: consult('tele_1', 'cancelled')},
     });
-    const desk = connectPhysician(SESSION, {fetch: fetchLike});
+    const desk = await connect({fetch: fetchLike});
     assert.equal((await desk.inbox.resolve('t_1', {note: ' Take care. '})).status, 'resolve_requested');
     assert.equal((await desk.inbox.close('t_1', {reason: 'patient_closed'})).status, 'closed');
     assert.equal((await desk.inbox.takeover('t_1')).id, 't_1');
@@ -472,7 +507,7 @@ describe('connectPhysician — inbox', () => {
     const {calls, fetchLike} = stubApi({
       'POST /async-consults/t_1/referrals': {referral},
     });
-    const desk = connectPhysician(SESSION, {fetch: fetchLike});
+    const desk = await connect({fetch: fetchLike});
     const result = await desk.inbox.issueReferral('t_1', {
       draft: {kind: 'specialist', specialty: 'Cardiology', priority: 'routine', reason: 'Exertional symptoms'},
       lang: 'en',
@@ -491,7 +526,7 @@ describe('connectPhysician — inbox', () => {
       'POST /async-consults/t_1/referrals': {referral, referrals: [referral, {...referral, id: 'ref_2', kind: 'imaging'}]},
       'POST /async-consults/t_1/prescriptions': {prescription: {id: 'rx_1', issuedAt: referral.issuedAt, link: 'https://example.test/pharmacy?id=rx_1'}},
     });
-    const desk = connectPhysician(SESSION, {fetch: fetchLike});
+    const desk = await connect({fetch: fetchLike});
     const drafts = [
       {kind: 'laboratory' as const, tests: ['cbc' as const], priority: 'routine' as const},
       {kind: 'imaging' as const, modality: 'mri' as const, examination: 'Spine', clinicalIndication: 'Pain', priority: 'routine' as const},
@@ -517,7 +552,7 @@ describe('connectPhysician — suggested referrals (0.13.0)', () => {
       'GET /async-consults/t_1': request(),
       'GET /async-consults/t_2': {consult: {...request().consult, id: 't_2', suggestedReferrals: undefined}},
     });
-    const desk = connectPhysician(SESSION, {fetch: fetchLike});
+    const desk = await connect({fetch: fetchLike});
     assert.deepEqual(await desk.inbox.suggestedReferrals('t_1'), [LAB, GASTRO]);
     assert.deepEqual(await desk.inbox.suggestedReferrals('t_2'), []);
   });
@@ -527,7 +562,7 @@ describe('connectPhysician — suggested referrals (0.13.0)', () => {
       'GET /async-consults/t_1': request(),
       'POST /async-consults/t_1/referrals': {referral, referrals: [referral, {...referral, id: 'ref_2', kind: 'specialist'}]},
     });
-    const desk = connectPhysician(SESSION, {fetch: fetchLike});
+    const desk = await connect({fetch: fetchLike});
     const result = await desk.inbox.generateReferrals('t_1', {lang: 'fr'});
     assert.equal(result.referrals?.length, 2);
     assert.equal(hitsFor('POST /async-consults/t_1/claim'), 0); // already the assignee's
@@ -539,7 +574,7 @@ describe('connectPhysician — suggested referrals (0.13.0)', () => {
       'GET /async-consults/t_1': request(),
       'POST /async-consults/t_1/referrals': {referral},
     });
-    const desk = connectPhysician(SESSION, {fetch: fetchLike});
+    const desk = await connect({fetch: fetchLike});
     const edited = [{...LAB, fasting: true}];
     await desk.inbox.generateReferrals('t_1', {drafts: edited});
     assert.deepEqual(calls.find((c) => c.method === 'POST')?.body, {drafts: edited});
@@ -551,7 +586,7 @@ describe('connectPhysician — suggested referrals (0.13.0)', () => {
       'POST /async-consults/t_1/claim': {consult: request({status: 'active', assignedPhysicianId: 'd_1'}).consult},
       'POST /async-consults/t_1/referrals': {referral},
     });
-    const desk = connectPhysician(SESSION, {fetch: fetchLike});
+    const desk = await connect({fetch: fetchLike});
     await desk.inbox.generateReferrals('t_1');
     assert.deepEqual(
       calls.filter((c) => c.method === 'POST').map((c) => c.path),
@@ -566,7 +601,7 @@ describe('connectPhysician — suggested referrals (0.13.0)', () => {
       'POST /async-consults/t_1/referrals': {referral},
       'POST /async-consults/t_2/referrals': {referral},
     });
-    const desk = connectPhysician(SESSION, {fetch: fetchLike});
+    const desk = await connect({fetch: fetchLike});
     await desk.inbox.generateReferrals('t_1');
     await desk.inbox.generateReferrals('t_2');
     const posts = calls.filter((c) => c.method === 'POST');
@@ -579,7 +614,7 @@ describe('connectPhysician — suggested referrals (0.13.0)', () => {
       'GET /async-consults/t_1': request({patientLang: 'fr_CH'}),
       'POST /async-consults/t_1/referrals': {referral},
     });
-    const desk = connectPhysician(SESSION, {fetch: fetchLike});
+    const desk = await connect({fetch: fetchLike});
     await desk.inbox.generateReferrals('t_1', {lang: 'de'});
     await desk.inbox.generateReferrals('t_1', {drafts: [LAB]});
     const posts = calls.filter((c) => c.method === 'POST');
@@ -592,7 +627,7 @@ describe('connectPhysician — suggested referrals (0.13.0)', () => {
       'GET /async-consults/t_1': request({status: 'queued'}),
       'POST /async-consults/t_1/referrals': {referral},
     });
-    const desk = connectPhysician(SESSION, {fetch: fetchLike});
+    const desk = await connect({fetch: fetchLike});
     await assert.rejects(desk.inbox.generateReferrals('t_1', {drafts: []}), (e: unknown) => {
       assert.equal((e as {code?: string}).code, 'no_suggested_referrals');
       return true;
@@ -605,7 +640,7 @@ describe('connectPhysician — suggested referrals (0.13.0)', () => {
     const {calls, fetchLike} = stubApi({
       'GET /async-consults/t_1': request({suggestedReferrals: undefined, status: 'queued'}),
     });
-    const desk = connectPhysician(SESSION, {fetch: fetchLike});
+    const desk = await connect({fetch: fetchLike});
     await assert.rejects(desk.inbox.generateReferrals('t_1'), (e: unknown) => {
       assert.equal((e as {name?: string}).name, 'NatzarApiError');
       assert.equal((e as {code?: string}).code, 'no_suggested_referrals');
@@ -627,7 +662,7 @@ describe('connectPhysician — calls', () => {
       'POST /telehealth-consults/tele_2/ready': {state: {phase: 'in_progress', startsAt: null}, livekit: {token: 'lk2', url: 'wss://lk.test', roomName: 'r2'}},
       'GET /physicians/me/agenda': {appointments: [consult('tele_2', 'scheduled')]},
     });
-    const desk = connectPhysician(SESSION, {fetch: fetchLike});
+    const desk = await connect({fetch: fetchLike});
     const room = await desk.telehealth.room('tele_1');
     assert.equal(room.livekit?.token, 'lk');
     const ended = await desk.telehealth.end('tele_1', {goOffline: true});
@@ -651,7 +686,7 @@ describe('connectPhysician — attachments & specialties', () => {
         uploads: [{stagingKey: 'staging/g/p_1/abc.png', uploadUrl: 'https://s3.test/put-here', expiresAt: '2026-08-19T09:05:00Z'}],
       },
     });
-    const desk = connectPhysician(SESSION, {fetch: fetchLike});
+    const desk = await connect({fetch: fetchLike});
     const file = new Blob([new Uint8Array([1, 2, 3])], {type: 'image/png'});
     const staged = await desk.attachments.upload({externalPatientId: 'u_42'}, file, {fileName: 'rash.png'});
     assert.deepEqual(staged, {stagingKey: 'staging/g/p_1/abc.png', fileName: 'rash.png', mimeType: 'image/png'});
@@ -666,7 +701,7 @@ describe('connectPhysician — attachments & specialties', () => {
       'GET /specialties': {specialties: [{slug: 'derm', name: 'Dermatology'}]},
       'PUT /physicians/me/specialties': {physician: {...physician(), specialties: ['derm']}},
     });
-    const desk = connectPhysician(SESSION, {fetch: fetchLike});
+    const desk = await connect({fetch: fetchLike});
     assert.deepEqual((await desk.specialties.list()).map((s) => s.slug), ['derm']);
     const me = await desk.specialties.set({specialties: ['derm', 'typo'], acceptsAllSpecialties: false});
     assert.deepEqual(me.specialties, ['derm']);
@@ -678,7 +713,7 @@ describe('connectPhysician — attachments & specialties', () => {
     const {calls, fetchLike} = stubApi({
       'PUT /physicians/me/languages': {physician: {...physician(), languages: ['fr', 'en']}},
     });
-    const desk = connectPhysician(SESSION, {fetch: fetchLike});
+    const desk = await connect({fetch: fetchLike});
     const me = await desk.languages.set({languages: ['fr', 'en']});
     assert.deepEqual(me.languages, ['fr', 'en']);
     assert.equal(calls[0].method, 'PUT');

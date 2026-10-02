@@ -1,6 +1,6 @@
 // GENERATED FILE — do not edit.
 //
-// Copied verbatim from provider-portal's shared/partner-api by
+// Copied verbatim from natzar-core's shared/partner-api by
 // scripts/sync-contract.mjs. Edit the source there; this copy exists only so
 // the published package is self-contained.
 /**
@@ -116,11 +116,9 @@ import type {
   ClaimAsyncConsultRequest,
   CloseAsyncConsultRequest,
   CreateAsyncConsultRequest,
-  CreateEmbedSessionRequest,
   CreatePhysicianRequest,
   CreatePhysicianSessionRequest,
   CreateTelehealthConsultRequest,
-  CreateAgentEmbedSessionRequest,
   CreateUploadUrlsRequest,
   EndTelehealthConsultRequest,
   EscalateAsyncConsultRequest,
@@ -181,9 +179,7 @@ export type {
   CancelTelehealthConsultRequest,
   ClaimAsyncConsultRequest,
   CloseAsyncConsultRequest,
-  CreateAgentEmbedSessionRequest,
   CreateAsyncConsultRequest,
-  CreateEmbedSessionRequest,
   CreatePhysicianRequest,
   CreatePhysicianSessionRequest,
   CreateTelehealthConsultRequest,
@@ -676,27 +672,13 @@ export type ListAgentMessagesResponse = TranscriptPage;
  *
  * With `consent: 'collected'` the consult is already `queued` or `active`
  * (assignment is attempted synchronously). With `consent: 'embed'` it is
- * `invited` and `sessionToken` is present — render `<natzar-async
- * session-token="…">` to let the patient consent and chat.
+ * `invited`: render `<natzar-async consult="<id>">` (your `natzar()`
+ * middleware mints the patient's session with `POST /v1/sessions`) to let the
+ * patient consent and chat. No credential rides in this response.
  */
 export interface CreateAsyncConsultResponse {
   /** The consult after creation (status reflects the consent mode). */
   consult: AsyncConsultResource;
-  /**
-   * Embed session token for the patient widget. Present when
-   * `consent: 'embed'`; mint later/again via
-   * `POST /v1/async-consults/{id}/embed-session`.
-   */
-  sessionToken?: string;
-  /**
-   * Present alongside `sessionToken`, for the same reason it is on the
-   * `/embed-session` mints: hand this whole response to the browser half of
-   * `@natzar/client` and it is self-configuring. See
-   * {@link CreateEmbedSessionResponse.graphqlUrl}.
-   */
-  graphqlUrl?: string;
-  /** Public transport key for the patient surface. Rotates; never bake it in. */
-  publicApiKey?: string;
 }
 
 /** `GET /v1/async-consults/{id}` response. */
@@ -784,36 +766,6 @@ export interface RateAsyncConsultResponse {
   alreadyRated: boolean;
 }
 
-/**
- * Response of the `/embed-session` mints (both consult kinds): a fresh
- * session token for the consult's patient-facing embed widget.
- */
-export interface CreateEmbedSessionResponse {
-  /** The token to pass as the tag's `session-token` attribute. */
-  sessionToken: string;
-  /** When the token expires; re-mint and call `refresh(token)` before then. */
-  expiresAt: IsoDateTime;
-  /**
-   * Where the patient-side surface lives, so a browser client is
-   * SELF-CONFIGURING: hand this whole response to `@natzar/client`'s browser
-   * half and it knows how to connect. Deliberately returned per-mint rather
-   * than published as a constant — the key rotates (AppSync keys expire), and
-   * a value baked into your bundle would break at a moment unrelated to
-   * anything you shipped.
-   *
-   * Absent on older deployments; a client that does not see them should fall
-   * back to relaying calls through your own server.
-   */
-  graphqlUrl?: string;
-  /**
-   * Public, browser-safe API key for the patient-side surface — the transport
-   * credential only. The real credential is `sessionToken`, which is scoped to
-   * one patient (and, for consult sessions, one consult). Publishable in the
-   * same sense as a Stripe publishable key.
-   */
-  publicApiKey?: string;
-}
-
 /** One presigned upload slot in `POST /v1/attachments/upload-urls`'s response. */
 export interface UploadUrlSlot {
   /** The staging key to reference in a subsequent message/reply post. */
@@ -838,8 +790,9 @@ export interface CreateUploadUrlsResponse {
 
 /**
  * `POST /v1/telehealth-consults` response. The consult starts `invited`;
- * mint an embed session (`POST /v1/telehealth-consults/{id}/embed-session`)
- * and render `<natzar-telehealth>` for the patient to join.
+ * render `<natzar-telehealth consult="<id>">` (your `natzar()` middleware
+ * mints the patient's session with `POST /v1/sessions`) for the patient to
+ * join.
  */
 export interface CreateTelehealthConsultResponse {
   consult: TelehealthConsultResource;
@@ -1457,6 +1410,8 @@ export interface Endpoints {
    * Mint a physician SESSION token for browser-direct calls (see "Acting as a
    * physician"). Tenant key only — a session may not mint another (`403
    * forbidden`).
+   *
+   * REPLACED BY ./sessions (embed redesign M1/M4) — delete when the last consumer moves.
    */
   'POST /v1/physicians/{id}/session': {
     request: CreatePhysicianSessionRequest | undefined;
@@ -1532,11 +1487,6 @@ export interface Endpoints {
   'POST /v1/agent/messages': {request: PostAgentMessageRequest; response: PostAgentMessageResponse};
   /** Read/poll the patient's agent conversation, oldest first. */
   'GET /v1/agent/messages': {request: ListAgentMessagesQuery; response: ListAgentMessagesResponse};
-  /** Mint a session token for the `<natzar-agent>` widget (patient-scoped). */
-  'POST /v1/agent/embed-session': {
-    request: CreateAgentEmbedSessionRequest;
-    response: CreateEmbedSessionResponse;
-  };
 
   // -- Async consults ------------------------------------------------------
   /** Start an async consult. `409 has_open_thread` / `feature_disabled`. */
@@ -1622,11 +1572,6 @@ export interface Endpoints {
     request: RateAsyncConsultRequest;
     response: RateAsyncConsultResponse;
   };
-  /** Mint an embed session token for the async chat widget. */
-  'POST /v1/async-consults/{id}/embed-session': {
-    request: CreateEmbedSessionRequest | undefined;
-    response: CreateEmbedSessionResponse;
-  };
   /** Presign attachment upload slots in the patient's staging area. */
   'POST /v1/attachments/upload-urls': {
     request: CreateUploadUrlsRequest;
@@ -1649,11 +1594,6 @@ export interface Endpoints {
   };
   /** Fetch one telehealth consult (fresh `recordingUrl` when available). Physician session. */
   'GET /v1/telehealth-consults/{id}': {request: undefined; response: GetTelehealthConsultResponse};
-  /** Mint an embed session token for the video widget. */
-  'POST /v1/telehealth-consults/{id}/embed-session': {
-    request: CreateEmbedSessionRequest | undefined;
-    response: CreateEmbedSessionResponse;
-  };
   /**
    * Cancel before the call starts (`invited`/`scheduled`/`waiting` only). With a
    * physician credential on a booked consult: the clinician cancels their own

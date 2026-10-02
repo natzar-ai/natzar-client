@@ -1,6 +1,6 @@
 // GENERATED FILE — do not edit.
 //
-// Copied verbatim from provider-portal's shared/partner-api by
+// Copied verbatim from natzar-core's shared/partner-api by
 // scripts/sync-contract.mjs. Edit the source there; this copy exists only so
 // the published package is self-contained.
 /**
@@ -47,11 +47,12 @@ export type ErrorCode =
   /**
    * The `Authorization: Bearer pp_…` API key is missing, malformed, revoked,
    * from another environment (`pp_test_…` against prod or vice versa), or the
-   * partner account is suspended. Also returned when a physician SESSION
-   * token in that header is malformed, expired, or was invalidated by an
-   * API-key rotation (mint a fresh one via `POST /v1/physicians/{id}/session`),
-   * and when a route that needs a physician credential got none — the
-   * message lists the three accepted forms. HTTP 401.
+   * partner account is suspended. Also returned when a route that needs a
+   * physician credential got none — the message lists the accepted forms —
+   * and, until M6 removes it, when an HS256 physician SESSION token from
+   * `POST /v1/physicians/{id}/session` is malformed, expired, or was
+   * invalidated by an API-key rotation (removed in M6: `nz1` sessions from
+   * `POST /v1/sessions` replace it). HTTP 401.
    */
   | 'unauthorized'
   /**
@@ -60,9 +61,10 @@ export type ErrorCode =
    * you are, and the answer is no. Raised by the physician-side surface:
    *
    * - a physician SESSION token (`Authorization: Bearer <session>`) called a
-   *   route outside the physician allowlist (creating consults, minting embed
-   *   sessions, listing physicians, minting another session, …) — those need
-   *   the tenant API key;
+   *   route outside the physician allowlist (creating consults, listing
+   *   physicians, minting another session, …) — those need the tenant API key
+   *   (the HS256 physician session is removed in M6; `nz1` sessions answer
+   *   per their capability preset);
    * - `X-Natzar-Physician-Id` was sent by a key whose partner account has
    *   physician assertion switched off (`capabilities.physicianAssertion ===
    *   false`) — send the clinician's Cognito ID token in `X-Natzar-Physician`,
@@ -149,6 +151,17 @@ export type ErrorCode =
    * (`details.asyncConsultId` identifies it). HTTP 409.
    */
   | 'has_open_thread'
+  /**
+   * Natzar opens care only for a patient with a CLINICAL IDENTITY: given and
+   * family name, date of birth and sex (embed redesign D5). A patient you
+   * created with only `{externalId, phone}` completes the missing fields in
+   * the widget once; until then creating a consult for them, or consenting,
+   * joining or booking one, is refused. `details.missing` lists the fields
+   * (`givenName`, `familyName`, `birthdate`, `sex`). Supply them with
+   * `POST /v1/patients` or let the patient complete the profile in the
+   * widget. HTTP 409.
+   */
+  | 'profile_incomplete'
   /**
    * The operation requires the async consult to be in an open, routable state
    * and it is not — e.g. posting a patient message to a thread that is
@@ -348,21 +361,9 @@ export type ErrorCode =
    */
   | 'invalid_pharmacy'
   /**
-   * Embed surface only: the session token failed verification (bad signature,
-   * wrong shape, minted for a suspended partner, or invalidated by an API-key
-   * rotation). Mint a fresh one via the `/embed-session` endpoint. HTTP 401.
-   */
-  | 'embed_token_invalid'
-  /**
-   * Embed surface only: the session token's `exp` has passed. Tokens live
-   * 1 hour by default; mint a fresh one via `/embed-session` and call the
-   * element's `refresh(token)`. HTTP 401.
-   */
-  | 'embed_token_expired'
-  /**
-   * Embed surface only: the page embedding the widget is served from an
-   * origin that is not on your partner account's `allowedOrigins` list.
-   * HTTP 403.
+   * The page embedding an element is served from an origin that is not
+   * registered for your account (`PUT /v1/embed/origins`), so no session is
+   * minted for it (`POST /v1/sessions`) and the element reports it. HTTP 403.
    */
   | 'origin_not_allowed'
   /**
@@ -503,7 +504,101 @@ export type ErrorCode =
    * handed out no grant rather than a possibly stale one. It is never "the
    * call is over": pull again with backoff.
    */
-  | 'dependency_unavailable';
+  | 'dependency_unavailable'
+  /**
+   * CLINICAL PROTOCOLS: the patient is in the middle of the clinic's required
+   * symptom intake (the questions the patient-facing assistant asks before
+   * routine care) and it is not complete. Nothing was created, joined, booked
+   * or charged. The patient continues in their conversation with the
+   * assistant (`details.resume.kind: "conversation"`); retry once the
+   * assistant has what it needs. HTTP 409.
+   */
+  | 'protocol_pending'
+  /**
+   * CLINICAL PROTOCOLS: the intake cannot be completed and the patient must
+   * explicitly accept continuing with a clinician through the assistant, which
+   * then issues the one authorized route. HTTP 409.
+   */
+  | 'protocol_handoff_required'
+  /**
+   * CLINICAL PROTOCOLS: the clinic's intake state could not be read, so
+   * routine care is held (never skipped). Safe to retry. HTTP 503.
+   */
+  | 'protocol_unavailable'
+  /**
+   * CLINICAL PROTOCOLS: this care link was authorized for an intake that has
+   * since changed (a new symptom or answer), or was never issued. The patient
+   * continues in the conversation and receives a fresh link. HTTP 409.
+   */
+  | 'protocol_authorization_stale'
+  /**
+   * SESSIONS (`POST /v1/sessions`): the login the session would be bound to
+   * (`until`, or the grace end of the key you called with) leaves fewer than
+   * 300 seconds. The user must sign in again on your site; your middleware
+   * answers the browser `signed_out`. HTTP 401.
+   */
+  | 'login_expired'
+  /**
+   * SESSIONS: the `nz1` credential is missing, malformed or unknown, its secret
+   * is wrong, or it belongs to another environment, zone or audience. Mint a
+   * new session. HTTP 401.
+   */
+  | 'session_invalid'
+  /**
+   * SESSIONS: the access credential expired. Renew the SAME session
+   * (`POST /v1/sessions` with its `sessionId`); the frame does this through
+   * your endpoint by itself. HTTP 401.
+   */
+  | 'session_expired'
+  /**
+   * SESSIONS: the logical session reached its absolute lifetime. Renewal
+   * cannot extend it; mint a new session. HTTP 401.
+   */
+  | 'session_ended'
+  /**
+   * SESSIONS: the session was revoked (your server, a logout, a login, patient
+   * or clinician revocation, a key, policy or clinician change, or a handover
+   * to its successor). HTTP 401.
+   */
+  | 'session_revoked'
+  /** SESSIONS: the clinician session locked after inactivity. HTTP 401. */
+  | 'session_locked'
+  /**
+   * SESSIONS: a renewal named a session whose identity, `loginRef`, frame key
+   * or parent origin differs from the record. Mint a new session instead.
+   * HTTP 403.
+   */
+  | 'renew_mismatch'
+  /**
+   * SESSIONS: embedding is switched off for your account (no or disabled
+   * embed policy, an operator switch, the global kill switch) or not
+   * configured in this deployment. HTTP 403.
+   */
+  | 'embedding_disabled'
+  /**
+   * SESSIONS: this surface is not enabled for your account (policy), not
+   * released in this deployment, or not usable on this route. Headless and
+   * native surfaces are opt-in. HTTP 403.
+   */
+  | 'surface_not_allowed'
+  /**
+   * SESSIONS: the provider module (`view`) of this session does not include
+   * the route's capability (for example presence from an `inbox` module).
+   * HTTP 403.
+   */
+  | 'not_in_view'
+  /**
+   * SESSIONS: a successor mint (`successorOf`, the mid-call handover) was
+   * refused. No detail is given; the frame retries or lets the call reach its
+   * limit. HTTP 409.
+   */
+  | 'successor_refused'
+  /**
+   * SESSIONS: a video join needs more session lifetime than is left
+   * (`details.needSeconds`: the appointment length + 15 min, or 30 min for an
+   * on-demand call). Switch to a fresh session and join again once. HTTP 409.
+   */
+  | 'session_renewal_required';
 
 /**
  * The JSON body of every error response.
@@ -535,8 +630,6 @@ export const ERROR_HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
   invalid_request: 400,
   mode_not_supported: 400,
   unauthorized: 401,
-  embed_token_invalid: 401,
-  embed_token_expired: 401,
   forbidden: 403,
   origin_not_allowed: 403,
   on_demand_disabled: 403,
@@ -548,6 +641,7 @@ export const ERROR_HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
   email_in_use: 409,
   external_id_conflict: 409,
   has_open_thread: 409,
+  profile_incomplete: 409,
   thread_not_active: 409,
   request_thread: 409,
   not_assigned: 409,
@@ -587,6 +681,22 @@ export const ERROR_HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
   cursor_invalid: 400,
   upload_rejected: 422,
   dependency_unavailable: 503,
+  protocol_pending: 409,
+  protocol_handoff_required: 409,
+  protocol_unavailable: 503,
+  protocol_authorization_stale: 409,
+  login_expired: 401,
+  session_invalid: 401,
+  session_expired: 401,
+  session_ended: 401,
+  session_revoked: 401,
+  session_locked: 401,
+  renew_mismatch: 403,
+  embedding_disabled: 403,
+  surface_not_allowed: 403,
+  not_in_view: 403,
+  successor_refused: 409,
+  session_renewal_required: 409,
 };
 
 /**

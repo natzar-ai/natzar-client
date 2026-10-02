@@ -21,8 +21,8 @@ import {
 import {REFERRAL_LINK_VALIDITY_SENTENCES} from '../dist/esm/contract/index.js';
 
 const ASYNC_BODY =
-  'A physician can take a closer look. Tap to accept:\n\nhttps://checkup.getmyhealthchecked.com/async?id=t_1gbX-hCHDD';
-const TELE_BODY = 'Your video consultation is ready: https://checkup.getmyhealthchecked.com/telehealth?id=4H1-sGULhQQi';
+  'A physician can take a closer look. Tap to accept:\n\nhttps://us.app.natzar.ai/async?id=t_1gbX-hCHDD';
+const TELE_BODY = 'Your video consultation is ready: https://us.app.natzar.ai/telehealth?id=4H1-sGULhQQi';
 const BOOK_BODY = 'Choose a time for your appointment:\n\nhttps://us.app.natzar.ai/book?id=sch_9';
 const RX_BODY =
   'Dr. Chen sent you a prescription. Choose your pharmacy below.\n\nhttps://ca.app.natzar.ai/pharmacy?id=rx_Ab12-cD\n\nThis link is active for the next 24 hours.';
@@ -366,7 +366,7 @@ test('resolveLinkActions on a physician session keeps the consult buttons when t
     return new Response(JSON.stringify({error: {code: 'not_found', message: 'No such resource'}}), {status: 404});
   };
   // A three-segment JWT is all the constructor checks for a session token.
-  const sessionToken = `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify({typ: 'physician', sub: 'ph_1'})).toString('base64url')}.sig`;
+  const sessionToken = `nz1.${'s'.repeat(21)}A.${'k'.repeat(42)}A`;
   const client = new NatzarClient({sessionToken, baseUrl: 'https://x.test/v1', fetch: fetchLike, maxRetries: 0});
   const actions = await resolveLinkActions(client, [{body: ASYNC_BODY}, {body: RX_BODY}, {body: REF_BODY}]);
   assert.equal(requested.length, 3);

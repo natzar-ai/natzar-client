@@ -13,8 +13,19 @@
 // widening it would force fake statuses for codes no REST response carries.
 
 export const PATIENT_SURFACE_CODES = [
-  'embed_token_invalid',
-  'embed_token_expired',
+  // The `nz1` session (every operation checks it): `session_expired` is
+  // renewed and retried by the SDK; the rest end the session — `revoked`,
+  // `ended` and `invalid` get a new one (your `identify` runs again),
+  // `locked` and `embedding_disabled` stick. `session_renewal_required`
+  // (409) is a video join that needs a fresher session (§4.11);
+  // `not_in_view` is outside the session's scope.
+  'session_expired',
+  'session_invalid',
+  'session_ended',
+  'session_revoked',
+  'session_locked',
+  'embedding_disabled',
+  'session_renewal_required',
   'origin_not_allowed',
   'not_found',
   'thread_not_active',
@@ -68,13 +79,22 @@ export const PATIENT_SURFACE_CODES = [
   'invalid_location',
   'not_available',
   'invalid_pharmacy',
+  // Clinical protocols (consent / join / book / checkout): the clinic's
+  // required symptom intake is not complete, needs an explicit clinician
+  // handoff, could not be read, or the link's authorization went stale. The
+  // patient continues in their conversation with the assistant — never a
+  // retry loop on this surface.
+  'protocol_pending',
+  'protocol_handoff_required',
+  'protocol_unavailable',
+  'protocol_authorization_stale',
 ] as const;
 
 /**
  * A code the PATIENT surface (`@natzar/client/patient`) can refuse with.
  *
  * Overlaps the REST contract's `ErrorCode` where the two planes agree
- * (`not_found`, `invalid_request`, the `embed_token_*` pair…) and adds the
+ * (`not_found`, `invalid_request`, `origin_not_allowed`…) and adds the
  * embed-only spellings (`expired`, `not_choosable`, `lost_race`,
  * `not_available`, `booking_disabled`…). `isErrorCode` accepts either.
  */

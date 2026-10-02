@@ -2,15 +2,18 @@
 //
 //   import {connectPhysician} from '@natzar/client/physician';
 //
-//   const desk = connectPhysician(session);              // session from your server
+//   const desk = await connectPhysician({endpoint: '/natzar'}); // your natzar() mount
 //   const stop = desk.workspace.subscribe(render);       // queue, inbox, calls, presence
 //   await desk.presence.ready();                         // on the live rota — the SDK heartbeats
 //   const {livekit} = await desk.telehealth.room(id);    // once the workspace says in_progress
 //
-// That is the whole integration: no poll loop, no heartbeat timer, no API key
-// in the bundle, and no second login for the clinician — your server exchanges
-// your own session for a Natzar physician session (`physicians.session`) and
-// hands the response to the browser as-is.
+// That is the whole integration: no poll loop, no heartbeat timer, no session
+// plumbing, no API key in the bundle, and no second login for the clinician —
+// the `natzar()` middleware (`@natzar/client/server`, `'headless'` in its
+// `surfaces`, your `identify` returning `{clinician}`) mints a headless
+// clinician session (the `physician-rest` preset, D10), and the SDK seals,
+// renews and replaces it by itself. rmc-style split origins pass their own
+// `getSession(ask)` instead of an endpoint.
 //
 // Design notes worth knowing:
 //
@@ -35,9 +38,12 @@
 //   session expire and the beats stop, so a closed laptop never keeps a
 //   physician on a rota patients are being rung against.
 //
-// * EXPIRY IS ONE CALLBACK. Sessions are short-lived. The first `401` flips the
-//   client into a parked state — no polling, no beats — and calls `onExpired`
-//   once; `refresh(session)` with a re-mint resumes everything where it was.
+// * RENEWAL IS AUTOMATIC; EXPIRY IS ONE CALLBACK. The access credential lives
+//   300 s and is renewed before it lapses (and on visibility, focus, online
+//   and a `session_expired` answer). Only when renewal is impossible — you
+//   signed the clinician out, the session was revoked and your `identify`
+//   refuses a new one, the idle lock — does the client park (no polling, no
+//   beats) and call `onExpired` once; `reconnect()` resumes everything.
 //
 // * A DISCONNECT IS NEVER AN END. The platform may retire a call's room and
 //   open a new one; `ROOM_DELETED` means "pull `room()` / `ready()` again",
@@ -46,8 +52,12 @@
 
 import {NatzarClient} from '../client';
 import {isNatzarApiError, NatzarApiError} from '../errors';
-import {assertUsableKey, type FetchLike} from '../http';
-import {NatzarSessionError} from '../session-error';
+import type {FetchLike} from '../http';
+import {NatzarSessionError, isNatzarSessionError} from '../session-error';
+import {SessionBroker, type AuthHook, type ClientConfig, type ExpiredReason, type GetSession, type LiveSession, type SessionAsk, type SessionInfo, type SessionSource} from '../broker';
+import {SESSION_SELF_REVOKE, type ElementErrorCode} from '../contract/sessions';
+import {joinAnywayOf, type JoinAnyway} from '../join-anyway';
+import type {SessionConsultRef, SessionGrant} from '../contract/sessions-schemas';
 import {DEFAULT_TUNING, watch, type PollTuning, type SyncState, type Unsubscribe, type WatchOptions} from '../subscribe';
 import {PHYSICIAN_HEARTBEAT_INTERVAL_SECONDS} from '../contract/resources';
 import type {
@@ -84,7 +94,9 @@ import {
 } from '../room';
 
 export type {SyncState, Unsubscribe, WatchOptions, FetchLike};
-export {NatzarSessionError};
+export type {AuthHook, ClientConfig, ExpiredReason, GetSession, SessionAsk, SessionInfo, SessionSource, SessionGrant, SessionConsultRef, ElementErrorCode};
+export {NatzarSessionError, isNatzarSessionError, joinAnywayOf};
+export type {JoinAnyway};
 export {DISCONNECT_REASON, NO_RECONNECT_POLICY, parseRoomMetadata, roomCarriesNonce, roomOptions} from '../room';
 export type {LiveKitRoomLike, ReconnectPolicyLike, RepullReason, RoomPull, RoomSession, RoomSessionState} from '../room';
 export type {PhysicianSurfaceErrorCode} from './codes';
@@ -110,23 +122,32 @@ export type {ReferralDraft, ReferralLanguage};
 export type {IssuePrescriptionRequest};
 
 /**
- * Everything the browser needs to talk to the physician surface — exactly the
- * response your server got from `physicians.session(id)`. Hand it over as-is.
+ * Where the clinician session comes from: your `natzar()` mount (`endpoint`,
+ * default `/natzar`, with `'headless'` in its `surfaces`), or your own
+ * `getSession(ask)` relay; `native: true` for apps with no page (bearer
+ * `auth` required). `consult` narrows the session to one case.
  */
-export interface PhysicianSession {
-  /** The physician-scoped credential. Short-lived; see {@link expiresAt}. */
-  sessionToken: string;
-  /** When {@link sessionToken} stops working. */
-  expiresAt?: string;
-  /**
-   * The REST base URL (through `/v1`), returned with the mint so nothing about
-   * our deployment is baked into your bundle. Required unless
-   * {@link ConnectOptions.apiUrl} supplies it.
-   */
-  apiUrl?: string;
-  /** The physician the session was minted for, as the mint reported them. */
-  physician?: PhysicianResource;
+export type ConnectPhysicianSource = SessionSource & {consult?: SessionConsultRef};
+
+/**
+ * Options of a join (`telehealth.room`, `telehealth.ready`): D12's "Join
+ * anyway" — after `joinAnywayOf(error)?.joinAnywayAllowed`, and only on the
+ * clinician's say-so, retry with `acceptShortSession: true`.
+ */
+export interface JoinCallOptions {
+  signal?: AbortSignal;
+  acceptShortSession?: true;
 }
+
+const joinArgs = (options?: AbortSignal | JoinCallOptions): {signal?: AbortSignal; body: {acceptShortSession?: true}} => {
+  if (!options) return {body: {}};
+  if (typeof (options as AbortSignal).addEventListener === 'function' && 'aborted' in options) return {signal: options as AbortSignal, body: {}};
+  const o = options as JoinCallOptions;
+  return {...(o.signal ? {signal: o.signal} : {}), body: o.acceptShortSession === true ? {acceptShortSession: true} : {}};
+};
+
+// The clinician self-revoke route, below the API base (which ends in `/v1`).
+const SELF_REVOKE_PATH = SESSION_SELF_REVOKE.clinician.route.replace(/^POST \/v1/, '');
 
 export interface ConnectOptions {
   /** The `fetch` to use. Defaults to the global one. */
@@ -142,22 +163,16 @@ export interface ConnectOptions {
    * @defaultValue 15000
    */
   heartbeatIntervalMs?: number;
-  /**
-   * The REST base URL, when the session does not carry one (a deployment
-   * predating self-describing physician sessions, or a proxy of your own).
-   * The session's own `apiUrl` wins when both are present.
-   */
-  apiUrl?: string;
   /** Extra headers on every request (tracing, tenant tagging…). */
   headers?: Record<string, string>;
   /**
-   * Called ONCE when the session token has expired (or was invalidated by a
-   * key rotation). Subscriptions park and heartbeats stop until you mint a
-   * fresh session on your server and hand it to `desk.refresh(session)`, at
-   * which point they resume where they were. Actions taken in between reject
-   * with `unauthorized`.
+   * Called ONCE when the session ended and could not be renewed or replaced
+   * (`signed_out`, `revoked`, `idle`, `absolute`, `access`). Subscriptions
+   * park and heartbeats stop until `desk.reconnect()`, then resume where they
+   * were. Actions taken in between reject with a `NatzarSessionError` whose
+   * `code` says why.
    */
-  onExpired?: () => void;
+  onExpired?: (info: {reason: ExpiredReason; code: ElementErrorCode}) => void;
   /**
    * Called when an AUTOMATIC heartbeat fails. Logging only: the next beat is
    * 15 s away regardless, and the workspace's `telehealth.visible` /
@@ -229,7 +244,7 @@ export interface PhysicianClient {
      * keep rendering the workspace and call again once `telehealth.active`
      * reads `in_progress`. `409 not_assigned` for a consult that is not theirs.
      */
-    room(consultId: string, signal?: AbortSignal): Promise<TelehealthRoomResponse>;
+    room(consultId: string, options?: AbortSignal | JoinCallOptions): Promise<TelehealthRoomResponse>;
     /**
      * Hang up. The physician returns to `ready` and the queue is re-matched
      * at once — `next` is the patient now ringing, if any. `goOffline` ends
@@ -242,7 +257,7 @@ export interface PhysicianClient {
      * ~10 s while they stay; `livekit` appears the moment both sides are
      * present inside the window. `present: false` once when they step away.
      */
-    ready(consultId: string, present?: boolean, signal?: AbortSignal): Promise<TelehealthReadyResponse>;
+    ready(consultId: string, present?: boolean, options?: AbortSignal | JoinCallOptions): Promise<TelehealthReadyResponse>;
     /**
      * Cancel an appointment of theirs before it starts. The patient is told,
      * with `reason` relayed in the notice.
@@ -373,101 +388,105 @@ export interface PhysicianClient {
   /** The acting physician, fresh — `GET /v1/physicians/me`. */
   me(signal?: AbortSignal): Promise<PhysicianResource>;
   /**
-   * Swap in a freshly minted session without rebuilding the client. Parked
-   * subscriptions resume at once and heartbeats restart.
+   * Start over with a NEW session (your `identify` runs again) — after
+   * `onExpired`, once the clinician signed back in. Parked subscriptions
+   * resume at once and heartbeats restart.
    */
-  refresh(session: PhysicianSession): void;
+  reconnect(): Promise<void>;
   /**
-   * The typed REST client bound to the CURRENT session, for any
-   * physician-session route this surface does not model (`asyncConsults.list`
+   * Revoke this session on the platform with its own credential
+   * (`SESSION_SELF_REVOKE`: `POST /v1/provider-embed/session/logout`) and stop
+   * renewing, beating and polling. Your own logout route should also call the
+   * middleware's `revokeLogin`, which ends every session of the login.
+   */
+  logout(): Promise<{revoked: boolean}>;
+  /** Stop renewing, beating and polling, and drop the credential (no revoke). */
+  disconnect(): void;
+  /** Credential-free facts about the current session (id, lifetimes, capabilities). */
+  readonly session: SessionInfo | null;
+  /**
+   * The typed REST client bound to the CURRENT credential, for any
+   * `physician-rest` route this surface does not model (`asyncConsults.list`
    * with `assignee`, `schedules`, `licenses`…). Read it at call time rather
-   * than caching it: `refresh()` replaces it.
+   * than caching it: every renewal replaces it.
    */
   readonly client: NatzarClient;
 }
 
 /**
- * Connect to the physician surface using a session your server minted.
+ * Connect to the physician surface through your `natzar()` endpoint.
  *
  * ```ts
- * // your server, after YOUR authentication of the clinician
- * const session = await natzar.physicians.session(physicianId);
- * // → send `session` to the browser as-is
+ * // your server: natzar({identify, surfaces: [..., 'headless']}) where
+ * //   identify returns {clinician: {externalId}} for YOUR clinicians
  *
  * // your browser
- * const desk = connectPhysician(session, {onExpired: () => remintAndRefresh()});
+ * const desk = await connectPhysician({endpoint: '/natzar'});
+ *
+ * // rmc-style split origin: your own relay to POST /v1/sessions
+ * const desk = await connectPhysician({getSession: (ask) => mySessionLambda(ask)});
  * ```
+ *
+ * Resolves once the first session is in hand; rejects with a
+ * `NatzarSessionError` (`signed_out`, `surface_not_allowed`,
+ * `endpoint_misconfigured`, …) when there is none to be had.
  */
-export function connectPhysician(session: PhysicianSession, options: ConnectOptions = {}): PhysicianClient {
-  // Fail at CONSTRUCTION, not on first use — the same rule the server client
-  // applies to its API key. A session that can never connect is a wiring
-  // mistake, and wiring mistakes should surface where they were made rather
-  // than inside whatever component happened to call first.
+export async function connectPhysician(source: ConnectPhysicianSource = {}, options: ConnectOptions = {}): Promise<PhysicianClient> {
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? PHYSICIAN_HEARTBEAT_INTERVAL_SECONDS * 1000;
+  // Late-bound: the heartbeat must stop the moment the session ends.
+  let onSessionEnd = () => {};
+  const {consult, ...sessionSource} = source;
+  const broker = await SessionBroker.start({
+    audience: 'clinician',
+    source: sessionSource as SessionSource,
+    ...(consult ? {consult} : {}),
+    ...(options.fetch ? {fetch: options.fetch} : {}),
+    onExpired: (info) => {
+      onSessionEnd();
+      options.onExpired?.(info);
+    },
+    // The fresh pre-join switch revokes the old session with its own credential.
+    selfRevoke: (previous) => build(previous, options).raw({method: 'POST', path: SELF_REVOKE_PATH, body: {}}),
+  });
 
-  // The client in force, bound to the session's token. `refresh()` replaces
-  // it; every call reads `client` at call time rather than closing over the
-  // original, which is what lets a re-mint land without re-subscribing.
-  let client = build(session, options);
-
-  // --- expiry ---------------------------------------------------------------
-  //
-  // One flag, one callback. The first `401 unauthorized` flips it and tells
-  // the partner; every subscription then parks on `resumed` instead of
-  // polling a dead token every 2.5 s (and backing off into a "retrying" state
-  // that looks like a network problem when it is not), and the heartbeat
-  // stops. A `403 forbidden` is NOT expiry: it is a route outside what a
-  // session may call, and the caller should see it as such.
-  let expired = false;
-  let resumeWaiters: Array<() => void> = [];
-
-  const markExpired = () => {
-    if (expired) return;
-    expired = true;
-    syncHeartbeat();
-    options.onExpired?.();
+  // One REST client per credential: every renewal rotates the token, so the
+  // client is rebuilt from the live session at call time (cheap: no I/O).
+  let bound: {token: string; client: NatzarClient} | null = null;
+  const clientFor = (live: LiveSession): NatzarClient => {
+    if (bound?.token !== live.token) bound = {token: live.token, client: build(live, options)};
+    return bound.client;
   };
 
-  const resumed = (signal: AbortSignal): Promise<void> =>
-    new Promise((resolve, reject) => {
-      if (!expired) return resolve();
-      if (signal.aborted) return reject(signal.reason ?? new Error('aborted'));
-      const wake = () => {
-        signal.removeEventListener('abort', onAbort);
-        resolve();
-      };
-      const onAbort = () => {
-        resumeWaiters = resumeWaiters.filter((w) => w !== wake);
-        reject(signal.reason ?? new Error('aborted'));
-      };
-      resumeWaiters.push(wake);
-      signal.addEventListener('abort', onAbort, {once: true});
-    });
+  // A session that ended for good: subscriptions park on it until `reconnect()`.
+  const isSessionEnd = (e: unknown): boolean => (isNatzarSessionError(e) || isNatzarApiError(e)) && broker.isEnded();
 
-  const isExpiry = (e: unknown): boolean => isNatzarApiError(e) && e.code === 'unauthorized';
-
-  // Every request goes through here, so expiry is observed in one place and
-  // no caller can forget to.
+  // Every request goes through here. A refusal about the SESSION (expired,
+  // revoked…) goes to the broker, which renews or replaces it, and the call
+  // is retried ONCE on the new credential. A `403 forbidden` is NOT expiry: it
+  // is a route outside what the session may call, and the caller sees it.
   const call = async <T>(run: (c: NatzarClient) => Promise<T>): Promise<T> => {
+    const live = await broker.current();
     try {
-      return await run(client);
+      return await run(clientFor(live));
     } catch (e) {
-      if (isExpiry(e)) markExpired();
-      throw e;
+      if (!isNatzarApiError(e)) throw e;
+      const next = await broker.recover(e.code, live.token, e.details);
+      if (!next) throw e;
+      return run(clientFor(next));
     }
   };
 
-  // The subscription's read: parked while the session is expired. Parking
+  // The subscription's read: parked while the session has ended. Parking
   // INSIDE the read (rather than throwing) keeps the poller from backing off
   // into `retrying` — nothing is being retried — and resumes the very same
-  // tick, with the new token, the moment `refresh()` lands.
+  // tick, on the new session, the moment `reconnect()` lands.
   const whileValid = async <T>(signal: AbortSignal, read: () => Promise<T>): Promise<T> => {
     for (;;) {
-      if (expired) await resumed(signal);
+      if (broker.isEnded()) await broker.untilLive(signal);
       try {
         return await read();
       } catch (e) {
-        if (!isExpiry(e)) throw e;
+        if (!isSessionEnd(e)) throw e;
       }
     }
   };
@@ -526,7 +545,7 @@ export function connectPhysician(session: PhysicianSession, options: ConnectOpti
   };
 
   const syncHeartbeat = () => {
-    const wanted = engaged && subscribers > 0 && !expired;
+    const wanted = engaged && subscribers > 0 && !broker.isEnded();
     if (wanted && heartbeatTimer === undefined) {
       heartbeatTimer = setInterval(() => void beat(), heartbeatIntervalMs);
       // Never the reason a Node process stays alive: a server-rendered
@@ -538,9 +557,11 @@ export function connectPhysician(session: PhysicianSession, options: ConnectOpti
     }
   };
 
+  onSessionEnd = syncHeartbeat;
+
   const beat = async (): Promise<void> => {
     // One beat at a time: a slow beat must not stack behind the next tick.
-    if (beating || expired) return;
+    if (beating || broker.isEnded()) return;
     beating = true;
     const seen = epoch;
     try {
@@ -550,7 +571,7 @@ export function connectPhysician(session: PhysicianSession, options: ConnectOpti
     } catch (e) {
       // Expiry was already reported by `call`; anything else is a blip the
       // next beat covers, and the workspace shows `visible: false` if not.
-      if (!isExpiry(e)) options.onHeartbeatError?.(e instanceof Error ? e : new Error(String(e)));
+      if (!isSessionEnd(e)) options.onHeartbeatError?.(e instanceof Error ? e : new Error(String(e)));
     } finally {
       beating = false;
     }
@@ -690,8 +711,9 @@ export function connectPhysician(session: PhysicianSession, options: ConnectOpti
     },
 
     telehealth: {
-      room: async (consultId, signal) => {
-        const res = await call((c) => c.telehealth.room(consultId, {...(signal ? {signal} : {})}));
+      room: async (consultId, roomOptions) => {
+        const {signal, body} = joinArgs(roomOptions);
+        const res = await call((c) => c.telehealth.room(consultId, body, {...(signal ? {signal} : {})}));
         refreshNow();
         return res;
       },
@@ -713,8 +735,9 @@ export function connectPhysician(session: PhysicianSession, options: ConnectOpti
         return res;
       },
 
-      ready: async (consultId, present = true, signal) => {
-        const res = await call((c) => c.telehealth.ready(consultId, {present}, {...(signal ? {signal} : {})}));
+      ready: async (consultId, present = true, readyOptions) => {
+        const {signal, body} = joinArgs(readyOptions);
+        const res = await call((c) => c.telehealth.ready(consultId, {present, ...body}, {...(signal ? {signal} : {})}));
         // A ~10 s beat loop should not re-read the workspace on every beat;
         // only a change of phase is worth showing at once.
         if (res.state.phase !== 'early' && res.state.phase !== 'waiting') refreshNow();
@@ -989,25 +1012,41 @@ export function connectPhysician(session: PhysicianSession, options: ConnectOpti
       return physician;
     },
 
-    refresh: (next) => {
-      client = build(next, options);
-      expired = false;
+    reconnect: async () => {
+      await broker.reconnect();
       // Presence is whatever the platform says now; the first read under the
-      // new token re-arms the heartbeat from it.
+      // new session re-arms the heartbeat from it. Parked reads were woken by
+      // the broker; a nudge folds into them rather than starting a second chain.
       epoch += 1;
-      const waiting = resumeWaiters;
-      resumeWaiters = [];
-      // A parked subscription continues its own tick with the new token —
-      // that IS the refresh. Only one that was not parked (expiry seen by an
-      // action, the poll not yet due) needs a nudge, and nudging both would
-      // start a second read chain beside the first.
-      if (waiting.length) waiting.forEach((wake) => wake());
-      else refreshNow();
+      refreshNow();
       syncHeartbeat();
     },
 
+    logout: async () => {
+      const live = broker.peek();
+      try {
+        if (!live) return {revoked: false};
+        await build(live, options).raw({method: 'POST', path: SELF_REVOKE_PATH, body: {}});
+        return {revoked: true};
+      } finally {
+        broker.close();
+        syncHeartbeat();
+      }
+    },
+
+    disconnect: () => {
+      broker.close();
+      syncHeartbeat();
+    },
+
+    get session() {
+      return broker.info();
+    },
+
     get client() {
-      return client;
+      const live = broker.peek();
+      if (!live) throw new NatzarSessionError('Not connected.', 'not_connected');
+      return clientFor(live);
     },
   };
 
@@ -1126,44 +1165,18 @@ export function physicianPullFromReady(
 const MAX_TRANSCRIPT_PAGES = 10;
 
 /**
- * Check a session and bind a REST client to it.
- *
- * Throws {@link NatzarSessionError} — the one error both browser surfaces use
- * for "this cannot connect at all" — rather than the server client's plain
- * `Error`, so a partner's `catch` recognises a wiring mistake the same way
- * whichever entry point minted the session.
+ * A REST client bound to one live credential, against YOUR deployment's API
+ * (the endpoint's /config), never the grant's URL (T16).
  */
-function build(session: PhysicianSession, options: ConnectOptions): NatzarClient {
-  if (!session?.sessionToken) throw new NatzarSessionError('This session has no sessionToken.');
-  try {
-    assertUsableKey(session.sessionToken, 'sessionToken');
-  } catch (e) {
-    throw new NatzarSessionError(e instanceof Error ? e.message : String(e));
-  }
-  const apiUrl = session.apiUrl ?? options.apiUrl;
-  if (!apiUrl) {
-    // Older deployments minted tokens without the API address. Say so
-    // precisely — the alternative is a confusing failure deep inside fetch.
-    throw new NatzarSessionError(
-      'This session did not include apiUrl, so the browser cannot connect directly. ' +
-        'Your Natzar deployment predates self-describing physician sessions — upgrade it, or pass `apiUrl` to connectPhysician().',
-    );
-  }
-  let origin: string;
-  try {
-    const parsed = new URL(apiUrl);
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new Error(parsed.protocol);
-    origin = parsed.origin;
-  } catch {
-    throw new NatzarSessionError(`apiUrl must be an absolute http(s) URL through /v1; got "${apiUrl}".`);
-  }
+function build(live: LiveSession, options: ConnectOptions): NatzarClient {
+  const apiUrl = live.apiUrl!;
   return new NatzarClient({
-    sessionToken: session.sessionToken,
+    sessionToken: live.token,
     baseUrl: apiUrl,
     // The REST client never uses the embed origin; it is named only so
     // endpoint resolution is fully explicit and cannot consult a built-in
     // table for a zone this deployment may not be in.
-    embedOrigin: origin,
+    embedOrigin: new URL(apiUrl).origin,
     ...(options.fetch ? {fetch: options.fetch} : {}),
     ...(options.timeoutMs !== undefined ? {timeoutMs: options.timeoutMs} : {}),
     ...(options.headers ? {headers: options.headers} : {}),

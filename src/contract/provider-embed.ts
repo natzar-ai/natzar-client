@@ -1,6 +1,6 @@
 // GENERATED FILE — do not edit.
 //
-// Copied verbatim from provider-portal's shared/partner-api by
+// Copied verbatim from natzar-core's shared/partner-api by
 // scripts/sync-contract.mjs. Edit the source there; this copy exists only so
 // the published package is self-contained.
 /**
@@ -77,6 +77,13 @@
  * TypeScript: it is intentionally runtime-free apart from constants, and it
  * uses no DOM types.
  *
+ * REPLACED BY ./sessions (embed redesign M1/M4) — delete when the last consumer
+ * moves: the `pe1` credential, the session grant, mint/renew requests and the
+ * `/v1/provider-embed/sessions*` routes (→ `nz1`, `POST /v1/sessions`), the v1
+ * `postMessage` protocol, `getSession`/`refresh` and the frame configuration's
+ * origin list. The capabilities, mode matrix, provider REST routes and views
+ * stay (./sessions reuses them). Each replaced part is marked below.
+ *
  * @packageDocumentation
  */
 
@@ -90,7 +97,7 @@ import type {ErrorCode} from './errors';
 
 // ---------------------------------------------------------------- constants
 
-/** `postMessage` protocol namespace of the provider embed (distinct from the patient embed's). */
+/** `postMessage` protocol namespace of the provider embed (distinct from the patient embed's). REPLACED BY ./sessions (embed redesign M1/M4) — delete when the last consumer moves. */
 export const PROVIDER_EMBED_PROTOCOL = 'natzar-provider-v1' as const;
 /** Version of the `postMessage` protocol; stable for the life of `/provider/v1`. */
 export const PROVIDER_EMBED_PROTOCOL_VERSION = 1 as const;
@@ -116,7 +123,7 @@ export const PROVIDER_EMBED_IFRAME_ALLOW = 'camera; microphone; fullscreen' as c
 export const PROVIDER_EMBED_IFRAME_ALLOW_NO_MEDIA = 'fullscreen' as const;
 /** `sandbox` tokens of the provider iframe: no top navigation, no popups. */
 export const PROVIDER_EMBED_IFRAME_SANDBOX = 'allow-scripts allow-same-origin allow-forms allow-downloads' as const;
-/** First segment of every provider session credential. */
+/** First segment of every provider session credential. REPLACED BY ./sessions (embed redesign M1/M4) — delete when the last consumer moves. */
 export const PROVIDER_EMBED_TOKEN_PREFIX = 'pe1' as const;
 /** `pe1.<22-char base64url session id>.<43-char base64url secret>` (128-bit id, 256-bit secret). */
 export const PROVIDER_EMBED_TOKEN_REGEX = /^pe1\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$/;
@@ -255,6 +262,7 @@ export type ProviderEmbedScope =
   | {mode: 'patient'; patientId: string};
 
 // ------------------------------------------------------ server-only session routes
+// REPLACED BY ./sessions (embed redesign M1/M4) — delete when the last consumer moves.
 
 /** Exactly one of our id or your external id (`UserProfile.externalKey = <group>#<externalId>`). */
 export type ProviderEmbedClinicianRef = {physicianId: string} | {externalPhysicianId: string};
@@ -379,6 +387,13 @@ export interface ProviderEmbedSessionView {
   /** Provider API version; the frame requires equality with {@link PROVIDER_EMBED_API_VERSION}. */
   apiVersion: typeof PROVIDER_EMBED_API_VERSION;
 }
+/**
+ * The patient summary values that can carry the "patient-reported" marker
+ * (D5, RG2.8): the identity values a summary shows.
+ */
+export const PROVIDER_EMBED_PATIENT_REPORTED_FIELDS = ['givenName', 'familyName', 'birthdate', 'sex'] as const;
+/** One of {@link PROVIDER_EMBED_PATIENT_REPORTED_FIELDS}. */
+export type ProviderEmbedPatientReportedField = (typeof PROVIDER_EMBED_PATIENT_REPORTED_FIELDS)[number];
 /** The minimum patient context shown beside an authorized episode. */
 export interface ProviderEmbedPatientSummary {
   /** Our patient id. */
@@ -393,6 +408,13 @@ export interface ProviderEmbedPatientSummary {
   sex?: PatientSex;
   /** Patient locale. */
   lang?: PatientLang;
+  /**
+   * Which of the values above the PATIENT entered in the widget
+   * (`Patient.patientReportedFields`), not confirmed by the partner or a
+   * clinician: the frame marks them "patient-reported" (D5). Only values this
+   * summary carries, in canonical order; absent when none.
+   */
+  patientReportedFields?: ProviderEmbedPatientReportedField[];
 }
 /** One written (async) consultation in a list. */
 export interface ProviderEmbedConsultRow {
@@ -1177,7 +1199,7 @@ export interface ProviderEmbedAbortSignalLike {
   /** Unsubscribe from cancellation. */
   removeEventListener(type: 'abort', listener: () => void): void;
 }
-/** What the loader passes to your `getSession` callback. */
+/** What the loader passes to your `getSession` callback. REPLACED BY ./sessions (embed redesign M1/M4) — delete when the last consumer moves. */
 export interface ProviderEmbedSessionRequest {
   /** null → mint a new logical session; a value → renew exactly this session. */
   sessionId: string | null;
@@ -1225,7 +1247,7 @@ export interface ProviderEmbedElementApi {
   readonly state: ProviderEmbedLifecycleState;
 }
 
-/** Error codes the loader and frame raise themselves (reported in `natzar:provider:error`). */
+/** Error codes the loader and frame raise themselves (reported in `natzar:provider:error`). REPLACED BY ./sessions (embed redesign M1/M4) — delete when the last consumer moves. */
 export const PROVIDER_EMBED_CLIENT_ERROR_CODES = [
   'handshake_timeout', 'protocol_mismatch', 'origin_rejected', 'frame_url_rejected', 'api_url_mismatch',
   'session_callback_failed', 'session_grant_invalid', 'session_mismatch', 'session_unavailable', 'not_connected',
@@ -1267,6 +1289,7 @@ export interface ProviderEmbedEventDetailMap {
 /** Full DOM event name, e.g. `natzar:provider:ready`. */
 export type ProviderEmbedDomEventName = `${typeof PROVIDER_EMBED_DOM_EVENT_PREFIX}${ProviderEmbedEventName}`;
 
+// Protocol v1 envelopes, through ProviderEmbedFrameToLoaderMessage. REPLACED BY ./sessions (embed redesign M1/M4) — delete when the last consumer moves.
 /** Fields every protocol message carries. */
 export interface ProviderEmbedMessageBase {
   /** Always {@link PROVIDER_EMBED_PROTOCOL}. */
@@ -1323,7 +1346,7 @@ export type ProviderEmbedLoaderToFrameMessage = ProviderEmbedHello | ProviderEmb
 /** Any frame → loader message. */
 export type ProviderEmbedFrameToLoaderMessage = ProviderEmbedHelloAck | ProviderEmbedReply | ProviderEmbedFrameRequest | ProviderEmbedFrameEvent;
 
-/** JSON embedded by the dynamic shell in `<script type="application/json" id="natzar-provider-config">`. */
+/** JSON embedded by the dynamic shell in `<script type="application/json" id="natzar-provider-config">`. REPLACED BY ./sessions (embed redesign M1/M4) — delete when the last consumer moves. */
 export interface ProviderEmbedFrameConfig {
   /** Config format version. */
   v: 1;

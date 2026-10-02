@@ -1,6 +1,6 @@
 // GENERATED FILE — do not edit.
 //
-// Copied verbatim from provider-portal's shared/partner-api by
+// Copied verbatim from natzar-core's shared/partner-api by
 // scripts/sync-contract.mjs. Edit the source there; this copy exists only so
 // the published package is self-contained.
 /**
@@ -128,6 +128,33 @@ export const E164_PHONE_REGEX = /^\+[1-9]\d{6,14}$/;
  */
 export const EXTERNAL_ID_REGEX = /^\S{1,128}$/;
 
+/**
+ * An ISO-8601 timestamp as the API accepts it: `YYYY-MM-DDTHH:MM`, then
+ * optional `:SS` and fraction, then `Z` or `±HH:MM` (offsets ±00:00–±23:59).
+ * Pinned here instead of zod's built-in `datetime()`, whose accepted set
+ * differs between releases (zod 4.6 dropped minute precision; zod 3 also
+ * takes compact `+0200` and out-of-range `+25:00` offsets), so the platform
+ * (zod 4) and the published client (zod 3) decide the same set: the one the
+ * API has always accepted. {@link isIsoDateTime} adds the calendar checks.
+ */
+export const ISO_DATE_TIME_REGEX = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
+
+/**
+ * Whether `value` is an API timestamp ({@link ISO_DATE_TIME_REGEX}) naming a
+ * real instant: month 01–12, a day that exists in that month (leap years
+ * included), hour 00–23, minute and second 00–59, at most 64 characters.
+ * `offset: false` admits `Z` only.
+ */
+export function isIsoDateTime(value: unknown, opts: {offset?: boolean} = {}): value is string {
+  if (typeof value !== 'string' || value.length > 64) return false;
+  const m = ISO_DATE_TIME_REGEX.exec(value);
+  if (!m || (opts.offset === false && m[7] !== 'Z')) return false;
+  const [y, mo, d, h, mi, se] = [m[1], m[2], m[3], m[4], m[5], m[6] ?? '00'].map(Number);
+  if (mo < 1 || mo > 12 || d < 1 || h > 23 || mi > 59 || se > 59) return false;
+  const leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+  return d <= [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][mo - 1];
+}
+
 /** Maximum attachments on a single async message or reply. */
 export const MAX_MESSAGE_ATTACHMENTS = 5;
 
@@ -178,8 +205,8 @@ const isoDateSchema = z
     );
   }, 'not a valid calendar date');
 
-/** ISO-8601 timestamp (offset or `Z`), for the `since` query parameter. */
-const isoDateTimeSchema = z.string().datetime({offset: true});
+/** ISO-8601 timestamp (offset or `Z`), for the `since` and agenda query parameters ({@link isIsoDateTime}). */
+const isoDateTimeSchema = z.string().refine((v) => isIsoDateTime(v), {message: 'must be an ISO-8601 timestamp with Z or ±HH:MM'});
 
 /** Opaque pagination cursor, as returned in a previous page's `nextCursor`. */
 const cursorSchema = z.string().min(1).max(4096);
@@ -442,6 +469,8 @@ export const setPhysicianAvailabilitySchema = z
  *
  * The token is invalidated by an API-key rotation (like embed sessions):
  * re-mint on `401 unauthorized`.
+ *
+ * REPLACED BY ./sessions (embed redesign M1/M4) — delete when the last consumer moves.
  */
 export const createPhysicianSessionSchema = z
   .object({
@@ -623,27 +652,6 @@ export const postAgentMessageSchema = z
   .refine((data) => (data.text?.trim().length ?? 0) > 0 || !!data.attachments?.length, {
     message: 'text or attachments required',
   });
-
-/**
- * Body of `POST /v1/agent/embed-session` — a session token for the
- * `<natzar-agent>` widget.
- *
- * Unlike the consult embed sessions this is scoped to a PATIENT, not to a
- * consult: the agent conversation is the patient's continuous history, so
- * there is no episode to name. Mint it server-side and pass the token to the
- * tag; the key never reaches the browser.
- */
-export const createAgentEmbedSessionSchema = z
-  .object({
-    /** Our patient id. Provide this OR `externalPatientId`. */
-    patientId: idSchema.optional(),
-    /** Your patient id. Provide this OR `patientId`. */
-    externalPatientId: externalIdSchema.optional(),
-    /** Token lifetime in seconds, 60–86400. Default 3600 (1 hour). */
-    ttlSeconds: z.number().int().min(60).max(86400).optional(),
-  })
-  .strict()
-  .refine(exactlyOnePatientRef, {message: patientRefMessage});
 
 /**
  * Query of `GET /v1/agent/messages` — the patient's agent conversation,
@@ -1089,17 +1097,6 @@ export const rateAsyncConsultSchema = z
   .strict();
 
 /**
- * Body of `POST /v1/…/{id}/embed-session` (both consult kinds) — mint a
- * fresh embed session token for the consult's patient-facing widget.
- */
-export const createEmbedSessionSchema = z
-  .object({
-    /** Token lifetime in seconds, 60–86400. Default 3600 (1 hour). */
-    ttlSeconds: z.number().int().min(60).max(86400).optional(),
-  })
-  .strict();
-
-/**
  * Body of `POST /v1/attachments/upload-urls` — presigned upload slots in the
  * addressed patient's staging area. PUT each file's bytes to its
  * `uploadUrl`, then reference the returned `stagingKey` in a message/reply
@@ -1142,8 +1139,8 @@ export const createUploadUrlsSchema = z
  * Body of `POST /v1/telehealth-consults`.
  *
  * Creates a live video consult in the `invited` state. The patient joins
- * exclusively through the `<natzar-telehealth>` embed — mint a session token
- * via `POST /v1/telehealth-consults/{id}/embed-session` and render the tag.
+ * through the `<natzar-telehealth consult="<id>">` embed (your `natzar()`
+ * middleware mints the session with `POST /v1/sessions`) or the REST join.
  */
 /**
  * ONE medical licence, as a partner records it.
@@ -1225,7 +1222,7 @@ export const listTelehealthSlotsQuerySchema = z
 export const bookTelehealthConsultSchema = z
   .object({
     /** Exact `startsAt` of an offered slot. Anything else is `409 slot_taken`. */
-    startsAt: z.string().datetime(),
+    startsAt: z.string().refine((v) => isIsoDateTime(v, {offset: false}), {message: 'must be an ISO-8601 UTC timestamp'}),
     /**
      * Pin one of the physicians the slot was offered for. Optional: without
      * it the platform picks the least-loaded eligible physician within the
@@ -1714,8 +1711,6 @@ export type RateAsyncConsultRequest = z.infer<typeof rateAsyncConsultSchema>;
 export type JoinTelehealthConsultRequest = z.infer<typeof joinTelehealthConsultSchema>;
 /** Inferred body of `POST /v1/telehealth-consults/{id}/rate`. See {@link rateTelehealthConsultSchema}. */
 export type RateTelehealthConsultRequest = z.infer<typeof rateTelehealthConsultSchema>;
-/** Inferred body of `POST /v1/agent/embed-session`. See {@link createAgentEmbedSessionSchema}. */
-export type CreateAgentEmbedSessionRequest = z.infer<typeof createAgentEmbedSessionSchema>;
 /** Inferred body of `POST /v1/agent/messages`. See {@link postAgentMessageSchema}. */
 export type PostAgentMessageRequest = z.infer<typeof postAgentMessageSchema>;
 /** Inferred query of `GET /v1/agent/messages`. See {@link listAgentMessagesQuerySchema}. */
@@ -1741,8 +1736,6 @@ export type TakeoverAsyncConsultRequest = z.infer<typeof takeoverAsyncConsultSch
 export type ResolveAsyncConsultRequest = z.infer<typeof resolveAsyncConsultSchema>;
 /** Inferred body of `POST /v1/async-consults/{id}/close`. See {@link closeAsyncConsultSchema}. */
 export type CloseAsyncConsultRequest = z.infer<typeof closeAsyncConsultSchema>;
-/** Inferred body of `POST /v1/…/{id}/embed-session`. See {@link createEmbedSessionSchema}. */
-export type CreateEmbedSessionRequest = z.infer<typeof createEmbedSessionSchema>;
 /** Inferred body of `POST /v1/attachments/upload-urls`. See {@link createUploadUrlsSchema}. */
 export type CreateUploadUrlsRequest = z.infer<typeof createUploadUrlsSchema>;
 /** Inferred body of `POST /v1/telehealth-consults`. See {@link createTelehealthConsultSchema}. */

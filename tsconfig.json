@@ -19,7 +19,11 @@
     "declaration": true,
     "noEmit": true,
     "isolatedModules": true,
-    "verbatimModuleSyntax": true
+    "verbatimModuleSyntax": true,
+    // Tests import their shared helpers as `./support/x.ts` (node --test runs
+    // them with type stripping, which resolves literal paths only). The
+    // emitting configs (tsconfig.build.json, tsconfig.cjs.json) switch it off.
+    "allowImportingTsExtensions": true
   },
   "include": ["src", "test"]
 }

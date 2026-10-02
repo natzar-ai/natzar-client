@@ -1,0 +1,12 @@
+{
+  // The plan's JavaScript samples (§3.2, §3.3, §3.6 server, §3.8), checked
+  // as JavaScript: checkJs without strict null checks, as a JS project runs
+  // them. `npx tsc -p examples/tsconfig.plan-js.json`
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "strict": false
+  },
+  "include": ["stubs", "plan/*.js"]
+}

@@ -11,6 +11,7 @@
  */
 
 import {NatzarApiError, codeForStatus, isRetryable, parseApiError} from './errors';
+import {NZ1_TOKEN_REGEX} from './contract/sessions';
 
 /** The `fetch` this client uses. Injectable so tests need no network. */
 export type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
@@ -21,9 +22,9 @@ export interface HttpConfig {
   baseUrl: string;
   /**
    * The bearer credential: a partner API key (`pp_live_…` / `pp_test_…`), or
-   * a physician SESSION token on the browser-side physician surface. Both go
-   * out as `Authorization: Bearer …` — the API tells them apart by shape, so
-   * the request builder does not have to.
+   * an `nz1` SESSION credential on the browser-side physician surface. Both
+   * go out as `Authorization: Bearer …` — the API tells them apart by shape,
+   * so the request builder does not have to.
    */
   apiKey: string;
   /** Per-request timeout in milliseconds. Default 30 000. */
@@ -68,13 +69,13 @@ export interface RequestArgs {
 /** Which bearer credential a client was built with. */
 export type CredentialKind = 'apiKey' | 'sessionToken';
 
-// A physician session token is a compact JWS — three base64url segments. Like
+// A session credential is `nz1.<sessionId>.<secret>` (70 characters). Like
 // the key-prefix test below this is a SHAPE check, not a validation: the
-// platform verifies the signature and expiry. What it catches is the class of
-// mistake that otherwise surfaces as a bare 401 indistinguishable from an
-// expired session: a mint response that was never awaited, an empty value out
-// of a store, or the partner key handed over where the session belongs.
-const JWT_SHAPE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+// platform checks the session on every request. What it catches is the class
+// of mistake that otherwise surfaces as a bare 401 indistinguishable from an
+// expired session: an empty value out of a store, or the partner key handed
+// over where the session belongs.
+const SESSION_SHAPE = NZ1_TOKEN_REGEX;
 
 /**
  * A partner key that never left the server is the entire security model of
@@ -85,23 +86,23 @@ const JWT_SHAPE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
  * placeholder as a bearer token" is a mistake worth naming here — it comes
  * back as a bare 401 that looks exactly like a revoked key.
  *
- * With `kind: 'sessionToken'` the same check applies to a physician SESSION
- * token (the browser-side credential): it must have the three-segment JWT
- * shape. Each message names the credential it was checking and, when the
+ * With `kind: 'sessionToken'` the same check applies to an `nz1` SESSION
+ * credential (the browser-side credential): it must have the `nz1` shape.
+ * Each message names the credential it was checking and, when the
  * value plainly belongs to the OTHER slot, says so — swapping the two is the
  * likeliest wiring mistake and the one the server answers least helpfully.
  */
 export function assertUsableKey(value: string, kind: CredentialKind = 'apiKey'): void {
   const shown = value ? `"${value.slice(0, 12)}…"` : 'an empty value';
   if (kind === 'sessionToken') {
-    if (!value || !JWT_SHAPE.test(value)) {
+    if (!value || !SESSION_SHAPE.test(value)) {
       throw new Error(
-        'natzar-client: sessionToken must be a physician session token — the `sessionToken` of a ' +
-          '`POST /v1/physicians/{id}/session` mint, a three-segment JWT. Got ' +
-          shown +
+        'natzar-client: sessionToken must be an nz1 session credential (`nz1.<sessionId>.<secret>`), ' +
+          'as `connectPhysician` holds it. Got ' +
+          (value ? `"${value.slice(0, 4)}…"` : 'an empty value') +
           (/^pp_(?:live|test)_/.test(value)
             ? '. That is a partner key: it belongs in `apiKey`, and only on your server.'
-            : '. If this came from your own session exchange, the mint most likely failed or was never awaited.'),
+            : '. Let `connectPhysician` obtain and renew the session instead of passing one by hand.'),
       );
     }
     return;
@@ -111,8 +112,8 @@ export function assertUsableKey(value: string, kind: CredentialKind = 'apiKey'):
       'natzar-client: apiKey must be a partner key (pp_live_… or pp_test_…). ' +
         'Got ' +
         shown +
-        (JWT_SHAPE.test(value)
-          ? '. That looks like a physician session token: pass it as `sessionToken` instead.'
+        (SESSION_SHAPE.test(value)
+          ? '. That is an nz1 session credential: it belongs in `sessionToken`, and never on your server.'
           : '. If this came from a secret manager, the secret most likely did not resolve.'),
     );
   }
@@ -169,7 +170,6 @@ export async function request<T>(config: HttpConfig, args: RequestArgs): Promise
   const hasBody = args.body !== undefined;
 
   let attempt = 0;
-  // eslint-disable-next-line no-constant-condition
   while (true) {
     const startedAt = Date.now();
     const {signal, done} = withTimeout(config.timeoutMs, args.signal);
@@ -217,6 +217,7 @@ export async function request<T>(config: HttpConfig, args: RequestArgs): Promise
     }
 
     const envelope = parseApiError(text);
+    const retryAfterHeader = Number(response.headers.get('retry-after'));
     const error = new NatzarApiError({
       code: envelope?.code ?? codeForStatus(response.status),
       status: response.status,
@@ -224,6 +225,7 @@ export async function request<T>(config: HttpConfig, args: RequestArgs): Promise
       message: envelope?.message ?? `${response.status} ${response.statusText || 'error'}`,
       ...(envelope?.details !== undefined ? {details: envelope.details} : {}),
       ...(envelope ? {} : {rawBody: text.slice(0, 2000)}),
+      ...(Number.isFinite(retryAfterHeader) && retryAfterHeader > 0 ? {retryAfterSeconds: retryAfterHeader} : {}),
     });
 
     const retryable = isRetryable(error) && (args.method === 'GET' || args.idempotent === true);

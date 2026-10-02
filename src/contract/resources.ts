@@ -1,6 +1,6 @@
 // GENERATED FILE — do not edit.
 //
-// Copied verbatim from provider-portal's shared/partner-api by
+// Copied verbatim from natzar-core's shared/partner-api by
 // scripts/sync-contract.mjs. Edit the source there; this copy exists only so
 // the published package is self-contained.
 /**
@@ -274,16 +274,33 @@ export interface PatientResource {
    * through support).
    */
   phone: string;
+  /*
+   * The profile below is ABSENT, never blank or defaulted, while the patient
+   * has not given it: a patient created by a session mint with only
+   * `{externalId, phone}` completes the missing fields in the widget, once
+   * (embed redesign D5). `profile.missing` lists what is still missing and
+   * `profile.patientReported` what the patient entered themselves.
+   */
   /** Contact email. */
-  email: string;
+  email?: string;
   /** Given (first) name. */
-  givenName: string;
+  givenName?: string;
   /** Family (last) name. */
-  familyName: string;
+  familyName?: string;
   /** Date of birth, `YYYY-MM-DD`. */
-  birthdate: IsoDate;
+  birthdate?: IsoDate;
   /** Biological sex. */
-  sex: PatientSex;
+  sex?: PatientSex;
+  /**
+   * The profile's completeness and provenance (D5): `missing` — the fields the
+   * patient has not given yet (care opens only once name, birthdate and sex
+   * are there); `patientReported` — the fields the patient entered in the
+   * widget (not confirmed by you; your next upsert of a field takes it back).
+   */
+  profile: {
+    missing: Array<'givenName' | 'familyName' | 'email' | 'birthdate' | 'sex' | 'state' | 'country'>;
+    patientReported: Array<'givenName' | 'familyName' | 'email' | 'birthdate' | 'sex' | 'state' | 'country'>;
+  };
   /** Locale for system messages and embeds; defaults to `en_US`. */
   lang: PatientLang;
   /**

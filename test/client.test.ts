@@ -221,8 +221,8 @@ test('onResponse observes every attempt', async () => {
 
 // --- physician credentials ---------------------------------------------------
 
-/** An unsigned JWT-shaped token — the client only checks the SHAPE locally. */
-const SESSION_TOKEN = `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify({typ: 'physician', sub: 'd_1'})).toString('base64url')}.sig`;
+/** An nz1 session credential — the client only checks the SHAPE locally. */
+const SESSION_TOKEN = `nz1.${'s'.repeat(21)}A.${'k'.repeat(42)}A`;
 
 test('physicianId rides as X-Natzar-Physician-Id, on every verb', async () => {
   const {calls, fetchLike} = stubFetch([
@@ -267,8 +267,10 @@ test('the two credentials are checked for the slot they were passed in, and neve
   assert.throws(() => new NatzarClient({apiKey: KEY, sessionToken: SESSION_TOKEN}), /EITHER apiKey .* OR sessionToken/);
   // A swap is the likeliest wiring mistake, so each message names the other slot.
   assert.throws(() => new NatzarClient({sessionToken: KEY}), (e: Error) => /partner key/.test(e.message) && /apiKey/.test(e.message));
-  assert.throws(() => new NatzarClient({apiKey: SESSION_TOKEN}), (e: Error) => /session token/.test(e.message) && /sessionToken/.test(e.message));
-  assert.throws(() => new NatzarClient({sessionToken: 'not-a-jwt'}), /three-segment JWT/);
+  assert.throws(() => new NatzarClient({apiKey: SESSION_TOKEN}), (e: Error) => /session credential/.test(e.message) && /sessionToken/.test(e.message));
+  assert.throws(() => new NatzarClient({sessionToken: 'not-a-session'}), /nz1 session credential/);
+  // The old HS256 physician token shape is gone (greenfield).
+  assert.throws(() => new NatzarClient({sessionToken: 'eyJhbGciOiJIUzI1NiJ9.e30.sig'}), /nz1 session credential/);
   assert.throws(() => new NatzarClient({}), /partner key/);
 });
 
@@ -276,16 +278,90 @@ test('a bare 403 is `forbidden` — a session on a route outside its allowlist',
   const fetchLike = async () => new Response('{"message":"Forbidden"}', {status: 403});
   const client = new NatzarClient({sessionToken: SESSION_TOKEN, baseUrl: 'https://x.test/v1', fetch: fetchLike});
   await assert.rejects(
-    () => client.physicians.session('me'),
+    () => client.events.list(),
     (e: unknown) => isNatzarApiError(e) && e.code === 'forbidden' && e.status === 403,
   );
+});
+
+// --- session routes (embed redesign) -----------------------------------------
+
+test('the session routes: mint without retries, revoke and delete idempotent, config and origins', async () => {
+  const {calls, fetchLike} = stubFetch([
+    {status: 503},
+    {status: 200, body: {revoked: 3}},
+    {status: 200},
+    {status: 200, body: {partnerId: 'p_1'}},
+    {status: 200, body: {origins: [], nativeOrigins: []}},
+  ]);
+  const client = new NatzarClient({apiKey: KEY, baseUrl: 'https://x.test/v1', fetch: fetchLike, retryBaseMs: 1});
+  // A mint is not idempotent: a 503 is the caller's (the middleware's) to handle, never re-sent.
+  await assert.rejects(() => client.sessions.create({audience: 'patient', surface: 'native', parentOrigin: null, requestAuth: 'bearer', patient: {externalId: 'u_1'}}), (e: unknown) => isNatzarApiError(e) && e.status === 503);
+  assert.deepEqual(await client.sessions.revoke({loginRef: 'a'.repeat(64)}), {revoked: 3});
+  assert.equal(await client.sessions.delete('sess/1'), undefined);
+  await client.embed.config();
+  await client.embed.setOrigins({origins: []});
+  const wire = calls.map((c) => `${c.init.method} ${c.url.replace('https://x.test/v1', '')}`);
+  assert.deepEqual(wire, ['POST /sessions', 'POST /sessions/revoke', 'DELETE /sessions/sess%2F1', 'GET /embed/config', 'PUT /embed/origins']);
+});
+
+test('deactivate by YOUR id is one call; room/ready carry "Join anyway" only when asked', async () => {
+  const {calls, fetchLike} = stubFetch([
+    {status: 200, body: {deactivated: true, revoked: 1}},
+    {status: 200, body: {deactivated: true, revoked: 1}},
+    {status: 200, body: {status: 'in_progress'}},
+    {status: 200, body: {status: 'in_progress'}},
+    {status: 200, body: {state: {phase: 'waiting'}}},
+  ]);
+  const client = new NatzarClient({apiKey: KEY, baseUrl: 'https://x.test/v1', fetch: fetchLike});
+  await client.physicians.deactivate({externalId: 'dr-9'});
+  await client.physicians.deactivate('ph_9');
+  await client.telehealth.room('t_1');
+  await client.telehealth.room('t_1', {acceptShortSession: true});
+  await client.telehealth.ready('t_1', {present: true, acceptShortSession: true});
+  const wire = calls.map((c) => `${c.init.method} ${c.url.replace('https://x.test/v1', '')} ${c.init.body ?? ''}`);
+  assert.deepEqual(wire, [
+    'POST /physicians/deactivate {"externalId":"dr-9"}',
+    'POST /physicians/ph_9/deactivate {}',
+    'POST /telehealth-consults/t_1/room {}',
+    'POST /telehealth-consults/t_1/room {"acceptShortSession":true}',
+    'POST /telehealth-consults/t_1/ready {"present":true,"acceptShortSession":true}',
+  ]);
+});
+
+test('a 429 carries the server\'s Retry-After on the error', async () => {
+  const {fetchLike} = stubFetch([{status: 429, body: {error: {code: 'rate_limited', message: 'slow down'}}, headers: {'Retry-After': '7'}}]);
+  const client = new NatzarClient({apiKey: KEY, baseUrl: 'https://x.test/v1', fetch: fetchLike, maxRetries: 0});
+  await assert.rejects(() => client.sessions.create({} as never), (e: unknown) => isNatzarApiError(e) && e.retryAfterSeconds === 7);
+});
+
+test('the removed v1 session mints are gone from the client (greenfield)', () => {
+  const client = new NatzarClient({apiKey: KEY, baseUrl: 'https://x.test/v1'});
+  assert.equal('session' in client.physicians, false);
+  assert.equal('embedSession' in client.agent, false);
+  assert.equal('embedSession' in client.asyncConsults, false);
+  assert.equal('embedSession' in client.telehealth, false);
+});
+
+test('a current-format key names its deployment: the client derives its endpoints from it', () => {
+  const live = `pp_live_us_${'a'.repeat(48)}`;
+  const client = new NatzarClient({apiKey: live, baseUrl: 'https://new-api.execute-api.us-east-1.amazonaws.com/v1'});
+  assert.equal(client.environment, 'prod');
+  assert.equal(client.zone, 'us');
+  // An explicit environment that disagrees with the key is refused, not obeyed.
+  assert.throws(() => new NatzarClient({apiKey: live, environment: 'stage'}), /disagrees with the key/);
+  // A zone with no deployment throws instead of falling back (F87).
+  assert.throws(() => new NatzarClient({apiKey: `pp_live_ca_${'a'.repeat(48)}`}), /No built-in Natzar endpoints/);
+  // A sandbox key needs NATZAR_API_URL (or baseUrl).
+  const sbx = new NatzarClient({apiKey: `pp_test_sbx_us_${'a'.repeat(48)}`, baseUrl: 'https://sbx.test/v1'});
+  assert.equal(sbx.environment, 'sbx');
+  assert.equal(sbx.endpoints.baseUrl, 'https://sbx.test/v1');
 });
 
 // --- physician routes --------------------------------------------------------
 
 test('the physician-side routes hit their paths with the documented bodies', async () => {
   const {calls, fetchLike} = stubFetch([
-    {status: 200, body: {sessionToken: 't', expiresAt: 'x', apiUrl: 'https://x.test/v1', physician: {}}},
+    {status: 200, body: {deactivated: true, revoked: 2}},
     {status: 200, body: {presence: {status: 'ready'}, activeConsult: null}},
     {status: 200, body: {presence: {status: 'ready'}, activeConsult: null}},
     {status: 200, body: {appointments: []}},
@@ -297,7 +373,7 @@ test('the physician-side routes hit their paths with the documented bodies', asy
     {status: 200, body: {consult: {}}},
   ]);
   const client = new NatzarClient({apiKey: KEY, baseUrl: 'https://x.test/v1', fetch: fetchLike});
-  await client.physicians.session('d_1', {ttlSeconds: 600}, {physicianId: 'd_1'});
+  await client.physicians.deactivate('d_1');
   await client.physicians.presence('me', {ready: true});
   await client.physicians.heartbeat('me');
   await client.physicians.agenda('me', {from: '2026-08-19T00:00:00Z'});
@@ -309,7 +385,7 @@ test('the physician-side routes hit their paths with the documented bodies', asy
   await client.telehealth.cancel('tele_1', {reason: 'Running late'});
   const wire = calls.map((c) => `${c.init.method} ${c.url.replace('https://x.test/v1', '')} ${c.init.body ?? ''}`);
   assert.deepEqual(wire, [
-    'POST /physicians/d_1/session {"ttlSeconds":600}',
+    'POST /physicians/d_1/deactivate {}',
     'POST /physicians/me/presence {"ready":true}',
     'POST /physicians/me/heartbeat {}',
     'GET /physicians/me/agenda?from=2026-08-19T00%3A00%3A00Z ',

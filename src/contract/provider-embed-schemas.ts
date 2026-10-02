@@ -1,6 +1,6 @@
 // GENERATED FILE — do not edit.
 //
-// Copied verbatim from provider-portal's shared/partner-api by
+// Copied verbatim from natzar-core's shared/partner-api by
 // scripts/sync-contract.mjs. Edit the source there; this copy exists only so
 // the published package is self-contained.
 /**
@@ -10,20 +10,20 @@
  * hand-written interfaces in `./provider-embed` are the documented surface,
  * and a test holds the two in lockstep.
  *
- * Every object schema is `.strict()`: an unknown key is rejected. The one
- * exception depends on the zod major: zod 4 (the platform) drops an own
- * `__proto__` key, such as one `JSON.parse` produces, from the parsed result
- * instead of rejecting it, while zod 3 rejects it. Browser routes never take
+ * Every object schema is `.strict()`: an unknown key is rejected, an own
+ * `__proto__` key (as `JSON.parse` produces one) included — zod 3 and
+ * zod ≥ 4.6 both reject it, and the contract tests pin that in both majors
+ * (zod 4 before 4.6 dropped it instead). Browser routes never take
  * identity (group, partner, clinician) from a body or query string; on the
  * server-only mint and renew routes your API key determines the group and
  * partner, and the body only names the clinician. Query strings arrive as
  * strings, so only `limit` is coerced.
  *
  * The schemas use a zod subset whose accept and reject decisions agree
- * between the platform's zod 4 and the published client's zod 3. Where the
- * two majors' built-ins differ (the timezone offsets
- * `z.string().datetime({offset: true})` accepts), an extra check narrows both
- * to the same set; the `__proto__` key above is the only known difference.
+ * between the platform's zod 4 and the published client's zod 3. Timestamps
+ * do not use zod's built-in `datetime()`, whose accepted set differs between
+ * releases (offsets, minute precision): they are pinned by `isIsoDateTime`
+ * (`./schemas`), identical in both majors.
  * Validation failures are reported as issue paths and codes only; input
  * values are never echoed.
  *
@@ -42,7 +42,7 @@ import {
   PROVIDER_EMBED_MAX_PENDING_MESSAGE_IDS,
   PROVIDER_EMBED_MAX_REFERRAL_DRAFTS,
 } from './provider-embed';
-import {issuePrescriptionSchema, MAX_MESSAGE_LENGTH, referralDraftSchema} from './schemas';
+import {isIsoDateTime, issuePrescriptionSchema, MAX_MESSAGE_LENGTH, referralDraftSchema} from './schemas';
 
 // Private primitives (redeclared rather than imported: schemas.ts keeps its own private).
 const idSchema = z.string().min(1).max(64).regex(/^[A-Za-z0-9_-]+$/);
@@ -50,13 +50,13 @@ const externalIdSchema = z.string().min(1).max(128).regex(/^\S+$/);
 const capabilitySchema = z.enum(PROVIDER_EMBED_CAPABILITIES);
 const kindSchema = z.enum(PROVIDER_EMBED_CONSULT_KINDS);
 const uniqueCaps = (a: readonly string[]) => new Set(a).size === a.length;
-// zod 3 also accepts compact (`+0200`) and out-of-range (`+25:00`) offsets that
-// zod 4 rejects; the regex narrows both majors to `Z` or a valid `±HH:MM`.
-const isoDateTimeSchema = z.string().datetime({offset: true}).regex(/(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/);
+// Pinned (not zod's built-in datetime): `Z` or `±HH:MM`, seconds optional, identical in zod 3 and zod 4.
+const isoDateTimeSchema = z.string().refine((v) => isIsoDateTime(v), {message: 'not_an_iso_datetime'});
 const cursorSchema = z.string().min(1).max(2048).regex(/^c1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/);
 const limitSchema = z.coerce.number().int().min(1).max(PROVIDER_EMBED_MAX_PAGE_LIMIT);
 const referralLangSchema = z.enum(['en', 'es', 'de', 'fr', 'it']);
 
+// Mint and renew bodies, through providerEmbedRenewSchema. REPLACED BY ./sessions (embed redesign M1/M4) — delete when the last consumer moves.
 /** Exactly one of `physicianId` (ours) or `externalPhysicianId` (yours). */
 export const providerEmbedClinicianRefSchema = z.union([
   z.object({physicianId: idSchema}).strict(),

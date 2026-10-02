@@ -7,10 +7,11 @@
 // relaying typed calls to their own front end.
 //
 // They do not need one. The platform already exposes a patient-scoped surface
-// designed for exactly this: the embed operations, authenticated by a
-// short-lived SESSION TOKEN your server mints for one patient (and, for consult
-// sessions, one consult). The API key on that surface is public and is only the
-// transport — the same split as Stripe's secret vs publishable keys.
+// designed for exactly this: the embed operations, authenticated by an `nz1`
+// SESSION credential that your `natzar()` endpoint mints for one patient and
+// the broker (`../broker`) renews. It rides in `Authorization` (the surface's
+// Lambda authorization mode); there is no public API key on this surface any
+// more, and no credential in any operation argument.
 //
 // We reuse that existing, deployed, contract-documented surface rather than
 // inventing a private protocol between two halves of this package. A private
@@ -23,18 +24,14 @@ import {ERROR_HTTP_STATUS} from '../contract/errors';
 import {PATIENT_SURFACE_CODE_SET, type PatientSurfaceErrorCode} from './codes';
 
 /**
- * Everything the browser needs to talk to the patient surface — exactly the
- * response your server got from a `/embed-session` mint. Hand it over as-is.
+ * Where one patient-surface call goes and what authorizes it: the grant's
+ * `graphqlUrl` and the unsealed `nz1` credential, both from the broker.
  */
-export interface PatientSession {
-  /** The patient-scoped credential. Short-lived; see {@link expiresAt}. */
-  sessionToken: string;
-  /** When {@link sessionToken} stops working. */
-  expiresAt?: string;
-  /** Patient-surface endpoint, returned with the mint so nothing is baked in. */
-  graphqlUrl?: string;
-  /** Public transport key, returned with the mint (it rotates). */
-  publicApiKey?: string;
+export interface PatientConnection {
+  /** The `nz1` credential. */
+  token: string;
+  /** The patient-surface endpoint of this deployment (from the grant). */
+  graphqlUrl: string;
 }
 
 export type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
@@ -50,20 +47,6 @@ export interface TransportOptions {
 // re-exported here so this module's public surface is unchanged.
 export {NatzarSessionError};
 
-export function assertConnectable(session: PatientSession): asserts session is Required<Pick<PatientSession, 'sessionToken' | 'graphqlUrl' | 'publicApiKey'>> & PatientSession {
-  if (!session?.sessionToken) {
-    throw new NatzarSessionError('This session has no sessionToken.');
-  }
-  if (!session.graphqlUrl || !session.publicApiKey) {
-    // Older deployments minted tokens without connection details. Say so
-    // precisely — the alternative is a confusing failure deep inside fetch.
-    throw new NatzarSessionError(
-      'This session did not include graphqlUrl/publicApiKey, so the browser cannot connect directly. ' +
-        'Your Natzar deployment predates self-describing sessions — upgrade it, or relay calls through your own server.',
-    );
-  }
-}
-
 /**
  * One patient-surface call.
  *
@@ -73,18 +56,17 @@ export function assertConnectable(session: PatientSession): asserts session is R
  * path, not two.
  */
 export async function callPatientOp<T>(
-  session: PatientSession,
+  connection: PatientConnection,
   op: {kind: 'query' | 'mutation'; name: string; args: Record<string, unknown>},
   options: TransportOptions = {},
   signal?: AbortSignal,
 ): Promise<T> {
-  assertConnectable(session);
   const doFetch = options.fetch ?? globalThis.fetch;
-  if (!doFetch) throw new NatzarSessionError('No fetch implementation available.');
+  if (!doFetch) throw new NatzarSessionError('No fetch implementation available.', 'network_error');
 
   // Arguments are passed as GraphQL VARIABLES, never interpolated into the
-  // document — the token is a credential and string-building a query with it
-  // is how credentials end up in logs and error messages.
+  // document — string-building a query from user input is how injection and
+  // leaked values in logs happen.
   const argNames = Object.keys(op.args).filter((k) => op.args[k] !== undefined);
   const varDefs = argNames.map((k) => `$${k}: ${gqlTypeFor(k)}`).join(', ');
   const argList = argNames.map((k) => `${k}: $${k}`).join(', ');
@@ -93,9 +75,11 @@ export async function callPatientOp<T>(
   const timeout = AbortSignal.timeout(options.timeoutMs ?? 30_000);
   const composed = signal ? anySignal([signal, timeout]) : timeout;
 
-  const response = await doFetch(session.graphqlUrl!, {
+  const response = await doFetch(connection.graphqlUrl, {
     method: 'POST',
-    headers: {'content-type': 'application/json', 'x-api-key': session.publicApiKey!},
+    // The Lambda authorization mode takes the credential as the whole header
+    // value (no `Bearer`); the resolvers check the session on every call.
+    headers: {'content-type': 'application/json', authorization: connection.token},
     body: JSON.stringify({
       query: document,
       variables: Object.fromEntries(argNames.map((k) => [k, op.args[k]])),
@@ -105,8 +89,10 @@ export async function callPatientOp<T>(
 
   const text = await response.text();
   if (!response.ok) {
+    // The authorizer answers 401 for a credential it cannot even parse; the
+    // broker then asks for a new session.
     throw new NatzarApiError({
-      code: response.status === 401 ? 'embed_token_invalid' : 'internal_error',
+      code: response.status === 401 ? 'session_invalid' : 'internal_error',
       message: `Patient surface returned ${response.status}`,
       status: response.status,
       route: op.name,
@@ -170,8 +156,6 @@ const parseMaybeJson = (v: unknown): unknown => {
 // `a.datetime()` is `AWSDateTime!` on the wire and a `String!` variable is a
 // validation error before the resolver ever runs.
 const GQL_TYPES: Record<string, string> = {
-  token: 'String!',
-  ancestor: 'String',
   after: 'String',
   text: 'String',
   attachment: 'AWSJSON',
@@ -214,10 +198,12 @@ const GQL_TYPES: Record<string, string> = {
   paymentId: 'String!',
   checkout: 'Boolean',
   embedded: 'Boolean',
+  // D12 "Join anyway" on embedConsultJoin (`acceptShortSession: true` only).
+  acceptShortSession: 'Boolean',
 };
 const gqlTypeFor = (name: string): string => GQL_TYPES[name] ?? 'String';
 
-// AbortSignal.any is Node 20+/modern browsers; this keeps Node 18 working.
+// AbortSignal.any is missing on some React Native runtimes; this composes by hand there.
 function anySignal(signals: AbortSignal[]): AbortSignal {
   const withAny = AbortSignal as unknown as {any?: (s: AbortSignal[]) => AbortSignal};
   if (typeof withAny.any === 'function') return withAny.any(signals);

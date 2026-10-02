@@ -1,6 +1,6 @@
 /**
- * The four Natzar environments, and how a client resolves which one it is
- * talking to.
+ * The Natzar environments, and how a client resolves which one it is talking
+ * to — from an API key's prefix (`resolveEndpoints({key})`), or explicitly.
  *
  * `prod` is the default on purpose. A client that silently defaults to a test
  * environment is the kind of thing you discover in production, when nothing
@@ -11,11 +11,17 @@
  * @packageDocumentation
  */
 
-/** Which Natzar deployment a client talks to. */
-export type NatzarEnvironment = 'local' | 'dev' | 'stage' | 'prod';
+import {parseApiKey} from './contract/sessions';
+
+/**
+ * Which Natzar deployment a client talks to. `sbx` is every sandbox: it has
+ * no built-in endpoints, so it always comes with `NATZAR_API_URL` (or an
+ * explicit `baseUrl`).
+ */
+export type NatzarEnvironment = 'local' | 'dev' | 'stage' | 'prod' | 'sbx';
 
 /** Every environment name, for validation and for enumerating in a UI. */
-export const NATZAR_ENVIRONMENTS = ['local', 'dev', 'stage', 'prod'] as const satisfies readonly NatzarEnvironment[];
+export const NATZAR_ENVIRONMENTS = ['local', 'dev', 'stage', 'prod', 'sbx'] as const satisfies readonly NatzarEnvironment[];
 
 /**
  * Which RESIDENCY ZONE a client talks to.
@@ -54,12 +60,23 @@ export interface NatzarEndpoints {
    * hosting (Amplify/CloudFront) and the REST API is API Gateway. They are not
    * behind one domain, and pointing this at the API (or vice versa) yields
    * 403s that read like credential problems.
+   *
+   * Absent only in the key form of {@link resolveEndpoints} for a deployment
+   * with no built-in entry (a sandbox reached through `NATZAR_API_URL`): the
+   * embed script's address then comes from `GET /v1/embed/config`, which is
+   * what the `natzar()` middleware uses anyway.
    */
-  embedOrigin: string;
+  embedOrigin?: string;
 }
 
 /**
  * Built-in endpoints per environment.
+ *
+ * US API URLs are supplied through NATZAR_API_URL or baseUrl during the
+ * move to us-east-1. API Gateway IDs belong to the old deployment and
+ * cannot be reused in a different region. Populate these entries from
+ * the new deployment outputs after its first successful deploy. The
+ * stable app hosts remain available for embedOrigin resolution.
  *
  * `local` points at `http://localhost:5173` — the provider portal's own Vite
  * dev server, which serves the embed script and the widget page. A local REST
@@ -69,7 +86,7 @@ export interface NatzarEndpoints {
  * ONLY thing you need to change between a sandbox and a real environment.
  */
 export const NATZAR_ENDPOINTS: Readonly<
-  Record<NatzarEnvironment, Partial<Record<NatzarZone, NatzarEndpoints>>>
+  Record<NatzarEnvironment, Partial<Record<NatzarZone, Partial<NatzarEndpoints>>>>
 > = {
   local: {
     us: {
@@ -79,19 +96,16 @@ export const NATZAR_ENDPOINTS: Readonly<
   },
   dev: {
     us: {
-      baseUrl: 'https://nzcmjra5c3.execute-api.us-east-2.amazonaws.com/v1',
       embedOrigin: 'https://dev.us.app.natzar.ai',
     },
   },
   stage: {
     us: {
-      baseUrl: 'https://sffiedz762.execute-api.us-east-2.amazonaws.com/v1',
       embedOrigin: 'https://stage.us.app.natzar.ai',
     },
   },
   prod: {
     us: {
-      baseUrl: 'https://gd4n95b4zl.execute-api.us-east-2.amazonaws.com/v1',
       embedOrigin: 'https://us.app.natzar.ai',
     },
     // `ca` and `eu` are deliberately ABSENT rather than guessed. Each zone is
@@ -106,6 +120,9 @@ export const NATZAR_ENDPOINTS: Readonly<
     // step 11). Until then, callers reach it by passing `baseUrl` +
     // `embedOrigin` explicitly.
   },
+  // Every sandbox is its own stack with its own API id: nothing to build in.
+  // A sandbox key (`pp_test_sbx_<zone>_…`) always comes with NATZAR_API_URL.
+  sbx: {},
 };
 
 /** The environment a client uses when none is named. */
@@ -147,6 +164,15 @@ export function normalizeBaseUrl(url: string): string {
 
 /** Overrides accepted when resolving endpoints. Each wins over the built-in. */
 export interface EndpointOverrides {
+  /**
+   * An API key (`pp_live_<zone>_…` / `pp_test_<env>_<zone>_…`). Its prefix
+   * NAMES the deployment, so with a key the environment and zone are derived
+   * from it rather than chosen: `NATZAR_ENV` / `NATZAR_ZONE` are ignored, an
+   * explicit `environment` or `zone` that disagrees with the key throws, and a
+   * value that is not a key throws. `baseUrl` / `NATZAR_API_URL` still win
+   * over the built-in table (a sandbox needs only `NATZAR_API_URL`).
+   */
+  key?: string;
   /** Which environment's defaults to start from. Default `prod`. */
   environment?: NatzarEnvironment;
   /** Which residency zone's deployment to talk to. Default `us`. */
@@ -157,10 +183,19 @@ export interface EndpointOverrides {
   embedOrigin?: string;
 }
 
+/** Resolved endpoints, plus the environment and zone they belong to. */
+export type ResolvedEndpoints = NatzarEndpoints & {environment: NatzarEnvironment; zone: NatzarZone};
+
 /**
  * Resolve the endpoints a client should use.
  *
- * Precedence, highest first:
+ * **Key form** (`{key}`): the key prefix names the environment and zone
+ * (F87, F90). `baseUrl` comes from an explicit value, then `NATZAR_API_URL`,
+ * then the built-in table; a deployment with none of the three throws (an
+ * unpopulated zone is never served by another one). `embedOrigin` is
+ * optional here.
+ *
+ * **Explicit form** (no `key`), precedence highest first:
  *  1. an explicit `baseUrl` / `embedOrigin` passed in code;
  *  2. `NATZAR_API_URL` / `NATZAR_EMBED_ORIGIN` in the process environment;
  *  3. the built-in table for (`environment`, `zone`) — or `NATZAR_ENV` /
@@ -179,7 +214,9 @@ export interface EndpointOverrides {
 export function resolveEndpoints(
   overrides: EndpointOverrides = {},
   processEnv: Record<string, string | undefined> = typeof process === 'undefined' ? {} : (process.env ?? {}),
-): NatzarEndpoints & {environment: NatzarEnvironment; zone: NatzarZone} {
+): ResolvedEndpoints {
+  if (overrides.key !== undefined) return resolveFromKey(overrides.key, overrides, processEnv);
+
   const fromEnvVar = isNatzarEnvironment(processEnv.NATZAR_ENV) ? processEnv.NATZAR_ENV : undefined;
   const environment = overrides.environment ?? fromEnvVar ?? DEFAULT_ENVIRONMENT;
   const zoneFromEnvVar = isNatzarZone(processEnv.NATZAR_ZONE) ? processEnv.NATZAR_ZONE : undefined;
@@ -193,7 +230,7 @@ export function resolveEndpoints(
   // so beats falling back to another jurisdiction, which would send a Canadian
   // clinic's traffic to the United States and answer "tenant not found".
   if (!baseUrl || !embedOrigin) {
-    const available = Object.keys(NATZAR_ENDPOINTS[environment]).join(', ') || 'none';
+    const available = Object.entries(NATZAR_ENDPOINTS[environment]).filter(([, entry]) => entry?.baseUrl).map(([id]) => id).join(', ') || 'none';
     throw new Error(
       `No built-in Natzar endpoints for environment "${environment}" in residency zone "${zone}" ` +
         `(available: ${available}). That zone may not be deployed yet — pass baseUrl and embedOrigin ` +
@@ -206,5 +243,49 @@ export function resolveEndpoints(
     zone,
     baseUrl: normalizeBaseUrl(baseUrl),
     embedOrigin: normalizeBaseUrl(embedOrigin),
+  };
+}
+
+// The key form. The prefix is the deployment (§4.9): a live key is `prod` in
+// its zone, a test key names `dev`, `stage` or `sbx` and a zone. Never
+// printed: an error names the prefix shape, not the value.
+function resolveFromKey(
+  key: string,
+  overrides: EndpointOverrides,
+  processEnv: Record<string, string | undefined>,
+): ResolvedEndpoints {
+  const parsed = parseApiKey(typeof key === 'string' ? key.trim() : key);
+  if (!parsed) {
+    throw new Error(
+      'natzar-client: the key is not a Natzar API key (pp_live_<zone>_… or pp_test_<env>_<zone>_…); ' +
+        'its prefix selects the deployment. If it came from a secret manager, the secret most likely did not resolve.',
+    );
+  }
+  const environment: NatzarEnvironment = parsed.environment;
+  const zone: NatzarZone = parsed.zone;
+  if (overrides.environment !== undefined && overrides.environment !== environment) {
+    throw new Error(`natzar-client: environment "${overrides.environment}" disagrees with the key, which belongs to "${environment}".`);
+  }
+  if (overrides.zone !== undefined && overrides.zone !== zone) {
+    throw new Error(`natzar-client: zone "${overrides.zone}" disagrees with the key, which belongs to zone "${zone}".`);
+  }
+  const defaults = NATZAR_ENDPOINTS[environment][zone];
+  const baseUrl = overrides.baseUrl ?? processEnv.NATZAR_API_URL ?? defaults?.baseUrl;
+  const embedOrigin = overrides.embedOrigin ?? processEnv.NATZAR_EMBED_ORIGIN ?? defaults?.embedOrigin;
+  if (!baseUrl) {
+    const available = Object.entries(NATZAR_ENDPOINTS[environment]).filter(([, entry]) => entry?.baseUrl).map(([id]) => id).join(', ') || 'none';
+    throw new Error(
+      `No built-in Natzar endpoints for this key's deployment (environment "${environment}", residency zone "${zone}"; ` +
+        `available: ${available}). ` +
+        (environment === 'sbx'
+          ? 'A sandbox key needs NATZAR_API_URL (the sandbox API, through /v1).'
+          : 'That zone may not be deployed yet — set NATZAR_API_URL (or pass baseUrl) once it is.'),
+    );
+  }
+  return {
+    environment,
+    zone,
+    baseUrl: normalizeBaseUrl(baseUrl),
+    ...(embedOrigin ? {embedOrigin: normalizeBaseUrl(embedOrigin)} : {}),
   };
 }

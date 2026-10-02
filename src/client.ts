@@ -39,15 +39,10 @@ import type {
   ClaimAsyncConsultResponse,
   CloseAsyncConsultRequest,
   CloseAsyncConsultResponse,
-  CreateAgentEmbedSessionRequest,
   CreateAsyncConsultRequest,
   CreateAsyncConsultResponse,
-  CreateEmbedSessionRequest,
-  CreateEmbedSessionResponse,
   CreatePhysicianRequest,
   CreatePhysicianResponse,
-  CreatePhysicianSessionRequest,
-  CreatePhysicianSessionResponse,
   CreateTelehealthConsultRequest,
   CreateTelehealthConsultResponse,
   CreateUploadUrlsRequest,
@@ -148,6 +143,17 @@ import type {
   IssuePrescriptionRequest,
   IssuePrescriptionResponse,
 } from './contract/endpoints';
+import {parseApiKey} from './contract/sessions';
+import type {
+  CreateSessionRequest,
+  DeactivatePhysicianResponse,
+  EmbedConfig,
+  PutEmbedOriginsRequest,
+  PutEmbedOriginsResponse,
+  RevokeSessionsRequest,
+  RevokeSessionsResponse,
+  SessionGrant,
+} from './contract/sessions-schemas';
 
 /**
  * Options accepted by {@link NatzarClient}. Exactly ONE of `apiKey` /
@@ -157,24 +163,23 @@ import type {
 export interface NatzarClientOptions extends EndpointOverrides {
   /**
    * Your partner API key. SERVER SIDE ONLY — it identifies your tenant and
-   * grants full access to it. Browser code gets a short-lived embed session
-   * token instead (`agent.embedSession`, `asyncConsults.embedSession`,
-   * `telehealth.embedSession`), or a physician session (`physicians.session`).
+   * grants full access to it, and its prefix names the deployment
+   * (`pp_live_<zone>_…`, `pp_test_<env>_<zone>_…`), so the endpoints are
+   * derived from it unless you pass them. Browsers never see it: the
+   * `natzar()` middleware (`@natzar/client/server`) mints sessions for them.
    */
   apiKey?: string;
   /**
-   * A physician SESSION token instead of an API key — the browser-side
-   * credential for the physician routes, minted by your server with
-   * `physicians.session(id)` after your own sign-in. It names one physician,
-   * expires, and can do nothing your key could not have let that physician do,
-   * so it may live in a browser bundle.
+   * An `nz1` SESSION credential instead of an API key — the browser-side
+   * credential of a headless or native clinician session. You do not pass it
+   * by hand: `connectPhysician` (`@natzar/client/physician`) obtains it from
+   * your `natzar()` endpoint, renews it and rebuilds its client; its `client`
+   * property is a client built this way.
    *
-   * A session-authenticated client reaches only the routes the contract marks
-   * "physician session" (`403 forbidden` elsewhere — keep the key on your
-   * server for those) and acts only as that physician, so pass `'me'` as the
-   * physician id. `@natzar/client/physician` wraps this client with polling,
-   * presence and automatic heartbeats; reach for it unless you want the raw
-   * routes.
+   * A session-authenticated client reaches only the `physician-rest` routes
+   * its capabilities allow (`403` elsewhere — keep the key on your server for
+   * those) and acts only as that physician, so pass `'me'` as the physician
+   * id.
    */
   sessionToken?: string;
   /** Per-request timeout in ms. Default 30 000. */
@@ -219,13 +224,21 @@ export interface CallOptions {
    * for partners whose clinicians never sign in to Natzar and who cannot mint
    * a session per screen; the platform records the attestation level on
    * everything it signs, and a tenant can switch assertion off, after which
-   * these calls answer `403 forbidden`. Prefer a session token
-   * (`physicians.session`) whenever a browser is involved.
+   * these calls answer `403 forbidden`. Prefer a clinician session
+   * (`connectPhysician` through the `natzar()` middleware) whenever a
+   * browser is involved.
    */
   physicianId?: string;
 }
 
 const enc = encodeURIComponent;
+
+/**
+ * D12 "Join anyway" on a join route (`SESSION_JOIN_ROUTES`): sent only after a
+ * `409 session_renewal_required` whose `joinAnywayAllowed` is true, and only
+ * on the user's choice. The server honours it only in exactly that case.
+ */
+export type JoinAnywayBody = {acceptShortSession?: true};
 
 // The keys only CallOptions has — how `telehealth.join(id, opts)` (0.15) is
 // told apart from `join(id, body, opts)`. A body is `{paymentId?}`; an empty
@@ -304,10 +317,12 @@ export class NatzarClient {
     const credential: CredentialKind = sessionToken ? 'sessionToken' : 'apiKey';
     assertUsableKey(sessionToken || apiKey, credential);
     this.credential = credential;
-    const resolved = resolveEndpoints(options);
+    // A key in the current format names its deployment (§4.9): derive the
+    // endpoints from it. Anything else keeps the explicit resolution.
+    const resolved = resolveEndpoints(credential === 'apiKey' && parseApiKey(apiKey) ? {...options, key: apiKey} : options);
     this.environment = resolved.environment;
     this.zone = resolved.zone;
-    this.endpoints = {baseUrl: resolved.baseUrl, embedOrigin: resolved.embedOrigin};
+    this.endpoints = {baseUrl: resolved.baseUrl, ...(resolved.embedOrigin ? {embedOrigin: resolved.embedOrigin} : {})};
     this.http = {
       baseUrl: resolved.baseUrl,
       apiKey: sessionToken || apiKey,
@@ -395,6 +410,57 @@ export class NatzarClient {
     });
   }
 
+  private del<T>(path: string, opts: CallOptions & {idempotent?: boolean} = {}): Promise<T> {
+    return request<T>(this.http, {
+      method: 'DELETE',
+      path,
+      ...(opts.idempotent ? {idempotent: true} : {}),
+      ...(opts.signal ? {signal: opts.signal} : {}),
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Sessions (embed integration, protocol v2)
+  // -------------------------------------------------------------------------
+
+  /**
+   * The session routes behind the `natzar()` middleware
+   * (`@natzar/client/server`), for flows it does not cover — rmc-style split
+   * origins that keep their own session Lambda, or a custom guest flow. Your
+   * key, your server only: every route refuses a request carrying browser
+   * headers (`Origin`, `Sec-Fetch-Site`, `Sec-Fetch-Dest`).
+   */
+  readonly sessions = {
+    /**
+     * Mint (no `sessionId`), renew (`sessionId`) or hand over (`successorOf`)
+     * a session. The grant's secret is sealed to `frameKey`; relay the grant
+     * unchanged. NOT retried automatically: a mint is not idempotent.
+     */
+    create: (body: CreateSessionRequest, opts?: CallOptions): Promise<SessionGrant> => this.post('/sessions', body, opts),
+
+    /** Revoke one session. Idempotent (`204`). */
+    delete: (sessionId: string, opts?: CallOptions): Promise<void> =>
+      this.del<Record<string, never>>(`/sessions/${enc(sessionId)}`, {...opts, idempotent: true}).then(() => undefined),
+
+    /** Revoke every session of one login (`{loginRef}`), patient or clinician. Idempotent. */
+    revoke: (body: RevokeSessionsRequest, opts?: CallOptions): Promise<RevokeSessionsResponse> =>
+      this.post('/sessions/revoke', body, {...opts, idempotent: true}),
+  };
+
+  /** The embedding configuration of this key's deployment (no secrets) and its origin list. */
+  readonly embed = {
+    /** `{partnerId, environment, zone, loaderUrl, frameOrigins, graphqlUrl}`. */
+    config: (opts?: CallOptions): Promise<EmbedConfig> => this.get('/embed/config', undefined, opts),
+
+    /**
+     * Replace the embedding origin list (§4.8). Exact origins, PSL-checked
+     * patient wildcards (`https://*.acme.com`), local origins outside
+     * production, and native-shell origins in `nativeOrigins`. Empty = off.
+     */
+    setOrigins: (body: PutEmbedOriginsRequest, opts?: CallOptions): Promise<PutEmbedOriginsResponse> =>
+      this.put('/embed/origins', body, opts),
+  };
+
   // -------------------------------------------------------------------------
   // Patients
   // -------------------------------------------------------------------------
@@ -475,23 +541,15 @@ export class NatzarClient {
     me: (opts?: CallOptions): Promise<GetPhysicianResponse> => this.get('/physicians/me', undefined, opts),
 
     /**
-     * Mint a physician SESSION token — the browser-side credential for the
-     * physician routes. Tenant key only: call it from your server after your
-     * own authentication (single sign-on by token exchange) and hand the
-     * whole response to `connectPhysician` from `@natzar/client/physician`;
-     * it carries the API URL, so nothing about our deployment is baked into
-     * your bundle.
-     *
-     * Safe to repeat: every mint is a fresh token, so a retry after an
-     * ambiguous failure costs a token nobody uses, never a duplicate of
-     * anything.
+     * Offboarding (m11): the physician stops being routable, their
+     * availability is cleared and every session they hold is revoked, at
+     * once. Pass OUR physician id (`me` is refused), or `{externalId}` for
+     * YOUR id (`POST /v1/physicians/deactivate`). Tenant key only. Idempotent.
      */
-    session: (
-      id: string,
-      body?: CreatePhysicianSessionRequest,
-      opts?: CallOptions,
-    ): Promise<CreatePhysicianSessionResponse> =>
-      this.post(`/physicians/${enc(id)}/session`, body ?? {}, {...opts, idempotent: true}),
+    deactivate: (physician: string | {externalId: string}, opts?: CallOptions): Promise<DeactivatePhysicianResponse> =>
+      typeof physician === 'string'
+        ? this.post(`/physicians/${enc(physician)}/deactivate`, {}, {...opts, idempotent: true})
+        : this.post('/physicians/deactivate', {externalId: physician.externalId}, {...opts, idempotent: true}),
 
     /**
      * Go on or off the LIVE video queue. `ready: true` matches immediately —
@@ -658,11 +716,6 @@ export class NatzarClient {
     messages: (query: ListAgentMessagesQuery, opts?: CallOptions): Promise<ListAgentMessagesResponse> =>
       this.get('/agent/messages', query as RequestArgs['query'], opts),
 
-    /** Mint a session token for the `<natzar-agent>` widget (patient-scoped). */
-    embedSession: (
-      body: CreateAgentEmbedSessionRequest,
-      opts?: CallOptions,
-    ): Promise<CreateEmbedSessionResponse> => this.post('/agent/embed-session', body, {...opts, idempotent: true}),
   };
 
   // -------------------------------------------------------------------------
@@ -790,14 +843,6 @@ export class NatzarClient {
      */
     rate: (id: string, body: RateAsyncConsultRequest, opts?: CallOptions): Promise<RateAsyncConsultResponse> =>
       this.post(`/async-consults/${enc(id)}/rate`, body, {...opts, idempotent: true}),
-
-    /** Mint a session token for the `<natzar-async>` widget. */
-    embedSession: (
-      id: string,
-      body?: CreateEmbedSessionRequest,
-      opts?: CallOptions,
-    ): Promise<CreateEmbedSessionResponse> =>
-      this.post(`/async-consults/${enc(id)}/embed-session`, body ?? {}, {...opts, idempotent: true}),
   };
 
   // -------------------------------------------------------------------------
@@ -919,14 +964,6 @@ export class NatzarClient {
     get: (id: string, opts?: CallOptions): Promise<GetTelehealthConsultResponse> =>
       this.get(`/telehealth-consults/${enc(id)}`, undefined, opts),
 
-    /** Mint a session token for the `<natzar-telehealth>` widget. */
-    embedSession: (
-      id: string,
-      body?: CreateEmbedSessionRequest,
-      opts?: CallOptions,
-    ): Promise<CreateEmbedSessionResponse> =>
-      this.post(`/telehealth-consults/${enc(id)}/embed-session`, body ?? {}, {...opts, idempotent: true}),
-
     /**
      * Cancel before the call starts (`invited` / `scheduled` / `waiting`
      * only). With a physician credential on a booked consult this is the
@@ -947,8 +984,16 @@ export class NatzarClient {
      * keep polling the workspace and call again once it reads `in_progress`.
      * Also counts as a presence heartbeat. A read in effect, so idempotent.
      */
-    room: (id: string, opts?: CallOptions): Promise<TelehealthRoomResponse> =>
-      this.post(`/telehealth-consults/${enc(id)}/room`, {}, {...opts, idempotent: true}),
+    room: ((id: string, bodyOrOpts?: JoinAnywayBody | CallOptions, opts?: CallOptions) => {
+      const isBody = !!bodyOrOpts && 'acceptShortSession' in bodyOrOpts;
+      const body = isBody ? (bodyOrOpts as JoinAnywayBody) : {};
+      const callOpts = isBody ? opts : ((bodyOrOpts as CallOptions | undefined) ?? opts);
+      return this.post<TelehealthRoomResponse>(`/telehealth-consults/${enc(id)}/room`, body, {...callOpts, idempotent: true});
+    }) as {
+      /** `{acceptShortSession: true}`: D12 "Join anyway", after a `409 session_renewal_required` that allowed it. */
+      (id: string, body?: JoinAnywayBody, opts?: CallOptions): Promise<TelehealthRoomResponse>;
+      (id: string, opts?: CallOptions): Promise<TelehealthRoomResponse>;
+    },
 
     /**
      * Hang up. The physician goes back to `ready` (or `offline` with
@@ -971,7 +1016,7 @@ export class NatzarClient {
      * Send `present: false` once when they step away. Only the practitioner
      * the slot was booked with may call it (`409 not_assigned`).
      */
-    ready: (id: string, body?: TelehealthReadyRequest, opts?: CallOptions): Promise<TelehealthReadyResponse> =>
+    ready: (id: string, body?: TelehealthReadyRequest & JoinAnywayBody, opts?: CallOptions): Promise<TelehealthReadyResponse> =>
       this.post(`/telehealth-consults/${enc(id)}/ready`, body ?? {}, {...opts, idempotent: true}),
 
     /**

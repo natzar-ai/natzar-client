@@ -1,6 +1,6 @@
 // GENERATED FILE — do not edit.
 //
-// Copied verbatim from provider-portal's shared/partner-api by
+// Copied verbatim from natzar-core's shared/partner-api by
 // scripts/sync-contract.mjs. Edit the source there; this copy exists only so
 // the published package is self-contained.
 /**
@@ -98,6 +98,17 @@
  *   protocol.
  * - `./provider-embed-schemas` — zod request schemas of the provider embed
  *   routes.
+ * - `./sessions` — the embed integration redesign's session contract
+ *   (protocol v2): the `nz1` credential, `POST /v1/sessions`, the customer
+ *   endpoint the `natzar()` middleware mounts, surfaces, lifetimes,
+ *   capability presets and provider views, key prefixes, error-code
+ *   allowlists and the grant checks. Pure; no zod.
+ * - `./sessions-schemas` — zod schemas of every sessions body, response,
+ *   grant, `postMessage` envelope and event detail.
+ * - `./sessions-origins` — the embedding-origin rules and the public-suffix
+ *   subset.
+ * - `./sessions-crypto` — sealing the credential to the frame key
+ *   (WebCrypto), the frame key pair, the JWK thumbprint and `loginRef`.
  *
  * @packageDocumentation
  */
@@ -115,3 +126,7 @@ export * from './prescriptions';
 export * from './referrals';
 export * from './provider-embed';
 export * from './provider-embed-schemas';
+export * from './sessions';
+export * from './sessions-schemas';
+export * from './sessions-origins';
+export * from './sessions-crypto';

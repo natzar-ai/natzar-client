@@ -2,48 +2,66 @@
 
 Official TypeScript client for the **Natzar Partner API** — AI health-assistant
 chat, async physician consults, live video consults, prescriptions with an
-in-app pharmacy picker, and webhooks — plus the two browser surfaces built on
-it: a patient's care conversation and a physician's workspace inside your own
-portal.
+in-app pharmacy picker, and webhooks — plus the embed integration: the
+`natzar()` middleware that is your whole server side, React components for the
+four tags, and two headless browser surfaces (a patient's care conversation, a
+physician's workspace inside your own portal).
 
 - **[API reference →](https://natzar-ai.github.io/natzar-client/)** — generated
   from the contract, every route, field, error code and webhook payload.
-- Works in Node 18+ and in the browser (three entry points — see below).
-- No framework dependency. Subscriptions are plain callbacks.
+- Works in Node 20+, Fetch runtimes (Workers, Bun, Deno) and the browser.
+- No framework dependency (React is an optional peer, for `/react` only).
 
 ```bash
 npm install @natzar/client
 ```
 
+US deployments now use **us-east-1** (DR **us-west-1**). Until the new API
+Gateway URLs are available, the SDK requires `NATZAR_API_URL` or an explicit
+`baseUrl` for hosted environments. Use the URL from the new deployment,
+including `/v1`; the old API IDs cannot be transferred between regions.
+
 ---
 
 ## The 30-second version
 
-Your **server** holds the API key and mints a session for one patient. Your
-**browser** takes that session and subscribes. That is the whole integration.
+Your **server** mounts one middleware and says who the signed-in user is. Your
+**page** adds a script and a tag. That is the whole integration: no session
+plumbing, no CSRF code, no API key in the browser.
 
-```ts
-// ── your server ────────────────────────────────────────────────────────────
-import {NatzarClient} from '@natzar/client';
+```js
+// ── your server (Express) ─ AFTER your session middleware, BEFORE body parsers,
+//    CSRF middleware and login redirects
+import {natzar} from '@natzar/client/server';
 
-const natzar = new NatzarClient({apiKey: process.env.NATZAR_API_KEY!});
-
-await natzar.patients.upsert({
-  externalId: user.id,          // your id for this person
-  phone: user.phone, email: user.email,
-  givenName: user.firstName, familyName: user.lastName,
-  birthdate: user.dob, sex: user.sex,
-});
-
-const session = await natzar.agent.embedSession({externalPatientId: user.id});
-// → send `session` to the browser as-is
+app.use('/natzar', natzar({
+  identify: (req) => req.user && {
+    patient: {externalId: req.user.id, phone: req.user.phone, email: req.user.email,
+              givenName: req.user.firstName, familyName: req.user.lastName,
+              birthdate: req.user.birthdate, sex: req.user.sex},
+    login: req.sessionID, until: req.session.cookie.expires,
+  },
+}));
 ```
 
+```html
+<!-- ── your page -->
+<script src="/natzar/embed.js" async></script>
+<natzar-async></natzar-async>                  <!-- or <natzar-telehealth>, <natzar-agent>, <natzar-provider> -->
+```
+
+Configuration, not code: `NATZAR_API_KEY` in the server environment (its prefix
+selects the environment and zone), plus `NATZAR_API_URL` from the target deployment, and the
+page origin registered in the console's **Embedding** panel (or
+`client.embed.setOrigins`). See [The embed middleware](#the-embed-middleware-natzarclientserver).
+
+Building your own UI instead of a tag? The same middleware serves the headless
+SDK (list `'headless'` in its `surfaces`):
+
 ```ts
-// ── your browser ───────────────────────────────────────────────────────────
 import {connectPatient} from '@natzar/client/patient';
 
-const care = connectPatient(session);
+const care = await connectPatient({endpoint: '/natzar'});   // sealed to this page, renews by itself
 
 const stop = care.conversation.subscribe((snapshot, sync) => {
   if (!snapshot) return;                       // still connecting
@@ -56,9 +74,9 @@ await care.conversation.send({text: 'I have had a sore throat for three days.'})
 // stop() when you unmount
 ```
 
-There is **no poll loop, no cursor, no consult state machine and no API key** in
-that browser code — and no backend-for-frontend. That is deliberate; see
-[Why there are two entry points](#why-there-are-two-entry-points).
+There is **no poll loop, no cursor, no consult state machine, no token renewal
+and no API key** in that browser code — and no backend-for-frontend beyond the
+middleware. See [Why there are several entry points](#why-there-are-several-entry-points).
 
 ---
 
@@ -188,11 +206,14 @@ Refused uploads reject with `unsupported_type` or `file_too_large`.
 ### Video consults
 
 A video consult invited from the conversation runs on `care.telehealth`, keyed
-by the consult id on the entry. The SDK mints and caches the consult-scoped
-session for you.
+by the consult id on the entry: the same patient session covers every consult
+the conversation references. Whether it is a waiting room or a booking is
+`snapshot.consult.mode` (and the entry's `awaiting`: `join` or `book`). A join
+the platform refuses for too little session time (§4.11) switches to a fresh
+session and retries once, by itself.
 
 ```ts
-const {mode} = await care.telehealth.session(consultId);   // 'queue' | 'scheduled'
+const mode = snapshot.consult?.mode;                       // 'queue' | 'scheduled'
 
 // On-demand: join() is the presence beat — call it every ~10s while waiting.
 const state = await care.telehealth.join(consultId);
@@ -406,17 +427,39 @@ it; call `document()` again inside the next tap. A withdrawn referral answers
 button visible, disabled, labelled "Referral withdrawn"). A referral that is
 not this patient's rejects with `not_found`.
 
-### Session expiry
+### Session lifetime
 
-Sessions are short-lived. Pass `onExpired` and re-mint on your server; the
-subscription pauses (no requests) until you hand over the new session, then
-resumes where it was.
+Renewal is automatic: the SDK renews the access credential 60 s before it
+expires (and when the tab comes back, on focus, when the network returns, and
+when an operation answers `session_expired`), on the same session, until the
+session's absolute limit — then it asks your endpoint for a new one, which runs
+your `identify` again. You write nothing for any of that.
+
+`onExpired({reason, code})` fires once, only when no session can be had any
+more: `signed_out` (your `identify` said no: the user signed out on your site),
+`revoked`, `absolute`, `access`. Subscriptions pause until you call
+`care.reconnect()` (typically after the user signed back in). `care.logout()`
+revokes the session on the platform; `care.disconnect()` just stops.
 
 ```ts
-const care = connectPatient(session, {
-  onExpired: async () => care.refresh(await mintSessionOnMyServer()),
+const care = await connectPatient({endpoint: '/natzar'}, {
+  onExpired: ({reason}) => (reason === 'signed_out' ? showSignIn() : showSessionEnded()),
 });
 ```
+
+The credential never touches storage, a URL or your server: in a browser it is
+sealed to a non-extractable key this page generated, and opened only here.
+React Native / Expo (no page to seal against) uses surface `native` with a
+bearer: `connectPatient({endpoint: 'https://api.acme.com/natzar', auth: () => token, native: true})`
+(list `'native'` in the middleware's `surfaces`). `native: true` is refused on
+a web page.
+
+**Video joins and your login (D12).** A join refused for too little session
+time switches to a fresh session and retries once, by itself. When YOUR login
+is the limit (a fresh session would end just as soon), the join rejects and
+`joinAnywayOf(error)` says `joinAnywayAllowed: true`: show the expected end
+time, and on the user's choice call `care.telehealth.join(id, {acceptShortSession: true})`
+(`desk.telehealth.room(id, {acceptShortSession: true})` for clinicians).
 
 ### The live consult
 
@@ -531,45 +574,43 @@ async function acceptInvite(consultId: string) {
 
 ---
 
-## Why there are three entry points
+## Why there are several entry points
 
-| | `@natzar/client` | `@natzar/client/patient` | `@natzar/client/physician` |
+| Entry | Runs in | Credential | Use for |
 |---|---|---|---|
-| Runs in | your server | the browser | the browser |
-| Credential | `pp_live_…` API key | an embed session your server minted | a physician session your server minted |
-| Scope | your whole tenant | one patient | one clinician |
-| Use for | provisioning, webhooks, admin | patient-facing UI | the clinician's screen in your portal |
+| `@natzar/client` | your server | your API key (`pp_live_…`) | provisioning, every REST route, `resolveEndpoints({key})` |
+| `@natzar/client/server` | your server | your API key | `natzar()`: the embed middleware — sessions, Start, the script redirect, webhooks |
+| `@natzar/client/react` | the browser | none | the four tags as React components |
+| `@natzar/client/elements` | types only | none | `HTMLElementTagNameMap` / JSX types of the tags and their events |
+| `@natzar/client/patient` | the browser / RN | an `nz1` session from your middleware | a patient UI of your own (headless) |
+| `@natzar/client/physician` | the browser / RN | an `nz1` session from your middleware | the clinician's screen in your portal (headless) |
 
-The API key is tenant-scoped: it can read **every** patient you have, so it must
-never reach a browser bundle. A session token is scoped to one person and
-expires, so it can. It is the same split as Stripe's secret and publishable
-keys.
-
-This is why you do not need to build a relay: mint a session on your server,
-hand it to the browser, done.
-
-> Sessions are **self-describing** — the mint response carries the endpoint
-> alongside the token, so nothing about our deployment is baked into your
-> bundle and key rotation is invisible to you. Pass the whole response to
-> `connectPatient()` / `connectPhysician()`.
+The API key is tenant-scoped: it can read **every** patient you have, so it
+must never reach a browser — and cannot by accident: a browser bundle that
+imports `@natzar/client/server` fails at build (its `browser` export condition
+resolves to a stub that exports nothing). A session is scoped to one person,
+sealed to one page and short-lived, and your server only ever relays its
+ciphertext.
 
 ---
 
 ## The physician surface
 
 A clinician works inside **your** portal, signed in with **your** login, and
-never sees a second sign-in. Your server exchanges your session for a Natzar
-physician session (single sign-on by token exchange); the browser does the rest.
+never sees a second sign-in. The same `natzar()` middleware vouches for them
+(your `identify` returns `{clinician: {externalId}}` after YOUR role and MFA
+check; the tenant's delegation is `delegated`, D9) and mints a headless
+clinician session with today's physician route set; the browser does the rest.
+For the embedded workspace instead, use the `<natzar-provider>` tag.
 
 ```ts
-// your server — after YOUR authentication of the clinician
-const session = await natzar.physicians.session(physicianId);   // tenant key only
-// → send `session` to the browser as-is ({sessionToken, expiresAt, apiUrl, physician})
+// your server: natzar({identify, surfaces: [..., 'headless']}) — see the middleware section
 
 // your browser
 import {connectPhysician} from '@natzar/client/physician';
 
-const desk = connectPhysician(session, {onExpired: () => remintAndRefresh()});
+const desk = await connectPhysician({endpoint: '/natzar'}, {onExpired: () => showSignIn()});
+// split origin (rmc): connectPhysician({getSession: (ask) => mySessionRelay(ask), config})
 
 const stop = desk.workspace.subscribe((ws, sync) => {
   if (!ws) return;                                   // sync.phase === 'connecting'
@@ -597,9 +638,11 @@ What the SDK owns so you do not have to:
   (every 15 s, 45 s TTL). The SDK beats while the physician is `ready` or on a
   call **and** a workspace subscription is open — unsubscribe on unmount and
   the beat stops, so a closed laptop never keeps a clinician on the rota.
-- **Expiry.** The first `401` fires `onExpired` once; subscriptions park and
-  beats stop. Mint a fresh session on your server and call
-  `desk.refresh(session)` — everything resumes where it was.
+- **The session.** Renewed by itself (300 s access credential); when it ends
+  for good (`signed_out`, `revoked`, the idle lock) `onExpired` fires once,
+  subscriptions park and beats stop; `desk.reconnect()` resumes everything.
+  `desk.logout()` revokes the session with its own credential; call the
+  middleware's `revokeLogin` in your logout route too.
 
 The call itself runs on a LiveKit `Room` you construct, by the same rules as
 the patient's ([The room](#the-room-0170)):
@@ -645,10 +688,10 @@ physician consults in (base codes; `PHYSICIAN_LANGUAGES` in the contract) — a
 ranked routing preference, never a filter: a patient goes first to a physician
 who speaks their language, then to an English speaker, then to anyone.
 
-A session reaches only the physician-side routes (`403 forbidden` elsewhere)
-and always acts as its own physician — `desk.client` is the typed REST client
-bound to it, for routes this surface does not model (`schedules`, `licenses`,
-`asyncConsults.list({assignee: 'me'})`).
+A session reaches only the `physician-rest` routes its capabilities allow
+(`403` elsewhere) and always acts as its own physician — `desk.client` is the
+typed REST client bound to the current credential, for routes this surface
+does not model (`schedules`, `licenses`, `asyncConsults.list({assignee: 'me'})`).
 
 ### The availability calendar
 
@@ -693,14 +736,134 @@ contract feed a zone picker.
 
 ---
 
+## The embed middleware (`@natzar/client/server`)
+
+One export for every framework:
+
+```ts
+import {natzar} from '@natzar/client/server';
+
+// Express / Connect / Node — mount AFTER the middleware that sets the user
+// (session, passport) and BEFORE body parsers, csurf/lusca and login redirects
+app.use('/natzar', nz);
+
+// Next.js App Router — app/natzar/[...natzar]/route.ts (and exclude /natzar/ from the middleware.ts / proxy.ts matcher)
+export const {GET, POST} = natzar({identify: async (_req, {audience}) => …});
+
+// Fetch runtimes — Hono, Workers, Bun, Deno, Remix, SvelteKit
+app.all('/natzar/*', (c) => nz.fetch(c.req.raw, c.env));   // env may carry NATZAR_API_KEY
+```
+
+| Option | |
+|---|---|
+| `identify(req, ask)` | **Required.** Map YOUR login to `{patient}` or `{clinician}` (plus `login`, `until`, `consult?`, `capabilities?`, `clinicianToken?`), or anything falsy (→ the signed-out state). `ask` is `{audience, surface, consult?, patient?, token?, view?}`; `token` is the bearer from `window.natzarConfig.auth`. Runs on every mint AND renewal. |
+| `onStart(req, {kind, mode, surface})` | In-widget Start, gated and billed by you (D1): `false` refuses, `true` opens, `{context}` opens with a note. The visit is opened with your key. |
+| `onEvent(event, req)` / `dedupe` | Verified webhooks at `POST {mount}/webhook`. At-least-once: dedupe on `event.id` (`dedupe: {seen, forget?}`); a throw answers 500 so Natzar retries. |
+| `surfaces` | Default the tags' surfaces; `'headless'` and `'native'` must be listed. |
+| `origins` | Page origins allowed to call cross-origin (exact; CORS only for them). |
+| `apiKey`, `webhookSecret`, `apiUrl` | Default `NATZAR_API_KEY`, `NATZAR_WEBHOOK_SECRET`, `NATZAR_API_URL`. The key prefix selects the environment and zone; supply the API URL from that deployment. |
+| `basePath` | The full path you serve it under (`/api/natzar`): only `{basePath}/<route>` is answered. Recommended on Fetch runtimes and bare Node servers; an Express mount is detected. |
+
+What it enforces so you do not have to: `POST` + JSON + ≤ 4 KB +
+`X-Natzar-Request: 1`; same origin by `Sec-Fetch-Site` (else `Origin` host =
+`Host`); cross-origin only from `origins`; no `Origin` only for `native` with a
+bearer; a strict body; `identify` answers for the other audience refused;
+`loginRef = sha256('natzar-login:' + login)` (your raw session id never
+leaves); `parentOrigin` = the verified `Origin`; no browser header forwarded;
+`no-store`, `nosniff`, `X-Natzar-Endpoint: 1` on every answer; errors from a
+fixed allowlist, bodies never echoed; codes-only logs; a best-effort limit per
+login; `GET /v1/embed/config` cached 5 min. A misplaced mount (after a body
+parser, a CSRF guard or a login redirect) shows up as `endpoint_misconfigured`
+in the browser console and the fix in your server log.
+
+Routes below the mount: `POST /session`, `POST /start` (with `onStart`),
+`GET /embed.js` (302 to the loader of your key's deployment), `GET /config`
+(the deployment facts, with the API URL derived from YOUR key, which overrides
+Natzar's), `POST /webhook` (with `onEvent`). Everything else is 404. Mount it at
+`/natzar` (or set `basePath`), never at the app root: under Express only routes
+directly below the mount answer.
+
+What `identify` returns, precisely:
+- `login`: a non-empty string or a finite number — never an object
+  (`req.session`), which would put every user in one `loginRef`.
+- `until`: a `Date`, an ISO string or epoch **milliseconds**; epoch seconds (a
+  JWT `exp`) are refused rather than read as 1970.
+- `patient.birthdate`: prefer `'YYYY-MM-DD'`. A `Date` is accepted only at
+  midnight UTC or at midnight in the server's zone (node-postgres `DATE`);
+  any other instant is refused, never guessed.
+- With a bearer (`ask.token`), authenticate with the token only: the session
+  is marked bearer-authenticated only when the request carried no cookie.
+- `native` is minted only for an app (no `Origin`, or a native shell's:
+  `capacitor://localhost`, `ionic://localhost`, `https://localhost`) with a
+  bearer and no cookie; a web page always gets the sealed `headless` surface.
+
+Notes:
+- **The browser guard needs the `browser` condition.** esbuild
+  (`platform: 'browser'`) and Vite set it, and the build fails (verified).
+  webpack's web targets resolve the stub too; whether a missing export fails
+  or only warns depends on its `exportsPresence`, and the stub throws at load
+  either way. esbuild `platform: 'neutral'` and a Rollup
+  `@rollup/plugin-node-resolve` without `browser: true` resolve the real
+  middleware: there, nothing stops the import — keep the key out of browser
+  code regardless (it is only ever read from the server environment).
+- **`startConsult(req, …)` has no CSRF check of its own**: call it only from a
+  CSRF-protected POST route of yours.
+- **Webhook dedupe marks before your handler runs**: a duplicate delivered
+  while the first is still running is acknowledged. Finish within 10 s, or make
+  the handler idempotent.
+- Without `Sec-Fetch-Site` (older browsers), same origin is proven by the
+  `Origin` HOST against `Host` (the scheme is not compared); a browser cannot
+  reach that path cross-origin, because the custom header forces a preflight
+  that only your listed `origins` pass.
+
+Helpers for your own routes:
+
+```ts
+await nz.client.physicians.create({externalId, email, givenName, familyName});  // NatzarClient from your key
+await nz.revokeLogin(req.sessionID);        // logout: every session of that login, at once
+await nz.revokePatient(externalId);         // or nz.revokeClinician(externalId)
+await nz.deactivateClinician(externalId);   // offboarding: not routable, sessions revoked
+await nz.startConsult(req, {kind: 'async', context: 'Follow-up'});   // your own flow; the tag finds it
+await nz.startConsult(req, {kind: 'referral_request', subject: 'Lipid panel', context: '…'});
+```
+
+`examples/` type-checks the plan's samples (Express, Next.js, Hono/Workers,
+bearer SPAs) and full Firebase and Auth0 integrations against this package.
+
+## React (`@natzar/client/react`)
+
+```tsx
+import {NatzarAsync, NatzarProvider} from '@natzar/client/react';
+
+<NatzarAsync onMessage={({consultId}) => bumpBadge(consultId)} />           // injects /natzar/embed.js once
+<NatzarProvider view="inbox" navigation="host" guardUnload
+  onUnreadChange={({count}) => setTitle(count)} onOpen={({kind, consultId}) => route(kind, consultId)} />
+```
+
+`NatzarAsync`, `NatzarTelehealth`, `NatzarAgent` and `NatzarProvider` take the
+tag's attributes as props (`theme`, `locale`, `accent`, `consult`, `patient`,
+`endpoint`, …; `view`, `navigation`, `guardUnload` on the provider) and one
+`on…` prop per event, called with `(detail, event)` — call
+`event.preventDefault()` on the cancelable `onPayment` (`started`) and
+`onSwitchRequest`. A `ref` is the element (`logout()`, `canLeave()`,
+`navigate()`). `loader={false}` when you place the script yourself (strict CSP
+with a pinned, SRI-checked loader).
+
+## Element types (`@natzar/client/elements`)
+
+`import type {} from '@natzar/client/elements'` once types
+`document.querySelector('natzar-async')`, `addEventListener('natzar:message', e => e.detail…)`,
+`window.natzarConfig` and the global `JSX.IntrinsicElements`; importing
+`@natzar/client/react` adds the tags to React 19's `React.JSX`.
+
 ## Server-side
 
 The server client covers every route, one method per endpoint.
 
 ```ts
 const natzar = new NatzarClient({
-  apiKey: process.env.NATZAR_API_KEY!,
-  environment: 'prod',   // 'local' | 'dev' | 'stage' | 'prod' (default prod)
+  apiKey: process.env.NATZAR_API_KEY!,   // the prefix selects environment and zone
+  baseUrl: process.env.NATZAR_API_URL!, // target deployment API, including /v1
 });
 
 await natzar.patients.upsert({...});
@@ -727,7 +890,7 @@ identifies your application, not a person. Three are accepted, strongest first:
 
 | credential | where | pass as |
 |---|---|---|
-| a Natzar physician session | the browser | `connectPhysician(session)` — see above |
+| a Natzar clinician session | the browser | `await connectPhysician({endpoint: '/natzar'})` — see above |
 | their Cognito ID token (signed in to the Natzar provider pool) | your server | `{physicianToken}` per call |
 | their physician id, asserted by your server | your server | `{physicianId}` per call — switched off per tenant with `403 forbidden` |
 
@@ -825,7 +988,7 @@ The assigned clinician can sign and deliver the requisition from a physician
 session. This is available in `@natzar/client` 0.11.0 and later:
 
 ```ts
-const desk = connectPhysician(session);
+const desk = await connectPhysician({endpoint: '/natzar'});
 const referral = await desk.inbox.issueReferral(consult.id, {
   draft: {
     kind: 'laboratory',
@@ -959,24 +1122,32 @@ before any request. Branch on `code`.
 
 ### Webhooks
 
-Verify the signature against the **raw** body, before parsing. There is no
-prescription event type: a prescription reaches you as an
+With the middleware, webhooks are one option: `onEvent` (and
+`NATZAR_WEBHOOK_SECRET`), then register `https://you/natzar/webhook`. It
+verifies the HMAC over the RAW body with a 5-minute window (a body some parser
+already consumed fails loudly, naming the fix), and answers 500 when your
+handler throws so the delivery is retried — delivery is at-least-once, so
+dedupe on `event.id` (`dedupe: {seen: (id) => …}`).
+
+There is no prescription event type: a prescription reaches you as an
 `async_consult.message` whose `classification` is `async:prescription_issued`
 / `_sent` / `_failed` / `_revoked`, with the link in the body — resolve it with
 `prescriptions.get` as above.
 
-```ts
-import {constructEvent} from '@natzar/client';
+Without the middleware, verify the raw body yourself:
 
-app.post('/natzar/webhooks', express.raw({type: '*/*'}), (req, res) => {
-  const event = constructEvent({
-    payload: req.body,                        // Buffer/string — never re-serialized
-    signature: req.header('X-Natzar-Signature')!,
+```ts
+import {verifyWebhook} from '@natzar/client';
+
+app.post('/hooks/natzar', express.raw({type: '*/*'}), async (req, res) => {
+  const result = await verifyWebhook({
     secret: process.env.NATZAR_WEBHOOK_SECRET!,
+    rawBody: req.body.toString('utf8'),        // the exact bytes — never re-serialized
+    signature: req.header('X-Natzar-Signature'),
   });
-  switch (event.type) {
-    case 'async_consult.assigned': ...
-    case 'telehealth.completed':   ...
+  if (!result.valid) return res.sendStatus(400);
+  switch (result.event.type) {
+    case 'async_consult.assigned': …
   }
   res.sendStatus(200);
 });
@@ -992,8 +1163,8 @@ The ergonomic layer never traps you.
 // Any REST route, typed by you
 await natzar.raw({method: 'POST', path: '/some/new/route', body: {...}});
 
-// Any patient-surface operation
-await care.call({kind: 'query', name: 'embedState', args: {token: session.sessionToken}});
+// Any patient-surface operation (the credential rides in Authorization, never in args)
+await care.call({kind: 'query', name: 'embedState', args: {}});
 
 // The subscription engine, for something we do not model
 import {watch} from '@natzar/client';
@@ -1007,6 +1178,34 @@ import {postAgentMessageSchema} from '@natzar/client/contract';
 ---
 
 ## Changelog
+
+### 0.18.0 — the embed integration redesign (greenfield; breaking)
+
+- **`@natzar/client/server`**: `natzar(options)` — the embed middleware for
+  Express/Connect/Node, Fetch runtimes (`.fetch(request, env?)`) and the
+  Next.js App Router (`.GET`/`.POST`/`.OPTIONS`), with `revokeLogin`,
+  `revokePatient`, `revokeClinician`, `deactivateClinician`, `startConsult`
+  and `client`. A `browser` export condition makes a browser bundle that
+  imports it fail at build.
+- **`@natzar/client/react`** (React components for the four tags) and
+  **`@natzar/client/elements`** (their DOM and JSX types).
+- **`connectPatient` / `connectPhysician` are async and take a session
+  source**: `{endpoint, auth?, native?}` (your middleware) or
+  `{getSession, config}`. The SDK seals, renews and replaces `nz1` sessions
+  itself; `refresh(session)`, `PatientSession`/`PhysicianSession`,
+  `telehealth.session()` (consult tokens) and `ConnectOptions.apiUrl` are gone;
+  `reconnect()`, `disconnect()`, `logout()` (patient) and `session` are new;
+  `onExpired` receives `{reason, code}`. The patient transport sends the
+  credential in `Authorization` (no public API key, no `token` argument).
+- **`NatzarClient`**: `sessions.{create,delete,revoke}`, `embed.{config,setOrigins}`,
+  `physicians.deactivate`; the v1 mints (`physicians.session`, the three
+  `embedSession`s) are removed. A current-format key derives its endpoints
+  (`resolveEndpoints({key})`; supply `NATZAR_API_URL` for the target deployment).
+  `sessionToken` takes an `nz1` credential. `NatzarApiError.retryAfterSeconds`.
+- Node ≥ 20 (global WebCrypto).
+- `joinAnywayOf(error)` and `acceptShortSession` on joins (D12);
+  `connectPhysician().logout()`; `physicians.deactivate({externalId})`;
+  multi-patient (`connectPatient({patient})`, `ask.patient` → `askPatient`).
 
 ### 0.17.0
 

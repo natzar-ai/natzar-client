@@ -1,7 +1,7 @@
 {
   "name": "@natzar/client",
-  "version": "0.17.0",
-  "description": "Official TypeScript client for the Natzar Partner API \u2014 AI health-assistant chat, async physician consults, live video consults, prescriptions with an in-app pharmacy picker, referrals as signed PDF requisitions, non-blocking referral requests, a browser-side patient surface and physician workspace, and webhook signature verification.",
+  "version": "0.18.0",
+  "description": "Official TypeScript client for the Natzar Partner API — AI health-assistant chat, async physician consults, live video consults, prescriptions with an in-app pharmacy picker, referrals as signed PDF requisitions, non-blocking referral requests, a browser-side patient surface and physician workspace, the natzar() embed middleware with React components, and webhook signature verification.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -17,7 +17,7 @@
   "type": "module",
   "sideEffects": false,
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "main": "./dist/cjs/index.js",
   "module": "./dist/esm/index.js",
@@ -38,6 +38,30 @@
       "import": "./dist/esm/physician/index.js",
       "require": "./dist/cjs/physician/index.js"
     },
+    "./server": {
+      "types": "./dist/esm/server/index.d.ts",
+      "workerd": "./dist/esm/server/index.js",
+      "edge-light": "./dist/esm/server/index.js",
+      "deno": "./dist/esm/server/index.js",
+      "bun": "./dist/esm/server/index.js",
+      "node": {
+        "import": "./dist/esm/server/index.js",
+        "require": "./dist/cjs/server/index.js"
+      },
+      "browser": "./dist/esm/server/browser.js",
+      "import": "./dist/esm/server/index.js",
+      "require": "./dist/cjs/server/index.js"
+    },
+    "./react": {
+      "types": "./dist/esm/react/index.d.ts",
+      "import": "./dist/esm/react/index.js",
+      "require": "./dist/cjs/react/index.js"
+    },
+    "./elements": {
+      "types": "./dist/esm/elements/index.d.ts",
+      "import": "./dist/esm/elements/index.js",
+      "require": "./dist/cjs/elements/index.js"
+    },
     "./contract": {
       "types": "./dist/esm/contract/index.d.ts",
       "import": "./dist/esm/contract/index.js",
@@ -57,6 +81,7 @@
     "build:esm": "tsc -p tsconfig.build.json && node scripts/esm-extensions.mjs",
     "build:cjs": "tsc -p tsconfig.cjs.json && node scripts/cjs-package.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck:examples": "tsc -p examples/tsconfig.json && tsc -p examples/tsconfig.plan-js.json",
     "test": "npm run build && node --test --experimental-strip-types test/*.test.ts",
     "prepublishOnly": "npm test"
   },
@@ -64,10 +89,14 @@
     "zod": "^3.25.17"
   },
   "peerDependencies": {
-    "livekit-client": "^2.22.0"
+    "livekit-client": "^2.22.0",
+    "react": ">=18"
   },
   "peerDependenciesMeta": {
     "livekit-client": {
+      "optional": true
+    },
+    "react": {
       "optional": true
     }
   },
@@ -80,6 +109,8 @@
     "telehealth",
     "health",
     "api-client",
-    "webhooks"
+    "webhooks",
+    "middleware",
+    "react"
   ]
 }

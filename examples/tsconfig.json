@@ -1,0 +1,20 @@
+{
+  // Type-checks the customer samples against the BUILT package (self-reference
+  // through package.json "exports", as a customer's project resolves it) and
+  // minimal local stubs of the third-party SDKs they use (stubs/). The real
+  // SDKs (express, next, hono, firebase, auth0) are not dependencies.
+  //   npm run build && npx tsc -p examples/tsconfig.json
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"],
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "isolatedModules": true
+  },
+  "include": ["stubs", "plan/*.ts", "plan/*.tsx", "firebase", "auth0"]
+}

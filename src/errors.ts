@@ -9,6 +9,7 @@
  */
 
 import type {ApiError, ErrorCode} from './contract/errors';
+import type {SessionsApiErrorCode} from './contract/sessions';
 import type {PatientSurfaceErrorCode} from './patient/codes';
 import type {PhysicianSurfaceErrorCode} from './physician/codes';
 
@@ -18,10 +19,12 @@ import type {PhysicianSurfaceErrorCode} from './physician/codes';
  * vocabulary ({@link PatientSurfaceErrorCode}) from `@natzar/client/patient`,
  * which reports refusals in the embed plane's spelling (`not_choosable`, not
  * `prescription_not_choosable`), plus the few refusals the physician surface
- * raises before any request ({@link PhysicianSurfaceErrorCode}). One union so
+ * raises before any request ({@link PhysicianSurfaceErrorCode}), plus the
+ * session routes' and `nz1` credential codes ({@link SessionsApiErrorCode}:
+ * `session_expired`, `session_revoked`, `login_expired`…). One union so
  * `isErrorCode(e, 'lost_race')` typechecks wherever the error came from.
  */
-export type NatzarErrorCode = ErrorCode | PatientSurfaceErrorCode | PhysicianSurfaceErrorCode;
+export type NatzarErrorCode = ErrorCode | PatientSurfaceErrorCode | PhysicianSurfaceErrorCode | SessionsApiErrorCode;
 
 /**
  * A non-2xx response from the Natzar API.
@@ -50,6 +53,11 @@ export class NatzarApiError extends Error {
   readonly route: string;
   /** The raw response body, when it was not the documented JSON envelope. */
   readonly rawBody?: string;
+  /**
+   * Seconds the server asked to wait (`Retry-After`) on a `429` or `503`,
+   * when it sent one. The `natzar()` middleware relays it to the browser.
+   */
+  readonly retryAfterSeconds?: number;
 
   constructor(args: {
     code: NatzarErrorCode;
@@ -58,6 +66,7 @@ export class NatzarApiError extends Error {
     route: string;
     details?: unknown;
     rawBody?: string;
+    retryAfterSeconds?: number;
   }) {
     super(args.message);
     this.code = args.code;
@@ -65,6 +74,7 @@ export class NatzarApiError extends Error {
     this.route = args.route;
     if (args.details !== undefined) this.details = args.details;
     if (args.rawBody !== undefined) this.rawBody = args.rawBody;
+    if (args.retryAfterSeconds !== undefined) this.retryAfterSeconds = args.retryAfterSeconds;
   }
 }
 

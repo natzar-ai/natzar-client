@@ -8,8 +8,9 @@
  * ```ts
  * import {NatzarClient} from '@natzar/client';
  *
- * // Server side only: the key identifies your tenant.
- * const natzar = new NatzarClient({apiKey: process.env.NATZAR_API_KEY!});   // prod by default
+ * // Server side only: the key identifies your tenant, and its prefix
+ * // (pp_live_<zone>_… / pp_test_<env>_<zone>_…) selects the deployment.
+ * const natzar = new NatzarClient({apiKey: process.env.NATZAR_API_KEY!});
  *
  * await natzar.patients.upsert({
  *   externalId: 'u_42', phone: '+15551234567', email: 'a@b.co',
@@ -21,11 +22,12 @@
  *
  * ## Environments
  *
- * Four: `local`, `dev`, `stage`, `prod`. **`prod` is the default** — a client
- * that quietly defaults to a test environment is discovered a week later, when
- * nothing has happened; one that defaults to production is discovered on the
- * first call. `local` points at `http://localhost:5173`. Override per client
- * (`{environment}` / `{baseUrl}`) or per process (`NATZAR_ENV`,
+ * A key names its deployment: `resolveEndpoints({key})` (and the client,
+ * given such a key) derives the environment and zone from the prefix; a
+ * sandbox key (`pp_test_sbx_…`) needs only `NATZAR_API_URL`, and a zone with
+ * no deployment throws rather than falling back. Without a key the explicit
+ * form applies: `local`, `dev`, `stage`, `prod` (the default), `sbx`, per
+ * client (`{environment}` / `{baseUrl}`) or per process (`NATZAR_ENV`,
  * `NATZAR_API_URL`) — see `./environments`.
  *
  * ## What is in here
@@ -40,21 +42,27 @@
  * - The whole contract (`./contract`): resource shapes, request schemas, error
  *   codes, webhook payloads, embed element types — re-exported here.
  *
- * The two BROWSER entry points live beside this one: `@natzar/client/patient`
- * (a patient's care conversation, on an embed session) and
- * `@natzar/client/physician` (a clinician's workspace, on a physician session
- * minted with `physicians.session`). Neither needs an API key.
+ * The other entry points:
+ *
+ * - `@natzar/client/server` — `natzar()`, the middleware that is the whole
+ *   server side of an embed integration (sessions, Start, the script
+ *   redirect, webhooks), for Express/Connect, Fetch runtimes and Next.js.
+ * - `@natzar/client/react` — the four tags as React components.
+ * - `@natzar/client/elements` — types for the four tags and their events.
+ * - `@natzar/client/patient` and `@natzar/client/physician` — headless
+ *   browser (and React Native) clients on a session from that middleware.
+ *   Neither needs an API key.
  *
  * @packageDocumentation
  */
 
 export {NatzarClient} from './client';
-export type {CallOptions, NatzarClientOptions} from './client';
+export type {CallOptions, JoinAnywayBody, NatzarClientOptions} from './client';
 
-// Thrown by both browser entry points when a session is unusable before any
-// request is made. Exported here too so a server-rendered app that imports
+// Thrown by both browser entry points (and the middleware's helpers) when a
+// session is unusable. Exported here too so a server-rendered app that imports
 // only the root can still recognise it in one `catch`.
-export {NatzarSessionError} from './session-error';
+export {NatzarSessionError, isNatzarSessionError} from './session-error';
 
 export {
   DEFAULT_ENVIRONMENT,
@@ -67,7 +75,7 @@ export {
   normalizeBaseUrl,
   resolveEndpoints,
 } from './environments';
-export type {EndpointOverrides, NatzarEndpoints, NatzarEnvironment, NatzarZone} from './environments';
+export type {EndpointOverrides, NatzarEndpoints, NatzarEnvironment, NatzarZone, ResolvedEndpoints} from './environments';
 
 export {NatzarApiError, isErrorCode, isNatzarApiError, isRetryable} from './errors';
 export type {NatzarErrorCode} from './errors';
