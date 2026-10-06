@@ -116,7 +116,7 @@ export const NATZAR_ENDPOINTS: Readonly<
     //
     // `ca` (ca-central-1) is being stood up: once its first deploy has run,
     // add it here from that deployment's `amplify_outputs.json` `custom.API`
-    // with `embedOrigin: 'https://ca.app.natzar.ai'` (docs/RESIDENCY-ZONES.md,
+    // with `embedOrigin: 'https://app.ca.natzar.ai'` (docs/RESIDENCY-ZONES.md,
     // step 11). Until then, callers reach it by passing `baseUrl` +
     // `embedOrigin` explicitly.
   },
