@@ -108,17 +108,12 @@ export const NATZAR_ENDPOINTS: Readonly<
     us: {
       embedOrigin: 'https://us.app.natzar.ai',
     },
-    // `ca` and `eu` are deliberately ABSENT rather than guessed. Each zone is
-    // its own deployment with its own API Gateway id, knowable only once that
-    // deployment exists; a plausible-looking placeholder would fail as a 403
-    // that reads exactly like a credential problem. Asking for a zone that is
-    // not here throws a message that says so.
-    //
-    // `ca` (ca-central-1) is being stood up: once its first deploy has run,
-    // add it here from that deployment's `amplify_outputs.json` `custom.API`
-    // with `embedOrigin: 'https://app.ca.natzar.ai'` (docs/RESIDENCY-ZONES.md,
-    // step 11). Until then, callers reach it by passing `baseUrl` +
-    // `embedOrigin` explicitly.
+    ca: {
+      // Canadian prod app d3a1lcdk40cv6r, from its generated backend outputs.
+      baseUrl: 'https://xgw5rwsze7.execute-api.ca-central-1.amazonaws.com/v1',
+      embedOrigin: 'https://app.ca.natzar.ai',
+    },
+    // EU remains absent until its own backend endpoint is deployed.
   },
   // Every sandbox is its own stack with its own API id: nothing to build in.
   // A sandbox key (`pp_test_sbx_<zone>_…`) always comes with NATZAR_API_URL.

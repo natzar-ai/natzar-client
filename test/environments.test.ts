@@ -50,17 +50,30 @@ test('an undeployed zone is refused, never silently served by another', () => {
   // integration quietly talking to the American deployment, which answers
   // "tenant not found" and reads like a data problem.
   assert.throws(
-    () => resolveEndpoints({environment: 'prod', zone: 'ca'}, {}),
-    /No built-in Natzar endpoints .* zone "ca"/,
+    () => resolveEndpoints({environment: 'prod', zone: 'eu'}, {}),
+    /No built-in Natzar endpoints .* zone "eu"/,
   );
   // ...unless the caller supplies the endpoints themselves, so a new zone is
   // reachable the moment it exists rather than after a release of this package.
   const explicit = resolveEndpoints(
-    {environment: 'prod', zone: 'ca', baseUrl: 'https://ca.example/v1', embedOrigin: 'https://ca.app.natzar.ai'},
+    {environment: 'prod', zone: 'eu', baseUrl: 'https://eu.example/v1', embedOrigin: 'https://eu.example'},
     {},
   );
-  assert.equal(explicit.zone, 'ca');
-  assert.equal(explicit.baseUrl, 'https://ca.example/v1');
+  assert.equal(explicit.zone, 'eu');
+  assert.equal(explicit.baseUrl, 'https://eu.example/v1');
+});
+
+test('Canadian prod resolves its Canadian API and portal, including from a live key', () => {
+  const expected = {
+    environment: 'prod', zone: 'ca',
+    baseUrl: 'https://xgw5rwsze7.execute-api.ca-central-1.amazonaws.com/v1',
+    embedOrigin: 'https://app.ca.natzar.ai',
+  };
+  assert.deepEqual(resolveEndpoints({environment: 'prod', zone: 'ca'}, {}), expected);
+  assert.deepEqual(resolveEndpoints({key: `pp_live_ca_${'a'.repeat(48)}`}, {}), expected);
+  for (const environment of ['dev', 'stage'] as const) {
+    assert.throws(() => resolveEndpoints({environment, zone: 'ca'}, {}), /No built-in Natzar endpoints/);
+  }
 });
 
 test('the zone comes from an env var when not passed in code', () => {
@@ -122,7 +135,7 @@ test('resolveEndpoints({key}) refuses what is not a key, a disagreeing option, a
   assert.throws(() => resolveEndpoints({key: `pp_live_us_${K}`, environment: 'dev'}, {}), /disagrees with the key/);
   assert.throws(() => resolveEndpoints({key: `pp_live_us_${K}`, zone: 'eu'}, {}), /disagrees with the key/);
   // No built-in deployment: never served by another zone.
-  assert.throws(() => resolveEndpoints({key: `pp_live_ca_${K}`}, {}), /No built-in Natzar endpoints .*zone "ca"/);
+  assert.throws(() => resolveEndpoints({key: `pp_live_eu_${K}`}, {}), /No built-in Natzar endpoints .*zone "eu"/);
   assert.throws(() => resolveEndpoints({key: `pp_test_sbx_us_${K}`}, {}), /sandbox key needs NATZAR_API_URL/);
 });
 

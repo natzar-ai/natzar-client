@@ -350,7 +350,7 @@ test('a current-format key names its deployment: the client derives its endpoint
   // An explicit environment that disagrees with the key is refused, not obeyed.
   assert.throws(() => new NatzarClient({apiKey: live, environment: 'stage'}), /disagrees with the key/);
   // A zone with no deployment throws instead of falling back (F87).
-  assert.throws(() => new NatzarClient({apiKey: `pp_live_ca_${'a'.repeat(48)}`}), /No built-in Natzar endpoints/);
+  assert.throws(() => new NatzarClient({apiKey: `pp_live_eu_${'a'.repeat(48)}`}), /No built-in Natzar endpoints/);
   // A sandbox key needs NATZAR_API_URL (or baseUrl).
   const sbx = new NatzarClient({apiKey: `pp_test_sbx_us_${'a'.repeat(48)}`, baseUrl: 'https://sbx.test/v1'});
   assert.equal(sbx.environment, 'sbx');
