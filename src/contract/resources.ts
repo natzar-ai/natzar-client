@@ -636,9 +636,9 @@ export interface AsyncConsultResource {
    * may come with neither draft — a next step with nothing to sign.
    */
   recommendationNote?: string;
-  /** With `recommendationNote`: the AI's drafted referral(s), awaiting review and signature. At most one of this and `recommendedPrescription` is ever set. */
+  /** With `recommendationNote`: the AI's drafted referral(s), awaiting review and signature. May come together with `recommendedPrescription` (one action plan). */
   recommendedReferrals?: ReferralDraft[];
-  /** With `recommendationNote`: the AI's drafted prescription, awaiting review and signature. At most one of this and `recommendedReferrals` is ever set. */
+  /** With `recommendationNote`: the AI's drafted prescription, awaiting review and signature. May come together with `recommendedReferrals` (one action plan). */
   recommendedPrescription?: PrescriptionDraft;
   /**
    * The tenant specialty slug the thread was routed to, if any. Governs who
