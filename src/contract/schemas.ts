@@ -1570,6 +1570,43 @@ const coordinateQuerySchema = z
   .transform(Number);
 
 /**
+ * A US delivery address as a request carries it (`PUT …/address`, and the
+ * optional `address` of `POST …/pharmacy`) — `PrescriptionAddress` with
+ * `country` optional.
+ *
+ * Like a coordinate, only the SHAPE is checked here: `street`, `city`,
+ * `state` and `zipCode` present as strings (a key left out, a non-string or
+ * an unknown key is `400 invalid_request`), every value bounded only against
+ * an oversize request. Whether they make an address — a street and a city
+ * not empty after trimming, a US state, DC or territory code (`NY`, or
+ * `US-NY`) in the US (`country` `US` or omitted), a ZIP or ZIP+4, no line
+ * over `PRESCRIPTION_ADDRESS_MAX` characters — is decided by the route as
+ * `422 invalid_address` with `details.code` naming the field
+ * (`PrescriptionAddressError`): the same rule and the same codes the
+ * platform's own pickers apply, so one copy table serves every surface.
+ * Values are trimmed and stored normalised (`state` uppercase, ZIP+4 with
+ * its dash, `country` `US`).
+ */
+export const prescriptionAddressSchema = z
+  .object({
+    /** Street number and name. */
+    street: z.string().max(200),
+    /** Apartment, suite or unit. */
+    street2: z.string().max(200).optional(),
+    city: z.string().max(200),
+    /** Two-letter code of a US state, DC or an inhabited territory. */
+    state: z.string().max(40),
+    /** Five-digit ZIP code, or ZIP+4. */
+    zipCode: z.string().max(20),
+    /**
+     * `US`, the only country accepted (any case); may be omitted. Another
+     * country is a value, not a shape: `422 invalid_address` (`state`).
+     */
+    country: z.string().max(40).optional(),
+  })
+  .strict();
+
+/**
  * Query of `GET /v1/prescriptions/{id}/pharmacies` — the picker's list.
  *
  * Pass the origin you resolved (`lat`/`lng`, with `source` saying how) and
@@ -1592,7 +1629,11 @@ export const listPharmaciesQuerySchema = z
     label: z.string().min(1).max(80).optional(),
     /** Name / city / postal-code filter. */
     query: z.string().min(1).max(120).optional(),
-    /** Search radius, km — one of `PHARMACY_SEARCH_RADII_KM`. Default: the smallest. */
+    /**
+     * Search radius, km — one of `PHARMACY_SEARCH_RADII_KM`. Default: the
+     * smallest. Always kilometres, even where the list's `distanceUnit` is
+     * `mi`: label the step in miles, send the km value.
+     */
     radiusKm: z.coerce
       .number()
       .refine((n) => (PHARMACY_SEARCH_RADII_KM as readonly number[]).includes(n), {
@@ -1606,13 +1647,53 @@ export const listPharmaciesQuerySchema = z
     path: ['lat'],
   });
 
-/** Body of `POST /v1/prescriptions/{id}/pharmacy` — the patient's choice. */
+/**
+ * Body of `POST /v1/prescriptions/{id}/pharmacy` — the patient's choice.
+ *
+ * `address` confirms the delivery address and chooses in ONE call (an
+ * e-prescribed prescription whose list answered an address step): it is
+ * judged like the body of `PUT …/address` (`422 invalid_address`), frozen on
+ * the prescription in the same atomic transition as the choice, and saved as
+ * the patient's home address once the choice commits. Ignored when the
+ * prescription is faxed. Without it, an e-prescribed prescription with no
+ * confirmed address is `409 address_required`.
+ */
 export const choosePharmacySchema = z
   .object({
     /** `directoryId` of a pharmacy from `GET …/pharmacies`. */
     directoryId: idSchema,
+    /** The delivery address, confirmed with the choice (e-prescribing deployments). */
+    address: prescriptionAddressSchema.optional(),
   })
   .strict();
+
+/**
+ * Body of `PUT /v1/prescriptions/{id}/address` — the answer to the picker's
+ * address step (`ListPharmaciesResponse.address`), in an e-prescribing
+ * deployment: the address the patient typed, picked from your autocomplete,
+ * or confirmed (`onFile` sent back unchanged).
+ *
+ * `lat`/`lng` (both or neither) are the address's location when your
+ * autocomplete or geocoder gave one — three decimals are plenty. They become
+ * the patient's cached home point, the origin the returned list is ranked
+ * by. Without them a NEW address removes the old point (it belonged to the
+ * old address) and the response offers `homeAddress` to geocode; the same
+ * address confirmed again keeps it. A pair that is not a place on Earth is
+ * `422 invalid_location`.
+ */
+export const setPrescriptionAddressSchema = z
+  .object({
+    address: prescriptionAddressSchema,
+    /** Latitude of the address, with `lng`. */
+    lat: coordinateSchema.optional(),
+    /** Longitude of the address, with `lat`. */
+    lng: coordinateSchema.optional(),
+  })
+  .strict()
+  .refine((b) => (b.lat === undefined) === (b.lng === undefined), {
+    message: 'lat and lng must be provided together',
+    path: ['lat'],
+  });
 
 /**
  * Body of `POST /v1/prescriptions/{id}/home-location` — the patient's home,
@@ -1766,6 +1847,12 @@ export type ListPharmaciesQuery = z.infer<typeof listPharmaciesQuerySchema>;
 
 /** Inferred body of `POST /v1/prescriptions/{id}/pharmacy`. See {@link choosePharmacySchema}. */
 export type ChoosePharmacyRequest = z.infer<typeof choosePharmacySchema>;
+
+/** Inferred address of a request (`PUT …/address`, `POST …/pharmacy`). See {@link prescriptionAddressSchema}. */
+export type PrescriptionAddressInput = z.infer<typeof prescriptionAddressSchema>;
+
+/** Inferred body of `PUT /v1/prescriptions/{id}/address`. See {@link setPrescriptionAddressSchema}. */
+export type SetPrescriptionAddressRequest = z.infer<typeof setPrescriptionAddressSchema>;
 
 /** Inferred body of `POST /v1/prescriptions/{id}/home-location`. See {@link setHomeLocationSchema}. */
 export type SetHomeLocationRequest = z.infer<typeof setHomeLocationSchema>;

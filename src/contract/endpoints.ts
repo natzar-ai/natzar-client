@@ -162,11 +162,21 @@ import type {
   ChoosePharmacyRequest,
   SetHomeLocationRequest,
   AddPharmacyRequest,
+  PrescriptionAddressInput,
+  SetPrescriptionAddressRequest,
   VisitBillingCheckoutRequest,
   MembershipBillingCheckoutRequest,
 } from './schemas';
 import type {ResolvedDay, ScheduleException, ScheduleRule} from './schedule';
-import type {PharmacyResource, PharmacySearchOrigin, PrescriptionResource, IssuePrescriptionResponse} from './prescriptions';
+import type {
+  DistanceUnit,
+  PharmacyResource,
+  PharmacySearchOrigin,
+  PrescriberLicensureNotice,
+  PrescriptionAddressStep,
+  PrescriptionResource,
+  IssuePrescriptionResponse,
+} from './prescriptions';
 import type {IssueReferralResponse, ReferralResource} from './referrals';
 export type {IssueReferralResponse} from './referrals';
 export type {IssuePrescriptionResponse} from './prescriptions';
@@ -226,6 +236,8 @@ export type {
   ChoosePharmacyRequest,
   SetHomeLocationRequest,
   AddPharmacyRequest,
+  PrescriptionAddressInput,
+  SetPrescriptionAddressRequest,
 };
 
 // ---------------------------------------------------------------------------
@@ -1272,10 +1284,15 @@ export interface GetPrescriptionResponse {
  *
  * When the prescription is no longer choosable (`prescription.action !==
  * 'choose'`) the list is EMPTY and the resource says why — render its
- * `action` instead of an empty picker. Otherwise `pharmacies` is ranked by
- * distance from `origin` when one was used; without any origin (none passed,
- * none cached) it is unranked and `homeAddress` invites you to geocode the
- * patient's home and store it with `POST …/home-location`.
+ * `action` instead of an empty picker. In an e-prescribing deployment the
+ * list is also empty while `address.step` is set: run the address step first
+ * (`PUT …/address` answers with this same shape, list included). Otherwise
+ * `pharmacies` is ranked by distance from `origin` when one was used;
+ * without any origin (none passed, none cached) it is unranked and
+ * `homeAddress` invites you to geocode the patient's home and store it with
+ * `POST …/home-location`. Pre-select `preferred` when there is one, show
+ * `licensure` (when set) as a calm notice above the list, and print every
+ * distance in `distanceUnit`.
  */
 export interface ListPharmaciesResponse {
   /** The prescription as of this read (its effective status and action). */
@@ -1284,9 +1301,61 @@ export interface ListPharmaciesResponse {
   origin?: PharmacySearchOrigin;
   /** The patient's one-line home address, offered ONLY when no origin exists, for you to geocode. */
   homeAddress?: string;
-  /** The pharmacies, nearest first when an origin exists; empty when the prescription is not choosable. */
+  /**
+   * The delivery-address step to run before the list (e-prescribing
+   * deployments; `step` is always null in a fax one). While `address.step`
+   * is set, `pharmacies` is empty. Carries the patient's home address on
+   * file (`onFile`) for the confirmation. Added after the fields above.
+   */
+  address: PrescriptionAddressStep;
+  /**
+   * The patient's remembered pharmacy — the one their last prescription
+   * reached, on any surface — resolved even when it falls outside this list
+   * (with its `distanceKm` from `origin`). Pre-select it, pinned first, so
+   * sending to it again is one tap. Null when there is none, when it cannot
+   * be reached any more, when it is the pharmacy this prescription just
+   * failed at, or while the address step is pending. Added after the fields
+   * above.
+   */
+  preferred: PharmacyResource | null;
+  /**
+   * The prescriber-licensure notice to show above the list, or null when
+   * there is nothing to warn about. Set when the delivery address confirmed
+   * for this prescription is in another state than the one it was issued
+   * for — the patient's state at signing, or the state of the licence it
+   * was signed under — your tenant enforces state licensure, and the
+   * prescribing physician holds no usable licence there. So an address in
+   * the patient's own state can carry it too; read it on every list.
+   * NON-BLOCKING — the patient may still choose any pharmacy; render it as
+   * a calm notice, never an error (see {@link PrescriberLicensureNotice}).
+   * Null while the address step is pending, in a fax deployment, once the
+   * prescription is not choosable, when licensure is not enforced, and when
+   * the check could not run. Computed from the prescription on every read,
+   * so a reload shows it again. Added after the fields above.
+   */
+  licensure: PrescriberLicensureNotice | null;
+  /**
+   * The unit to SHOW distances and radii in — `mi` in the United States,
+   * `km` elsewhere (see {@link DistanceUnit}). `distanceKm` and `radiusKm`
+   * stay kilometres on the wire; convert with `distanceInUnit`. Added after
+   * the fields above.
+   */
+  distanceUnit: DistanceUnit;
+  /** The pharmacies, nearest first when an origin exists; empty when the prescription is not choosable or the address step is pending. */
   pharmacies: PharmacyResource[];
 }
+
+/**
+ * `PUT /v1/prescriptions/{id}/address` response — the picker's list, exactly
+ * as `GET …/pharmacies` answers it, now that the address is confirmed:
+ * `address.step` is null, `prescription.addressRequired` false, and the list
+ * is ranked from the `lat`/`lng` you sent (else the patient's kept home
+ * point; else unranked with `homeAddress` to geocode). `licensure` is
+ * judged against the address just confirmed: an address in a state the
+ * prescribing physician is not licensed in answers the notice here, so show
+ * it before the patient chooses. Go straight on to the choice.
+ */
+export type SetPrescriptionAddressResponse = ListPharmaciesResponse;
 
 /**
  * `POST /v1/prescriptions/{id}/pharmacy` response. The prescription is now
@@ -1748,9 +1817,12 @@ export interface Endpoints {
   'GET /v1/prescriptions/{id}': {request: undefined; response: GetPrescriptionResponse};
   /**
    * The pharmacies the patient may choose from, nearest first when an origin
-   * is known. Empty (with the resource saying why) once the prescription is
-   * no longer choosable. `422 invalid_location` for a `lat`/`lng` pair that
-   * is not a place on Earth.
+   * is known, with the remembered one as `preferred`. Empty (with the
+   * resource saying why) once the prescription is no longer choosable, and
+   * while the delivery-address step (`address.step`) is pending. Carries
+   * the non-blocking prescriber-licensure notice (`licensure`) and the unit
+   * to show distances in (`distanceUnit`). `422 invalid_location` for a
+   * `lat`/`lng` pair that is not a place on Earth.
    */
   'GET /v1/prescriptions/{id}/pharmacies': {request: ListPharmaciesQuery; response: ListPharmaciesResponse};
   /**
@@ -1759,8 +1831,24 @@ export interface Endpoints {
    * `409 prescription_not_choosable` with the effective `status` in
    * `details`. `404 pharmacy_not_found` for an id no listing produced,
    * `409 pharmacy_unreachable` for one the transport cannot deliver to.
+   * E-prescribing: `409 address_required` while no delivery address is
+   * confirmed — or send `address` to confirm and choose in one call
+   * (`422 invalid_address` with `details.code` when it is not one).
    */
   'POST /v1/prescriptions/{id}/pharmacy': {request: ChoosePharmacyRequest; response: ChoosePharmacyResponse};
+  /**
+   * Answer the picker's delivery-address step (e-prescribing deployments):
+   * the address is frozen on this prescription and saved as the patient's
+   * home address (their state follows it), and the response is the list,
+   * ranked from `lat`/`lng` when sent, with the prescriber-licensure notice
+   * judged against the new address. `422 invalid_address` (with
+   * `details.code`) for values that are not a US address,
+   * `422 invalid_location` for an off-Earth pair, `409
+   * prescription_not_choosable` once settled, `409 address_not_applicable`
+   * on a faxed prescription. Safe to repeat while the prescription is
+   * choosable — the same address writes the same state.
+   */
+  'PUT /v1/prescriptions/{id}/address': {request: SetPrescriptionAddressRequest; response: SetPrescriptionAddressResponse};
   /**
    * Cache the patient's geocoded home on their record, for every later
    * pharmacy search to start from. `422 invalid_location` for coordinates

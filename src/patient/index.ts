@@ -46,7 +46,12 @@
 //   page behind it is birthdate-gated and refuses partner-origin patients by
 //   design — the partner authenticated them — so the entry carries
 //   `awaiting: 'pharmacy'` and `care.prescriptions.*` drives the picker on the
-//   patient session: search, choose, add a pharmacy no directory covers.
+//   patient session: search, choose, add a pharmacy no directory covers. In
+//   an e-prescribing deployment the search first answers an address step
+//   (collect or confirm the home address, `setAddress`), and every list names
+//   the patient's remembered pharmacy (`preferred`) to pre-select, the
+//   non-blocking prescriber-licensure notice (`licensure`) and the unit to
+//   show distances in (`distanceUnit`: miles in the US).
 //
 // * A REFERRAL IS A FILE CARD. When a physician refers the patient (to a
 //   specialist, for lab tests, for imaging), the thread carries a "view your
@@ -79,12 +84,18 @@
 import {watch, type SyncState, type Unsubscribe, type WatchOptions} from '../subscribe';
 import {NatzarApiError, isNatzarApiError} from '../errors';
 import type {
+  DistanceUnit,
   PharmacyLinkAction,
   PharmacyResource,
   PharmacySearchOrigin,
   PHARMACY_SEARCH_RADII_KM,
+  PrescriberLicensureNotice,
+  PrescriptionAddress,
+  PrescriptionAddressError,
+  PrescriptionAddressStep,
   PrescriptionStatus,
 } from '../contract/prescriptions';
+import type {PrescriptionAddressInput} from '../contract/schemas';
 import {REFERRAL_LINK_VALIDITY_SENTENCES, type ReferralKind, type ReferralLinkAction} from '../contract/referrals';
 import {callPatientOp, type FetchLike, type PatientConnection, type TransportOptions} from './transport';
 import {SessionBroker, type AuthHook, type ClientConfig, type ExpiredReason, type GetSession, type LiveSession, type SessionAsk, type SessionInfo, type SessionSource} from '../broker';
@@ -112,6 +123,8 @@ export type {LiveKitRoomLike, ReconnectPolicyLike, RepullReason, RoomPull, RoomS
 // consumer can type a picker row or the origin it builds without a second
 // import (`@natzar/client/contract` remains their canonical home).
 export type {PharmacyLinkAction, PharmacyResource, PharmacySearchOrigin, PrescriptionStatus, ReferralKind, ReferralLinkAction};
+export type {PrescriptionAddress, PrescriptionAddressError, PrescriptionAddressInput, PrescriptionAddressStep};
+export type {DistanceUnit, PrescriberLicensureNotice};
 export type {PatientSurfaceErrorCode} from './codes';
 export type {NatzarErrorCode} from '../errors';
 
@@ -601,6 +614,13 @@ export interface PrescriptionLinkState {
   transport: 'erx' | 'fax' | null;
   /** The button — `choose` is the only actionable one; the rest label a disabled control. */
   action: PharmacyLinkAction;
+  /**
+   * The picker will open on the delivery-address step: an e-prescribed
+   * prescription that can still be chosen and has no address confirmed for
+   * it yet (`choose()` refuses it with `address_required`). False on a miss,
+   * in a fax zone, and once `action` is not `choose`.
+   */
+  addressRequired: boolean;
 }
 
 /**
@@ -651,7 +671,7 @@ export interface PharmacySearchInput {
   origin?: PharmacySearchOrigin;
   /** Free text — name, city or postal code. */
   query?: string;
-  /** Widen from the default (25 km). */
+  /** Widen from the default (25 km). Always km — label the step in the list's `distanceUnit`. */
   radiusKm?: PharmacySearchRadiusKm;
 }
 
@@ -665,7 +685,41 @@ export interface PharmacySearch {
   origin?: PharmacySearchOrigin;
   /** The one-line home address on file when NO origin exists — geocode it, then `setHomeLocation`. */
   homeAddress?: string;
-  /** Sorted by distance from `origin` when there is one. Only `reachable` rows can be chosen. */
+  /**
+   * The delivery-address step to run BEFORE the list (e-prescribing zones;
+   * `step` is always null in a fax zone). `collect`: ask for the home
+   * address (prefill the ZIP with `zipHint`); `confirm`: show `onFile` with
+   * "Yes, use this address" / "Change address". Answer either with
+   * `setAddress()`. While `step` is set, `pharmacies` is empty.
+   */
+  address: PrescriptionAddressStep;
+  /**
+   * The patient's remembered pharmacy (the one their last prescription
+   * reached), resolved even outside this list — pre-select it, pinned first,
+   * so sending to it again is one tap. Null when there is none, it cannot be
+   * reached, it is the pharmacy this prescription just failed at, or the
+   * address step is pending.
+   */
+  preferred: PharmacyResource | null;
+  /**
+   * The prescriber-licensure notice, or null when there is nothing to warn
+   * about: the delivery address confirmed for this prescription is in a
+   * state its prescribing physician is not licensed in (and your tenant
+   * enforces licensure). NON-BLOCKING — show it as a calm notice above the
+   * list ("Your prescribing doctor isn't registered in {stateName}. Most
+   * states and pharmacies accept prescriptions from out-of-state doctors,
+   * but some pharmacies in some states may refuse it."), never as an error,
+   * and let the patient choose as usual. Null while the address step is
+   * pending.
+   */
+  licensure: PrescriberLicensureNotice | null;
+  /**
+   * The unit to SHOW distances and radii in: `mi` in the United States, `km`
+   * elsewhere. `distanceKm` and `radiusKm` stay kilometres — convert with
+   * `distanceInUnit` (`@natzar/client/contract`).
+   */
+  distanceUnit: DistanceUnit;
+  /** Sorted by distance from `origin` when there is one. Only `reachable` rows can be chosen. Empty while the address step is pending. */
   pharmacies: PharmacyResource[];
 }
 
@@ -864,9 +918,14 @@ export interface PatientClient {
    * kind of session this is — and every call re-checks that on the platform.
    *
    * The flow the platform's own page runs: `pharmacies()` (with the best
-   * origin you have), the patient picks a `reachable` row, `choose()`, then
-   * poll `state()` until `action` reads `sent` — the fax transport confirms
-   * in the thread, and a `failed` status re-opens the picker (choose again).
+   * origin you have); in an e-prescribing zone, while its `address.step` is
+   * set, the address step first — `setAddress()` answers with the list; the
+   * list shows `licensure` (when set) as a calm notice above it and every
+   * distance in its `distanceUnit`; the patient picks a `reachable` row
+   * (`preferred` pre-selected — the notice never blocks it), `choose()`,
+   * then poll `state()` until `action` reads `sent` — the transport confirms
+   * in the thread, and a `failed` status re-opens the picker (choose again;
+   * the confirmed address is kept, so the step is not asked twice).
    *
    * The origin chain that page (and the embed widget) walks: the server's
    * own origin → the geocoded home address (cached via `setHomeLocation`) →
@@ -886,11 +945,26 @@ export interface PatientClient {
      */
     pharmacies(id: string, input?: PharmacySearchInput, signal?: AbortSignal): Promise<PharmacySearch>;
     /**
+     * Answer the address step (`address.step` of `pharmacies()`): the home
+     * address the patient typed, picked from an autocomplete, or confirmed
+     * (`onFile` passed back unchanged), and the pick's location when you
+     * have one — rounded to 3 decimals (≈100 m) before it is sent, plenty
+     * to rank pharmacies by. The platform freezes it on this prescription,
+     * saves it as the patient's home address and answers the list (step
+     * null, ranked from `point`, else the kept home point), so go straight
+     * on to `choose()`. Refused with `invalid_address` (the error's
+     * `details.code` names the field: `street` / `city` / `state` /
+     * `zipCode` / `tooLong`), `not_choosable` (with `details.status`), or
+     * `not_available` in a fax zone.
+     */
+    setAddress(id: string, address: PrescriptionAddressInput, point?: {lat: number; lng: number}, signal?: AbortSignal): Promise<PharmacySearch>;
+    /**
      * Send the prescription to one of the listed pharmacies. Refused with
      * `pharmacy_not_found`, `not_choosable` / `expired` / `lost_race` (the
      * error's `details.status` says where the prescription is now — re-read
-     * `state()`), or `pharmacy_unreachable` (a fax zone and the row has no
-     * verified fax line).
+     * `state()`), `pharmacy_unreachable` (a fax zone and the row has no
+     * verified fax line), or `address_required` (an e-prescribing zone and
+     * no address confirmed yet — run `setAddress()` first).
      */
     choose(id: string, directoryId: string, signal?: AbortSignal): Promise<PharmacyChoice>;
     /**
@@ -1452,6 +1526,23 @@ export async function connectPatient(source: ConnectPatientSource = {}, options:
         };
       },
 
+      setAddress: async (id, address, point, signal) => {
+        const raw = await op<RawPharmacySearch>(
+          'mutation',
+          'embedPrescriptionAddress',
+          {
+            id,
+            // AWSJSON travels stringified, like `pharmacy`.
+            address: JSON.stringify(address),
+            // Omitted — never null — without a pick: the arguments are
+            // nullable, the variables are declared `Float!`.
+            ...(point ? {lat: roundCoordinate(point.lat), lng: roundCoordinate(point.lng)} : {}),
+          },
+          signal,
+        );
+        return toPharmacySearch(raw);
+      },
+
       setHomeLocation: async (id, point, signal) => {
         await op('mutation', 'embedPrescriptionHomeLocation', {id, lat: point.lat, lng: point.lng}, signal);
       },
@@ -1843,6 +1934,7 @@ interface RawPrescriptionLinkState {
   pharmacyName?: string | null;
   transport?: string | null;
   action?: string;
+  addressRequired?: boolean;
 }
 interface RawPharmacySearch {
   status?: string;
@@ -1850,6 +1942,10 @@ interface RawPharmacySearch {
   pharmacyName?: string | null;
   origin?: PharmacySearchOrigin;
   homeAddress?: string;
+  address?: {step?: string | null; onFile?: unknown; zipHint?: string | null} | null;
+  preferred?: PharmacyResource | null;
+  licensure?: unknown;
+  distanceUnit?: string;
   pharmacies?: PharmacyResource[];
 }
 interface RawPharmacyChoice {
@@ -2221,6 +2317,8 @@ function toPrescriptionLinkState(raw: RawPrescriptionLinkState | null | undefine
     pharmacyName: typeof raw?.pharmacyName === 'string' && raw.pharmacyName ? raw.pharmacyName : null,
     transport: raw?.transport === 'erx' || raw?.transport === 'fax' ? raw.transport : null,
     action,
+    // Only an actionable link can be waiting for its address.
+    addressRequired: raw?.addressRequired === true && action === 'choose',
   };
 }
 
@@ -2271,16 +2369,55 @@ function toReferralDocument(raw: RawReferralDocument | null | undefined): Referr
 }
 
 function toPharmacySearch(raw: RawPharmacySearch | null | undefined): PharmacySearch {
+  const preferred = raw?.preferred;
   const result: PharmacySearch = {
     status: PRESCRIPTION_STATUSES.has(raw?.status as PrescriptionStatus) ? (raw!.status as PrescriptionStatus) : 'expired',
     transport: raw?.transport === 'fax' ? 'fax' : 'erx',
     pharmacyName: typeof raw?.pharmacyName === 'string' && raw.pharmacyName ? raw.pharmacyName : null,
+    address: toAddressStep(raw?.address),
+    preferred: preferred && typeof preferred === 'object' && typeof preferred.directoryId === 'string' && preferred.directoryId ? preferred : null,
+    licensure: toLicensureNotice(raw?.licensure),
+    // An unknown or missing unit reads kilometres — the platform's own
+    // fallback for a deployment with no zone.
+    distanceUnit: raw?.distanceUnit === 'mi' ? 'mi' : 'km',
     pharmacies: Array.isArray(raw?.pharmacies) ? raw.pharmacies : [],
   };
   if (raw?.origin && typeof raw.origin === 'object') result.origin = raw.origin;
   if (typeof raw?.homeAddress === 'string' && raw.homeAddress) result.homeAddress = raw.homeAddress;
   return result;
 }
+
+// The notice as the platform answers it, the state's code and name only: a
+// notice without both reads as none (a warning that cannot name the state
+// is not one to show), and nothing else it might carry is passed on.
+function toLicensureNotice(raw: unknown): PrescriberLicensureNotice | null {
+  const r = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null;
+  const state = typeof r?.state === 'string' ? r.state.trim() : '';
+  const stateName = typeof r?.stateName === 'string' ? r.stateName.trim() : '';
+  return state && stateName ? {state, stateName} : null;
+}
+
+// The step as the platform answers it, held to its own invariants: a
+// `confirm` always has an address to confirm (one that does not parse reads
+// as `collect` — asking again is safe, confirming nothing is not), and
+// nothing to ask reads as null.
+function toAddressStep(raw: RawPharmacySearch['address']): PrescriptionAddressStep {
+  const onFile = toPrescriptionAddress(raw?.onFile);
+  const step = raw?.step === 'confirm' ? (onFile ? 'confirm' : 'collect') : raw?.step === 'collect' ? 'collect' : null;
+  return {step, onFile, zipHint: step === 'collect' && typeof raw?.zipHint === 'string' && raw.zipHint ? raw.zipHint : null};
+}
+
+function toPrescriptionAddress(raw: unknown): PrescriptionAddress | null {
+  const r = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null;
+  const line = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+  if (!r || !line(r.street) || !line(r.city) || !line(r.state) || !line(r.zipCode)) return null;
+  const street2 = line(r.street2);
+  return {street: line(r.street), ...(street2 ? {street2} : {}), city: line(r.city), state: line(r.state), zipCode: line(r.zipCode), country: 'US'};
+}
+
+// A pick's location, to the precision the platform's own pickers send
+// (≈100 m): enough to rank pharmacies, no more of the patient's home.
+const roundCoordinate = (v: number): number => Math.round(v * 1000) / 1000;
 
 // The platform names attachments by their stored ref and does not always
 // carry a type; a best-effort guess from the extension keeps `mimeType`

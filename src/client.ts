@@ -134,6 +134,8 @@ import type {
   ChoosePharmacyResponse,
   SetHomeLocationRequest,
   SetHomeLocationResponse,
+  SetPrescriptionAddressRequest,
+  SetPrescriptionAddressResponse,
   AddPharmacyRequest,
   AddPharmacyResponse,
   GetReferralResponse,
@@ -1120,19 +1122,51 @@ export class NatzarClient {
     /**
      * The pharmacy picker's list, sorted by distance from the origin you
      * pass (`lat`/`lng` + `source`) — else from the patient's cached home,
-     * else unranked with `homeAddress` for you to geocode. A prescription
-     * past choosing answers an EMPTY list with its status, never an error, so
-     * a picker settles on one read. A read: safe to repeat.
+     * else unranked with `homeAddress` for you to geocode. `preferred` is the
+     * patient's remembered pharmacy (pre-select it). A prescription past
+     * choosing answers an EMPTY list with its status, never an error, so a
+     * picker settles on one read. In an e-prescribing deployment the list is
+     * also empty while `address.step` is `collect` or `confirm`: answer it
+     * with `setAddress`, which returns the list. `licensure`, when set, is a
+     * NON-BLOCKING notice that the prescribing physician is not licensed in
+     * the delivery address's state — show it calmly above the list. Print
+     * distances in `distanceUnit` (`mi` in the US; `distanceKm` and
+     * `radiusKm` stay km). A read: safe to repeat.
      */
     pharmacies: (id: string, query: ListPharmaciesQuery = {}, opts?: CallOptions): Promise<ListPharmaciesResponse> =>
       this.get(`/prescriptions/${enc(id)}/pharmacies`, query as RequestArgs['query'], opts),
+
+    /**
+     * Answer the picker's delivery-address step (e-prescribing deployments;
+     * `address.step` on the list): the address the patient typed, picked
+     * from your autocomplete, or confirmed (`address.onFile` sent back
+     * unchanged), with the pick's `lat`/`lng` when you have them. The
+     * platform freezes it on this prescription, saves it as the patient's
+     * home address and answers the list — `address.step` null, ranked from
+     * the point, `licensure` judged against the new address — so go straight
+     * on to `choosePharmacy`.
+     *
+     * `422 invalid_address` with `details.code` (`street` / `city` /
+     * `state` / `zipCode` / `tooLong`) names the field to fix;
+     * `422 invalid_location` for an off-Earth point; `409
+     * prescription_not_choosable` once settled; `409
+     * address_not_applicable` on a faxed prescription. Not auto-retried
+     * (like every PUT here), though repeating it while the prescription is
+     * choosable writes the same state.
+     */
+    setAddress: (id: string, body: SetPrescriptionAddressRequest, opts?: CallOptions): Promise<SetPrescriptionAddressResponse> =>
+      this.put(`/prescriptions/${enc(id)}/address`, body, opts),
 
     /**
      * Send the prescription to one of the listed pharmacies. `404
      * pharmacy_not_found`; `409 prescription_not_choosable` when it is no
      * longer waiting for one (the body's `status` says where it is now —
      * re-read and render that); `409 pharmacy_unreachable` in a fax zone
-     * when the row has no verified fax line.
+     * when the row has no verified fax line. E-prescribing: `409
+     * address_required` while no delivery address is confirmed — run
+     * `setAddress` first, or pass `address` here to confirm and choose in
+     * one call (`422 invalid_address` when it is not one; ignored in a fax
+     * zone).
      *
      * NOT retried on a transport fault: the platform records exactly one
      * choice, and a replay after an ambiguous failure is answered by `get`,

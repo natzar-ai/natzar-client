@@ -1,6 +1,6 @@
 {
   "name": "@natzar/client",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "description": "Official TypeScript client for the Natzar Partner API — AI health-assistant chat, async physician consults, live video consults, prescriptions with an in-app pharmacy picker, referrals as signed PDF requisitions, non-blocking referral requests, a browser-side patient surface and physician workspace, the natzar() embed middleware with React components, and webhook signature verification.",
   "license": "MIT",
   "repository": {

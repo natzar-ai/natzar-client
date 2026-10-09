@@ -68,10 +68,14 @@ export const PATIENT_SURFACE_CODES = [
   'payment_already_used',
   'payment_check_failed',
   // Prescriptions (embedPrescriptionPharmacies / embedPrescriptionChoose /
-  // embedPrescriptionHomeLocation / embedPrescriptionAddPharmacy) — the
-  // patient-ops vocabulary, which the REST plane maps onto its own codes
-  // (`not_choosable` there is `prescription_not_choosable`); the embed
-  // surface reports it verbatim, so it is pinned verbatim here.
+  // embedPrescriptionHomeLocation / embedPrescriptionAddPharmacy /
+  // embedPrescriptionAddress) — the patient-ops vocabulary, which the REST
+  // plane maps onto its own codes (`not_choosable` there is
+  // `prescription_not_choosable`, `not_available` on the address step
+  // `address_not_applicable`); the embed surface reports it verbatim, so it
+  // is pinned verbatim here. `invalid_address` carries the field in
+  // `details.code`; `address_required` is a choice made before the
+  // e-prescribing address step was answered.
   'pharmacy_not_found',
   'not_choosable',
   'pharmacy_unreachable',
@@ -79,6 +83,8 @@ export const PATIENT_SURFACE_CODES = [
   'invalid_location',
   'not_available',
   'invalid_pharmacy',
+  'invalid_address',
+  'address_required',
   // Clinical protocols (consent / join / book / checkout): the clinic's
   // required symptom intake is not complete, needs an explicit clinician
   // handoff, could not be read, or the link's authorization went stale. The

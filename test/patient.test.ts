@@ -281,9 +281,9 @@ describe('connectPatient — timeline enrichment', () => {
       embedState: {},
       embedAgentMessages: {
         messages: [
-          msg('agent', 'A physician can see you now — tap the button below.\n\nhttps://us.app.natzar.ai/telehealth?id=tele_1', '2026-08-19T09:00:00Z', 'a'),
-          msg('system', 'Rate your consultation: https://us.app.natzar.ai/async?id=async_1', '2026-08-19T09:01:00Z', 'b'),
-          msg('agent', 'Book a time: https://us.app.natzar.ai/async?id=unknown_1', '2026-08-19T09:02:00Z', 'c'),
+          msg('agent', 'A physician can see you now — tap the button below.\n\nhttps://app.natzar.ai/telehealth?id=tele_1', '2026-08-19T09:00:00Z', 'a'),
+          msg('system', 'Rate your consultation: https://app.natzar.ai/async?id=async_1', '2026-08-19T09:01:00Z', 'b'),
+          msg('agent', 'Book a time: https://app.natzar.ai/async?id=unknown_1', '2026-08-19T09:02:00Z', 'c'),
         ],
         linkStates: {tele_1: {kind: 'telehealth', action: 'join'}, async_1: {kind: 'async', action: 'rate'}},
       },
@@ -309,8 +309,8 @@ describe('connectPatient — timeline enrichment', () => {
       embedState: {},
       embedAgentMessages: {
         messages: [
-          msg('system', 'Choose a time: https://us.app.natzar.ai/book?id=booked_1', '2026-08-19T09:00:00Z', 'a'),
-          msg('system', 'Join when ready: https://us.app.natzar.ai/telehealth?id=tele_2', '2026-08-19T09:01:00Z', 'b'),
+          msg('system', 'Choose a time: https://app.natzar.ai/book?id=booked_1', '2026-08-19T09:00:00Z', 'a'),
+          msg('system', 'Join when ready: https://app.natzar.ai/telehealth?id=tele_2', '2026-08-19T09:01:00Z', 'b'),
         ],
         linkStates: {},
       },
@@ -674,7 +674,7 @@ describe('connectPatient — telehealth', () => {
   it('rates a video consult from its rating entry, naming the consult', async () => {
     const {calls, fetchLike} = teleOps({
       embedAgentMessages: {
-        messages: [msg('system', 'Rate your call: https://us.app.natzar.ai/telehealth?id=tele_1', '2026-08-19T09:00:00Z', 'a')],
+        messages: [msg('system', 'Rate your call: https://app.natzar.ai/telehealth?id=tele_1', '2026-08-19T09:00:00Z', 'a')],
         linkStates: {tele_1: {kind: 'telehealth', action: 'rate'}},
       },
     });
@@ -698,7 +698,7 @@ describe('connectPatient — telehealth', () => {
 // refused by AppSync before the resolver runs.
 
 describe('connectPatient — prescriptions', () => {
-  const RX_BODY = 'Dr. Chen sent you a prescription. Choose your pharmacy below.\n\nhttps://ca.app.natzar.ai/pharmacy?id=rx_1\n\nThis link is active for the next 24 hours.';
+  const RX_BODY = 'Dr. Chen sent you a prescription. Choose your pharmacy below.\n\nhttps://app.ca.natzar.ai/pharmacy?id=rx_1\n\nThis link is active for the next 24 hours.';
 
   it('turns the pharmacy link into a `choose` action on the prescription id, leaving the thread id on the entry', async () => {
     const {fetchLike} = stub({
@@ -743,15 +743,26 @@ describe('connectPatient — prescriptions', () => {
   it('drives the picker on the patient session with the schema-exact variable types', async () => {
     const hit = {directoryId: 'ca:ON:12345', name: 'Main St Pharmacy', address: '1 Main St', city: 'Toronto', region: 'ON', reachable: true, lat: 43.65, lng: -79.38, distanceKm: 1.2};
     const {calls, fetchLike} = stub({
-      embedPrescriptionState: {status: 'awaiting_pharmacy', expired: false, expiresAt: '2026-09-19T09:00:00Z', pharmacyName: null, transport: 'fax', action: 'choose'},
-      embedPrescriptionPharmacies: {ok: true, status: 'awaiting_pharmacy', transport: 'fax', pharmacyName: null, origin: {lat: 43.65, lng: -79.38, source: 'device'}, pharmacies: [hit]},
+      embedPrescriptionState: {status: 'awaiting_pharmacy', expired: false, expiresAt: '2026-09-19T09:00:00Z', pharmacyName: null, transport: 'fax', action: 'choose', addressRequired: false},
+      embedPrescriptionPharmacies: {
+        ok: true,
+        status: 'awaiting_pharmacy',
+        transport: 'fax',
+        pharmacyName: null,
+        origin: {lat: 43.65, lng: -79.38, source: 'device'},
+        address: {step: null, onFile: null, zipHint: null},
+        preferred: hit,
+        licensure: null,
+        distanceUnit: 'km',
+        pharmacies: [hit],
+      },
       embedPrescriptionChoose: {ok: true, status: 'transmitting', attempt: 1, pharmacyName: 'Main St Pharmacy', transport: 'fax'},
       embedPrescriptionHomeLocation: {ok: true},
     });
     const care = await connect({fetch: fetchLike});
 
     const state = await care.prescriptions.state('rx_1');
-    assert.deepEqual(state, {status: 'awaiting_pharmacy', expired: false, expiresAt: '2026-09-19T09:00:00Z', pharmacyName: null, transport: 'fax', action: 'choose'});
+    assert.deepEqual(state, {status: 'awaiting_pharmacy', expired: false, expiresAt: '2026-09-19T09:00:00Z', pharmacyName: null, transport: 'fax', action: 'choose', addressRequired: false});
     const stateCall = calls.find((c) => c.name === 'embedPrescriptionState')!;
     assert.match(stateCall.query, /^query Op/, 'the state is a query, like embedState');
     assert.match(stateCall.query, /\$id: String!/);
@@ -761,6 +772,10 @@ describe('connectPatient — prescriptions', () => {
     assert.equal(list.pharmacies.length, 1);
     assert.equal(list.transport, 'fax');
     assert.deepEqual(list.origin, {lat: 43.65, lng: -79.38, source: 'device'});
+    assert.deepEqual(list.address, {step: null, onFile: null, zipHint: null}, 'a fax zone never asks for the address');
+    assert.deepEqual(list.preferred, hit);
+    assert.equal(list.licensure, null);
+    assert.equal(list.distanceUnit, 'km', 'a Canadian deployment shows kilometres');
     assert.equal('ok' in list, false, 'the in-band ok flag never reaches the partner');
     const search = calls.find((c) => c.name === 'embedPrescriptionPharmacies')!;
     assert.match(search.query, /^query Op/, 'the search is a query');
@@ -783,6 +798,100 @@ describe('connectPatient — prescriptions', () => {
     assert.match(home.query, /\$lat: Float!/, 'a.float() is Float on the wire');
     assert.match(home.query, /\$lng: Float!/);
     assert.deepEqual(home.variables, {id: 'rx_1', lat: 43.7, lng: -79.4});
+  });
+
+  it('runs the e-prescribing address step: the search answers it, setAddress sends it stringified and answers the list', async () => {
+    const home = {street: '350 Fifth Avenue', street2: 'Suite 3300', city: 'New York', state: 'NY', zipCode: '10118', country: 'US'};
+    const cvs = {directoryId: 'us:ncpdp:1234567', name: 'CVS Pharmacy', address: '1 W 34th St', reachable: true, lat: 40.7496, lng: -73.9877, distanceKm: 0.1};
+    const {calls, fetchLike} = stub({
+      embedPrescriptionState: {status: 'awaiting_pharmacy', expired: false, expiresAt: '2026-09-19T09:00:00Z', pharmacyName: null, transport: 'erx', action: 'choose', addressRequired: true},
+      embedPrescriptionPharmacies: {ok: true, status: 'awaiting_pharmacy', transport: 'erx', pharmacyName: null, address: {step: 'collect', onFile: null, zipHint: '10118'}, preferred: null, licensure: null, distanceUnit: 'mi', pharmacies: []},
+      embedPrescriptionAddress: {
+        ok: true,
+        status: 'awaiting_pharmacy',
+        transport: 'erx',
+        pharmacyName: null,
+        origin: {lat: 40.749, lng: -73.986, source: 'address', label: 'Home'},
+        address: {step: null, onFile: home, zipHint: null},
+        preferred: cvs,
+        licensure: {state: 'NY', stateName: 'New York'},
+        distanceUnit: 'mi',
+        pharmacies: [cvs],
+      },
+    });
+    const care = await connect({fetch: fetchLike});
+
+    assert.equal((await care.prescriptions.state('rx_1')).addressRequired, true);
+    const pending = await care.prescriptions.pharmacies('rx_1');
+    assert.deepEqual(pending.address, {step: 'collect', onFile: null, zipHint: '10118'});
+    assert.equal(pending.preferred, null);
+    assert.equal(pending.licensure, null, 'no notice while the address step is pending');
+    assert.equal(pending.distanceUnit, 'mi');
+    assert.deepEqual(pending.pharmacies, []);
+
+    const list = await care.prescriptions.setAddress(
+      'rx_1',
+      {street: '350 Fifth Avenue', street2: 'Suite 3300', city: 'New York', state: 'NY', zipCode: '10118'},
+      {lat: 40.74844, lng: -73.98566},
+    );
+    assert.deepEqual(list.address, {step: null, onFile: home, zipHint: null});
+    assert.equal(list.preferred?.directoryId, 'us:ncpdp:1234567');
+    assert.equal(list.pharmacies.length, 1);
+    assert.deepEqual(list.licensure, {state: 'NY', stateName: 'New York'}, 'the notice judged against the address just confirmed');
+    assert.equal(list.distanceUnit, 'mi');
+    assert.equal('ok' in list, false);
+    const call = calls.find((c) => c.name === 'embedPrescriptionAddress')!;
+    assert.match(call.query, /^mutation Op/);
+    assert.match(call.query, /\$address: AWSJSON!/, 'a.json() is AWSJSON on the wire');
+    assert.match(call.query, /\$lat: Float!/);
+    assert.deepEqual(JSON.parse(String(call.variables.address)), {street: '350 Fifth Avenue', street2: 'Suite 3300', city: 'New York', state: 'NY', zipCode: '10118'}, 'AWSJSON travels stringified');
+    assert.equal(call.variables.lat, 40.748, 'the pick travels at the pickers\' precision (3 decimals)');
+    assert.equal(call.variables.lng, -73.986);
+  });
+
+  it('omits the point when there is none — the address op\'s lat/lng are nullable, never sent as null', async () => {
+    const {calls, fetchLike} = stub({
+      embedPrescriptionAddress: {ok: true, status: 'awaiting_pharmacy', transport: 'erx', pharmacyName: null, homeAddress: '350 Fifth Avenue, New York, NY 10118, US', address: {step: null, onFile: null, zipHint: null}, preferred: null, pharmacies: []},
+    });
+    const list = await (await connect({fetch: fetchLike})).prescriptions.setAddress('rx_1', {street: '350 Fifth Avenue', city: 'New York', state: 'NY', zipCode: '10118'});
+    assert.equal(list.homeAddress, '350 Fifth Avenue, New York, NY 10118, US', 'without a point the platform offers the line to geocode');
+    const call = calls[0];
+    assert.deepEqual(Object.keys(call.variables).sort(), ['address', 'id']);
+    assert.doesNotMatch(call.query, /\$lat|\$lng/);
+  });
+
+  it('holds the address step to its invariants and defaults the new fields on a sparse answer', async () => {
+    const {fetchLike} = stub({
+      embedPrescriptionPharmacies: {ok: true, status: 'awaiting_pharmacy', transport: 'erx', pharmacyName: null, address: {step: 'confirm', onFile: {street: '', city: 'New York'}}, preferred: {name: 'no id'}, pharmacies: []},
+    });
+    const care = await connect({fetch: fetchLike});
+    const list = await care.prescriptions.pharmacies('rx_1');
+    assert.deepEqual(list.address, {step: 'collect', onFile: null, zipHint: null}, 'a confirm with nothing to confirm asks again');
+    assert.equal(list.preferred, null);
+
+    const bare = stub({embedPrescriptionPharmacies: {ok: true, status: 'sent', transport: 'erx', pharmacyName: 'CVS', pharmacies: []}});
+    const settled = await (await connect({fetch: bare.fetchLike})).prescriptions.pharmacies('rx_1');
+    assert.deepEqual(settled.address, {step: null, onFile: null, zipHint: null});
+    assert.equal(settled.preferred, null);
+    assert.equal(settled.licensure, null);
+    assert.equal(settled.distanceUnit, 'km', 'a missing unit reads kilometres');
+  });
+
+  it('passes the licensure notice on as the state\'s code and name only, and reads an unknown unit as kilometres', async () => {
+    const answer = (licensure: unknown, distanceUnit: unknown) =>
+      stub({embedPrescriptionPharmacies: {ok: true, status: 'awaiting_pharmacy', transport: 'erx', pharmacyName: null, address: {step: null, onFile: null, zipHint: null}, preferred: null, licensure, distanceUnit, pharmacies: []}});
+    const read = async (licensure: unknown, distanceUnit: unknown) =>
+      (await connect({fetch: answer(licensure, distanceUnit).fetchLike})).prescriptions.pharmacies('rx_1');
+
+    const warned = await read({state: ' NJ ', stateName: 'New Jersey', extra: 'dropped'}, 'mi');
+    assert.deepEqual(warned.licensure, {state: 'NJ', stateName: 'New Jersey'});
+    assert.equal(warned.distanceUnit, 'mi');
+    // A notice that cannot name the state is not one to show.
+    for (const broken of [{state: 'NJ'}, {stateName: 'New Jersey'}, {state: '', stateName: 'New Jersey'}, {state: 7, stateName: 'New Jersey'}, 'NJ', []]) {
+      assert.equal((await read(broken, 'mi')).licensure, null, JSON.stringify(broken));
+    }
+    assert.equal((await read(null, 'miles')).distanceUnit, 'km');
+    assert.equal((await read(null, 'km')).distanceUnit, 'km');
   });
 
   it('sends nothing it was not given on a search — no origin, no query, no radius', async () => {
@@ -820,6 +929,14 @@ describe('connectPatient — prescriptions', () => {
     assert.equal(state.transport, null);
   });
 
+  it('refuses an address with the field to fix in the details, the REST plane\'s status', async () => {
+    const {fetchLike} = stub({embedPrescriptionAddress: {ok: false, error: 'invalid_address', code: 'state'}});
+    await assert.rejects(
+      async () => (await connect({fetch: fetchLike})).prescriptions.setAddress('rx_1', {street: '1 Main St', city: 'Toronto', state: 'ON', zipCode: 'M5V 2T6'}),
+      (e: {code?: string; status?: number; details?: {code?: string}}) => e.code === 'invalid_address' && e.status === 422 && e.details?.code === 'state',
+    );
+  });
+
   it('maps a refused choice onto the SAME error the server half throws, with the status in the details', async () => {
     const {fetchLike} = stub({
       embedPrescriptionChoose: {ok: false, error: 'not_choosable', status: 'sent'},
@@ -831,7 +948,7 @@ describe('connectPatient — prescriptions', () => {
   });
 
   it('reports the whole refusal vocabulary by its own code, never as internal_error', async () => {
-    for (const error of ['pharmacy_not_found', 'not_choosable', 'expired', 'pharmacy_unreachable', 'lost_race', 'invalid_location', 'not_available', 'invalid_pharmacy', 'not_found']) {
+    for (const error of ['pharmacy_not_found', 'not_choosable', 'expired', 'pharmacy_unreachable', 'lost_race', 'invalid_location', 'not_available', 'invalid_pharmacy', 'invalid_address', 'address_required', 'not_found']) {
       const {fetchLike} = stub({embedPrescriptionChoose: {ok: false, error}});
       await assert.rejects(
         async () => (await connect({fetch: fetchLike})).prescriptions.choose('rx_1', 'x'),
@@ -851,6 +968,8 @@ describe('connectPatient — prescriptions', () => {
       pharmacy_not_found: 404,
       invalid_location: 422,
       invalid_pharmacy: 422,
+      invalid_address: 422,
+      address_required: 409,
       invalid_request: 400,
       not_choosable: 409,
       lost_race: 409,
@@ -879,7 +998,7 @@ describe('connectPatient — prescriptions', () => {
 
 describe('connectPatient — referrals', () => {
   const REF_BODY =
-    'Dr. Chen has sent you a referral for laboratory tests. Simply show it or hand it to the laboratory — they will take it from there. Tap to view your referral: https://ca.app.natzar.ai/referral?id=ref_1\n\nThis link is active for the next 30 days.';
+    'Dr. Chen has sent you a referral for laboratory tests. Simply show it or hand it to the laboratory — they will take it from there. Tap to view your referral: https://app.ca.natzar.ai/referral?id=ref_1\n\nThis link is active for the next 30 days.';
 
   it('turns the referral link into a `view` action on the referral id, strips the validity sentence and awaits nothing', async () => {
     const {fetchLike} = stub({

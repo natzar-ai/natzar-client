@@ -21,13 +21,13 @@ import {
 import {REFERRAL_LINK_VALIDITY_SENTENCES} from '../dist/esm/contract/index.js';
 
 const ASYNC_BODY =
-  'A physician can take a closer look. Tap to accept:\n\nhttps://us.app.natzar.ai/async?id=t_1gbX-hCHDD';
-const TELE_BODY = 'Your video consultation is ready: https://us.app.natzar.ai/telehealth?id=4H1-sGULhQQi';
-const BOOK_BODY = 'Choose a time for your appointment:\n\nhttps://us.app.natzar.ai/book?id=sch_9';
+  'A physician can take a closer look. Tap to accept:\n\nhttps://app.natzar.ai/async?id=t_1gbX-hCHDD';
+const TELE_BODY = 'Your video consultation is ready: https://app.natzar.ai/telehealth?id=4H1-sGULhQQi';
+const BOOK_BODY = 'Choose a time for your appointment:\n\nhttps://app.natzar.ai/book?id=sch_9';
 const RX_BODY =
-  'Dr. Chen sent you a prescription. Choose your pharmacy below.\n\nhttps://ca.app.natzar.ai/pharmacy?id=rx_Ab12-cD\n\nThis link is active for the next 24 hours.';
+  'Dr. Chen sent you a prescription. Choose your pharmacy below.\n\nhttps://app.ca.natzar.ai/pharmacy?id=rx_Ab12-cD\n\nThis link is active for the next 24 hours.';
 const REF_BODY =
-  'Dr. Chen has sent you a referral for laboratory tests. Simply show it or hand it to the laboratory — they will take it from there. Tap to view your referral: https://ca.app.natzar.ai/referral?id=ref_Zz9-Qq\n\nThis link is active for the next 30 days.';
+  'Dr. Chen has sent you a referral for laboratory tests. Simply show it or hand it to the laboratory — they will take it from there. Tap to view your referral: https://app.ca.natzar.ai/referral?id=ref_Zz9-Qq\n\nThis link is active for the next 30 days.';
 
 test('links are detected by shape, with the consult id extracted', () => {
   assert.deepEqual(detectLink(ASYNC_BODY), {kind: 'async', consultId: 't_1gbX-hCHDD'});
@@ -178,7 +178,7 @@ test('a booking link stays `book` while the consult is open and dies with it', (
 });
 
 test('the pharmacy action follows the effective status: only a waiting prescription is choosable', () => {
-  const base = {id: 'rx_1', externalPatientId: 'u_1', consultId: 't_1', transport: 'fax', pharmacyName: null, createdAt: ''} as const;
+  const base = {id: 'rx_1', externalPatientId: 'u_1', consultId: 't_1', transport: 'fax', pharmacyName: null, addressRequired: false, createdAt: ''} as const;
   const open = {expired: false, expiresAt: '2026-09-19T09:00:00.000Z'} as const;
   // Pinned: the window is judged against the clock passed in, and a wall
   // clock past `expiresAt` would turn a "choosable" fixture into an expired one.
@@ -205,6 +205,7 @@ test('the pharmacy link expires by the clock, so a card can run its own countdow
     transport: 'erx',
     pharmacyName: null,
     action: 'choose',
+    addressRequired: true,
     createdAt: '',
   } as const;
   assert.equal(pharmacyActionFor(rx, Date.parse('2026-09-19T08:59:59.000Z')), 'choose');
@@ -289,6 +290,7 @@ test('resolveLinkActions reads a prescription for a pharmacy link and carries th
             transport: 'fax',
             pharmacyName: 'Main St Pharmacy',
             action: 'sent',
+            addressRequired: false,
             createdAt: '2026-09-18T09:00:00.000Z',
           },
         }),
