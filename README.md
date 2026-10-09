@@ -16,10 +16,11 @@ physician's workspace inside your own portal).
 npm install @natzar/client
 ```
 
-US deployments now use **us-east-1** (DR **us-west-1**). Until the new API
-Gateway URLs are available, the SDK requires `NATZAR_API_URL` or an explicit
-`baseUrl` for hosted environments. Use the URL from the new deployment,
-including `/v1`; the old API IDs cannot be transferred between regions.
+Each hosted deployment serves its REST API from a fixed host, built in:
+`https://api.natzar.ai/v1` (US production), `https://api.ca.natzar.ai/v1`
+(Canada production), `https://api-stage.natzar.dev/v1` and
+`https://api-dev.natzar.dev/v1`. Your key's prefix picks the right one.
+`NATZAR_API_URL` (or `baseUrl`) is needed only for a sandbox, or to override.
 
 ---
 
@@ -51,7 +52,7 @@ app.use('/natzar', natzar({
 ```
 
 Configuration, not code: `NATZAR_API_KEY` in the server environment (its prefix
-selects the environment and zone), plus `NATZAR_API_URL` from the target deployment, and the
+selects the environment and zone, and with it the API host), and the
 page origin registered in the console's **Embedding** panel (or
 `client.embed.setOrigins`). See [The embed middleware](#the-embed-middleware-natzarclientserver).
 
@@ -342,9 +343,10 @@ if (list.homeAddress) {
   await care.prescriptions.setHomeLocation(id, point);
 }
 
-// 2. The patient picks a `reachable` row. Fax zones: a row without a fax on
-//    file cannot be chosen — offer addPharmacy (below) instead.
-const chosen = await care.prescriptions.choose(id, list.pharmacies[0].directoryId);
+// 2. The patient picks a `reachable` row — `list.preferred` (the pharmacy
+//    their last prescription reached) pre-selected. Fax zones: a row without
+//    a fax on file cannot be chosen — offer addPharmacy (below) instead.
+const chosen = await care.prescriptions.choose(id, (list.preferred ?? list.pharmacies[0]).directoryId);
 // → {status: 'transmitting', pharmacyName, transport: 'erx' | 'fax'}
 
 // 3. Poll the state until it settles; the thread gets the confirmation too.
@@ -352,6 +354,69 @@ const state = await care.prescriptions.state(id);
 state.action;   // 'choose' | 'sent' | 'expired' | 'revoked' — never throws for a miss
 state.status;   // 'awaiting_pharmacy' | 'transmitting' | 'sent' | 'failed' | 'revoked' | 'expired'
 ```
+
+**The address step (US, e-prescribing).** The network needs a structured
+delivery address and the platform's signup asks for a ZIP code only, so in an
+e-prescribing zone `pharmacies()` first answers `address.step` — with an
+EMPTY list — until the patient has given their home address once and
+confirmed it for this prescription (`state.addressRequired` says the same on
+the card):
+
+```ts
+const list = await care.prescriptions.pharmacies(id);
+if (list.address.step) {
+  // 'collect' — no address on file: ask for street, apt/unit, city, state,
+  //             ZIP (prefill the ZIP with list.address.zipHint)
+  // 'confirm' — list.address.onFile: "Yes, use this address" (send it back
+  //             unchanged) or "Change address" (the same form, prefilled)
+  const {address, point} = await askForAddress(list.address);   // {street, street2?, city, state, zipCode}, the pick's {lat, lng}?
+  const listed = await care.prescriptions.setAddress(id, address, point);
+  // → the list itself: address.step null, ranked from the point; choose() next
+}
+```
+
+Run the autocomplete in the patient's own browser (Google Places, or yours) —
+the platform receives only the submitted address and the point, rounded to 3
+decimals. The address is saved as the patient's home address (every later
+prescription only asks to confirm it) and frozen on this prescription, so a
+re-choice after a failed transmission is not asked again. `setAddress`
+rejects with `invalid_address` (`error.details.code`: `street` / `city` /
+`state` / `zipCode` / `tooLong` — the field to fix), `not_choosable`, or
+`not_available` in a fax zone, where `address.step` is always null; a
+`choose()` before the step is answered rejects with `address_required`.
+
+**The licensure notice and the distance unit.** Every list carries two more
+fields:
+
+```ts
+import {distanceInUnit} from '@natzar/client/contract';
+
+// A NON-BLOCKING notice: the confirmed delivery address is in a state the
+// prescribing physician is not licensed in (only where your tenant enforces
+// licensure). Show it calmly above the list — not as an error — and let the
+// patient choose as usual.
+if (list.licensure) {
+  showNotice(`Your prescribing doctor isn't registered in ${list.licensure.stateName}. ` +
+    'Most states and pharmacies accept prescriptions from out-of-state doctors, ' +
+    'but some pharmacies in some states may refuse it.');
+}
+
+// Distances stay km on the wire; print them in the deployment's unit
+// ('mi' in the United States, 'km' elsewhere).
+const label = (km: number) => {
+  const n = distanceInUnit(km, list.distanceUnit);
+  return n === 0 ? `< 0.1 ${list.distanceUnit}` : `${n.toLocaleString()} ${list.distanceUnit}`;
+};
+```
+
+`licensure` is null while the address step is pending, so look for it on the
+list `setAddress` answers (it is judged against the address just confirmed)
+and on every later read. `stateName` is English; localise from the
+two-letter `state` when you render another language. `radiusKm` stays km
+too: label the "search wider" steps in the list's unit, rounded to the
+nearest whole unit (the platform's own pickers read 25 / 50 / 100 km as
+16 / 31 / 62 mi; the US search covers that many whole miles, so never round
+down).
 
 `state.status === 'failed'` means the transport gave up — the action reads
 `choose` again and the patient picks another pharmacy. In fax zones a
@@ -366,7 +431,8 @@ It is not chosen yet: the platform faxes a one-page probe to the line, and a
 delivered probe chooses that pharmacy for this prescription on its own — keep
 polling `state()` after `probe: 'sent'`. A refused choice rejects with
 `not_choosable` / `expired` / `lost_race` (`error.details.status` says where
-the prescription is now), `pharmacy_not_found` or `pharmacy_unreachable`;
+the prescription is now), `pharmacy_not_found`, `pharmacy_unreachable` or
+`address_required`;
 `addPharmacy` with `invalid_pharmacy` (`error.details.code` names the field)
 or `not_available` outside fax zones. These are the patient surface's own
 spellings (`PatientSurfaceErrorCode`), and `isErrorCode` accepts them:
@@ -761,7 +827,7 @@ app.all('/natzar/*', (c) => nz.fetch(c.req.raw, c.env));   // env may carry NATZ
 | `onEvent(event, req)` / `dedupe` | Verified webhooks at `POST {mount}/webhook`. At-least-once: dedupe on `event.id` (`dedupe: {seen, forget?}`); a throw answers 500 so Natzar retries. |
 | `surfaces` | Default the tags' surfaces; `'headless'` and `'native'` must be listed. |
 | `origins` | Page origins allowed to call cross-origin (exact; CORS only for them). |
-| `apiKey`, `webhookSecret`, `apiUrl` | Default `NATZAR_API_KEY`, `NATZAR_WEBHOOK_SECRET`, `NATZAR_API_URL`. The key prefix selects the environment and zone; supply the API URL from that deployment. |
+| `apiKey`, `webhookSecret`, `apiUrl` | Default `NATZAR_API_KEY`, `NATZAR_WEBHOOK_SECRET`, `NATZAR_API_URL`. The key prefix selects the environment, zone and built-in API host; `apiUrl` is needed only for a sandbox. |
 | `basePath` | The full path you serve it under (`/api/natzar`): only `{basePath}/<route>` is answered. Recommended on Fetch runtimes and bare Node servers; an Express mount is detected. |
 
 What it enforces so you do not have to: `POST` + JSON + ≤ 4 KB +
@@ -862,8 +928,7 @@ The server client covers every route, one method per endpoint.
 
 ```ts
 const natzar = new NatzarClient({
-  apiKey: process.env.NATZAR_API_KEY!,   // the prefix selects environment and zone
-  baseUrl: process.env.NATZAR_API_URL!, // target deployment API, including /v1
+  apiKey: process.env.NATZAR_API_KEY!, // the prefix selects environment, zone and API host
 });
 
 await natzar.patients.upsert({...});
@@ -910,12 +975,27 @@ The same pharmacy picker is reachable from your server, for a surface you
 build over the REST API rather than the browser module:
 
 ```ts
-const {prescription} = await natzar.prescriptions.get(id);           // status, window, action
-const {pharmacies} = await natzar.prescriptions.pharmacies(id, {lat, lng, source: 'device', radiusKm: 50});
+const {prescription} = await natzar.prescriptions.get(id);           // status, window, action, addressRequired
+const list = await natzar.prescriptions.pharmacies(id, {lat, lng, source: 'device', radiusKm: 50});
+// e-prescribing zones: while list.address.step is 'collect' | 'confirm' the list is empty
+await natzar.prescriptions.setAddress(id, {address: {street, street2, city, state, zipCode}, lat, lng});   // → the list
 await natzar.prescriptions.choosePharmacy(id, {directoryId});         // 409 prescription_not_choosable past choosing
+await natzar.prescriptions.choosePharmacy(id, {directoryId, address}); // or confirm the address with the choice
 await natzar.prescriptions.setHomeLocation(id, {lat, lng});
 await natzar.prescriptions.addPharmacy(id, {name, address, fax});     // fax zones; 201 pending_verification
 ```
+
+The list's `preferred` is the patient's remembered pharmacy (the one their
+last prescription reached, on any surface) — pre-select it. In an
+e-prescribing deployment the list carries an address step first
+(`address.step`, the patient's address on file as `address.onFile` for the
+confirmation): answer it with `setAddress` (`422 invalid_address` with
+`details.code` naming the field) or pass `address` with the choice; a choice
+without one is `409 address_required`. `list.licensure` (`{state,
+stateName}` or null) is the non-blocking prescriber-licensure notice to show
+above the list, and `list.distanceUnit` (`'mi'` | `'km'`) the unit to print
+`distanceKm` in (`distanceInUnit` from `@natzar/client/contract`). See the
+Partner API's prescriptions guide for the whole flow.
 
 `GET /v1/patients/state` also carries `prescription` — the newest one still
 waiting for its pharmacy — so a screen can offer the picker without reading
@@ -1179,6 +1259,42 @@ import {postAgentMessageSchema} from '@natzar/client/contract';
 
 ## Changelog
 
+### 0.19.0 — the delivery address and the remembered pharmacy
+
+- **Server client**: `prescriptions.setAddress(id, {address, lat?, lng?})`
+  (`PUT /v1/prescriptions/{id}/address`) answers the e-prescribing picker's
+  address step and returns the list; `choosePharmacy` accepts an optional
+  `address` to confirm and choose in one call.
+- **Patient client**: `care.prescriptions.setAddress(id, address, point?)`
+  (the pick's point is rounded to 3 decimals before it is sent);
+  `PharmacySearch.address` (`{step: 'collect' | 'confirm' | null, onFile,
+  zipHint}`) and `PharmacySearch.preferred`; `PrescriptionLinkState.addressRequired`.
+  New refusals `invalid_address` (`details.code` names the field) and
+  `address_required`.
+- **Contract**: `PrescriptionAddress`, `PrescriptionAddressStep`,
+  `PrescriptionAddressError`, `PRESCRIPTION_ADDRESS_MAX`,
+  `prescriptionAddressSchema` / `setPrescriptionAddressSchema`
+  (`PrescriptionAddressInput`, `SetPrescriptionAddressRequest`,
+  `SetPrescriptionAddressResponse`); `PrescriptionResource.addressRequired`;
+  `ListPharmaciesResponse.address` and `.preferred`; error codes
+  `invalid_address` (422), `address_required` (409) and
+  `address_not_applicable` (409).
+- **The prescriber-licensure notice**: `ListPharmaciesResponse.licensure`
+  and `PharmacySearch.licensure` (`PrescriberLicensureNotice`, `{state,
+  stateName}`, or null) — set when the delivery address confirmed for the
+  prescription is in a state the prescribing physician holds no licence for,
+  in a tenant that enforces licensure. Non-blocking: show it calmly above the
+  list; the choice is unaffected. The patient client keeps a notice only
+  when it names both the code and the name.
+- **Miles in the United States**: `ListPharmaciesResponse.distanceUnit` and
+  `PharmacySearch.distanceUnit` (`DistanceUnit`, `'mi' | 'km'`), the unit to
+  print distances and radii in — `distanceKm`, `accuracyKm` and `radiusKm`
+  stay kilometres on the wire. The patient client reads a missing or unknown
+  unit as `'km'`. Contract helpers `distanceInUnit(distanceKm, unit)` (one
+  decimal) and `KM_PER_MILE`, at `@natzar/client/contract`; the patient
+  entry also re-exports the `DistanceUnit` and `PrescriberLicensureNotice`
+  types.
+
 ### 0.18.0 — the embed integration redesign (greenfield; breaking)
 
 - **`@natzar/client/server`**: `natzar(options)` — the embed middleware for
@@ -1200,7 +1316,7 @@ import {postAgentMessageSchema} from '@natzar/client/contract';
 - **`NatzarClient`**: `sessions.{create,delete,revoke}`, `embed.{config,setOrigins}`,
   `physicians.deactivate`; the v1 mints (`physicians.session`, the three
   `embedSession`s) are removed. A current-format key derives its endpoints
-  (`resolveEndpoints({key})`; supply `NATZAR_API_URL` for the target deployment).
+  (`resolveEndpoints({key})`; built-in API hosts per deployment, `NATZAR_API_URL` for a sandbox).
   `sessionToken` takes an `nz1` credential. `NatzarApiError.retryAfterSeconds`.
 - Node ≥ 20 (global WebCrypto).
 - `joinAnywayOf(error)` and `acceptShortSession` on joins (D12);

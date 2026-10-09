@@ -12,6 +12,7 @@
  */
 
 import {parseApiKey} from './contract/sessions';
+import {PLATFORM_API_ORIGINS, PLATFORM_APP_ORIGINS} from './contract/app-origins';
 
 /**
  * Which Natzar deployment a client talks to. `sbx` is every sandbox: it has
@@ -72,11 +73,11 @@ export interface NatzarEndpoints {
 /**
  * Built-in endpoints per environment.
  *
- * US API URLs are supplied through NATZAR_API_URL or baseUrl during the
- * move to us-east-1. API Gateway IDs belong to the old deployment and
- * cannot be reused in a different region. Populate these entries from
- * the new deployment outputs after its first successful deploy. The
- * stable app hosts remain available for embedOrigin resolution.
+ * Every hosted deployment serves its REST API from a fixed host that the
+ * deployment registers itself (`api.natzar.ai`, `api.ca.natzar.ai`,
+ * `api-dev.natzar.dev`, `api-stage.natzar.dev`), so these never change when a
+ * backend is rebuilt. Hosts no deployment registers are absent, never borrowed
+ * from another zone.
  *
  * `local` points at `http://localhost:5173` — the provider portal's own Vite
  * dev server, which serves the embed script and the widget page. A local REST
@@ -91,34 +92,32 @@ export const NATZAR_ENDPOINTS: Readonly<
   local: {
     us: {
       baseUrl: 'http://localhost:5173/v1',
-      embedOrigin: 'http://localhost:5173',
+      embedOrigin: PLATFORM_APP_ORIGINS.local.us,
     },
   },
   dev: {
     us: {
-      embedOrigin: 'https://dev.us.app.natzar.ai',
+      baseUrl: `${PLATFORM_API_ORIGINS.dev.us}/v1`,
+      embedOrigin: PLATFORM_APP_ORIGINS.dev.us,
     },
   },
   stage: {
     us: {
-      embedOrigin: 'https://stage.us.app.natzar.ai',
+      baseUrl: `${PLATFORM_API_ORIGINS.stage.us}/v1`,
+      embedOrigin: PLATFORM_APP_ORIGINS.stage.us,
     },
   },
   prod: {
     us: {
-      embedOrigin: 'https://us.app.natzar.ai',
+      baseUrl: `${PLATFORM_API_ORIGINS.prod.us}/v1`,
+      embedOrigin: PLATFORM_APP_ORIGINS.prod.us,
     },
-    // `ca` and `eu` are deliberately ABSENT rather than guessed. Each zone is
-    // its own deployment with its own API Gateway id, knowable only once that
-    // deployment exists; a plausible-looking placeholder would fail as a 403
-    // that reads exactly like a credential problem. Asking for a zone that is
-    // not here throws a message that says so.
-    //
-    // `ca` (ca-central-1) is being stood up: once its first deploy has run,
-    // add it here from that deployment's `amplify_outputs.json` `custom.API`
-    // with `embedOrigin: 'https://ca.app.natzar.ai'` (docs/RESIDENCY-ZONES.md,
-    // step 11). Until then, callers reach it by passing `baseUrl` +
-    // `embedOrigin` explicitly.
+    ca: {
+      baseUrl: `${PLATFORM_API_ORIGINS.prod.ca}/v1`,
+      embedOrigin: PLATFORM_APP_ORIGINS.prod.ca,
+    },
+    // EU has no deployment yet; callers must supply both endpoints explicitly
+    // when it exists.
   },
   // Every sandbox is its own stack with its own API id: nothing to build in.
   // A sandbox key (`pp_test_sbx_<zone>_…`) always comes with NATZAR_API_URL.

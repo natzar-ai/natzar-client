@@ -30,7 +30,8 @@
  * `nativeOrigins` holds native-shell origins ({@link NATIVE_SHELL_ORIGINS}).
  * They are the only way to list those in production, and a session for them
  * is minted only for a bearer-authenticated request (`requestAuth: 'bearer'`).
- * `*.natzar.ai` is forbidden everywhere; null-origin WebViews are unsupported.
+ * `*.natzar.ai` is forbidden everywhere; `*.natzar.dev` is NOT (see
+ * {@link FORBIDDEN_EMBED_DOMAINS}). Null-origin WebViews are unsupported.
  *
  * Every entry must be written exactly as the URL parser serializes it: lower
  * case, punycode, no path, query, fragment, credentials, trailing dot or
@@ -58,6 +59,15 @@ export const EMBED_ORIGIN_MAX_LENGTH = 255;
 export const NATIVE_SHELL_ORIGINS = ['capacitor://localhost', 'ionic://localhost', 'https://localhost'] as const;
 /** The platform's own domain: no entry may be it or under it. */
 export const FORBIDDEN_EMBED_DOMAIN = 'natzar.ai' as const;
+/**
+ * The domains a partner origin policy can never name, nor any subdomain of.
+ * `natzar.dev` is deliberately absent: its dev/stage app hosts
+ * (https://app-dev.natzar.dev) also serve the live demo pages
+ * (demo/live-demo), which embed the widget exactly as a partner page does and
+ * so must be admissible origins. The embed frames themselves stay reserved
+ * through the deployment's own frame origins (`reservedOrigins`).
+ */
+export const FORBIDDEN_EMBED_DOMAINS = [FORBIDDEN_EMBED_DOMAIN] as const;
 /** Local development hosts, accepted outside production only (and every `*.localhost`, RFC 6761). */
 export const LOCAL_DEV_HOSTS = ['localhost', '127.0.0.1'] as const;
 /**
@@ -245,7 +255,7 @@ const ANY_SCHEME_SHAPE = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^/?#@\s:]+)(?::(\d{1,
 const WILDCARD_PREFIX = 'https://*.';
 
 const isLocalHost = isLocalDevHost;
-const isNatzarHost = (host: string): boolean => host === FORBIDDEN_EMBED_DOMAIN || host.endsWith(`.${FORBIDDEN_EMBED_DOMAIN}`);
+const isNatzarHost = (host: string): boolean => FORBIDDEN_EMBED_DOMAINS.some((domain) => host === domain || host.endsWith(`.${domain}`));
 
 /** The URL parser's own serialization of `scheme://host[:port]`, or null. */
 function canonicalOrigin(scheme: string, host: string, port: string | undefined): string | null {

@@ -361,6 +361,34 @@ export type ErrorCode =
    */
   | 'invalid_pharmacy'
   /**
+   * `PUT /v1/prescriptions/{id}/address`, and `POST …/pharmacy` with an
+   * `address`: the address as sent cannot be a delivery address —
+   * `details.code` names the field to fix (`street`, `city`, `state`,
+   * `zipCode`, `tooLong`; see `PrescriptionAddressError`): a street or city
+   * empty after trimming, a state that is not a US state, DC or inhabited
+   * territory (or a `country` other than the US), a ZIP that is not five
+   * digits or ZIP+4, a line over 100 characters. Distinct from
+   * `invalid_request` (the shape was fine; the values are not an address) —
+   * leaving out the `street`, `city`, `state` or `zipCode` key, or sending a
+   * non-string, is that `400`. Nothing was saved. HTTP 422.
+   */
+  | 'invalid_address'
+  /**
+   * `POST /v1/prescriptions/{id}/pharmacy`: the prescription is e-prescribed
+   * (`transport: 'erx'`) and no delivery address is confirmed for it yet
+   * (`addressRequired: true` on the resource, `address.step` set on the
+   * list). Confirm one with `PUT …/address` and choose again, or send
+   * `address` with the choice. Nothing was chosen. HTTP 409.
+   */
+  | 'address_required'
+  /**
+   * `PUT /v1/prescriptions/{id}/address`: the prescription is not
+   * e-prescribed (`transport: 'fax'`), so it takes no delivery address —
+   * its `address.step` is always null and the pharmacy is faxed. Never a
+   * transient condition; retrying will not help. HTTP 409.
+   */
+  | 'address_not_applicable'
+  /**
    * The page embedding an element is served from an origin that is not
    * registered for your account (`PUT /v1/embed/origins`), so no session is
    * minted for it (`POST /v1/sessions`) and the element reports it. HTTP 403.
@@ -660,6 +688,9 @@ export const ERROR_HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
   pharmacy_add_unavailable: 409,
   invalid_location: 422,
   invalid_pharmacy: 422,
+  invalid_address: 422,
+  address_required: 409,
+  address_not_applicable: 409,
   rate_limited: 429,
   internal_error: 500,
   provider_session_invalid: 401,

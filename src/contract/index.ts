@@ -87,7 +87,8 @@
  * - `./prescriptions` — the patient-side pharmacy choice of a prescription a
  *   physician issued on an async consult: the link shape to detect on the
  *   transcript, the resource the `/v1/prescriptions` routes read, the
- *   pharmacy and search-origin shapes, the search radii.
+ *   pharmacy and search-origin shapes, the search radii, and the
+ *   delivery-address step of e-prescribing deployments.
  * - `./referrals` — the signed requisition a physician issued on an async
  *   consult (specialist / laboratory / imaging), which the patient carries:
  *   the link shape to detect on the transcript, the validity sentences to

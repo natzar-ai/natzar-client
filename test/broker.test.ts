@@ -266,9 +266,14 @@ describe('broker — renewal, single-flight and backoff (fake timers)', () => {
   afterEach(() => mock.timers.reset());
 
   // Let pending promise chains (and WebCrypto, which runs off-thread) settle
-  // between fake-clock steps. setImmediate is not mocked.
-  const settle = async () => {
+  // between fake-clock steps. setImmediate is not mocked. A fixed number of
+  // turns covers promise chains, but not WebCrypto on a slow machine (a CI
+  // runner needed more than 30), so a step that needs a grant sealed and
+  // unsealed passes `until` and keeps turning, up to 5 s of real time.
+  const settle = async (until?: () => boolean) => {
     for (let i = 0; i < 30; i++) await new Promise((r) => setImmediate(r));
+    const deadline = performance.now() + 5_000;
+    while (until && !until() && performance.now() < deadline) await new Promise((r) => setImmediate(r));
   };
   const OPS = {embedState: () => ({}), embedAgentMessages: () => ({messages: []})};
 
@@ -278,8 +283,9 @@ describe('broker — renewal, single-flight and backoff (fake timers)', () => {
     mock.timers.tick(839_000);
     await settle();
     assert.equal(p.asks.length, 1, 'not yet');
+    const firstExpiry = care.session!.expiresAt;
     mock.timers.tick(1_000);
-    await settle();
+    await settle(() => care.session?.expiresAt !== firstExpiry);
     assert.deepEqual(p.asks.map((a) => [a.reason, a.sessionId]), [['initial', null], ['renew', sid(1)]]);
     await care.conversation.get();
     assert.equal(p.gql.at(-1)!.auth, `nz1.${sid(1)}.${'2'.padStart(42, 'k')}A`, 'the renewed secret is in force');

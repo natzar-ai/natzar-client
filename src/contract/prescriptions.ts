@@ -27,6 +27,14 @@
  * 3. While `action === 'choose'`: `GET /v1/prescriptions/{id}/pharmacies`
  *    for the list (sorted by distance from the origin you pass, else the
  *    patient's cached home), `POST /v1/prescriptions/{id}/pharmacy` to choose.
+ *    In an e-prescribing deployment the list first answers an ADDRESS STEP
+ *    ({@link PrescriptionAddressStep}): while `address.step` is set, collect
+ *    or confirm the patient's home address and send it with
+ *    `PUT /v1/prescriptions/{id}/address` (or with the choice itself); the
+ *    answer is the list. Pre-select `preferred`, the pharmacy the patient's
+ *    last prescription reached; show `licensure` (when set) as a calm notice
+ *    above the list ({@link PrescriberLicensureNotice}), and every distance
+ *    in the list's `distanceUnit` ({@link distanceInUnit}).
  * 4. Poll `GET /v1/prescriptions/{id}` until `action` is `sent` (or the
  *    transcript says `prescription_failed`, which re-opens the choice).
  *
@@ -144,8 +152,10 @@ export type PharmacyLinkAction = 'choose' | 'sent' | 'expired' | 'revoked';
 /**
  * How the prescription reaches the pharmacy. Decided by the deployment's
  * jurisdiction, never per tenant: `erx` where an e-prescribing network
- * exists (United States), `fax` where it does not (Canada). Affects one thing
- * on this surface: adding a pharmacy by hand (`POST …/pharmacies`) exists in
+ * exists (United States), `fax` where it does not (Canada). Affects two
+ * things on this surface: the delivery-address step
+ * ({@link PrescriptionAddressStep}, `PUT …/address`) exists in `erx`
+ * deployments only, and adding a pharmacy by hand (`POST …/pharmacies`) in
  * `fax` deployments only.
  */
 export type PrescriptionTransport = 'erx' | 'fax';
@@ -181,6 +191,16 @@ export interface PrescriptionResource {
   pharmacyName: string | null;
   /** What the button does. See {@link PharmacyLinkAction}. */
   action: PharmacyLinkAction;
+  /**
+   * The picker will open on the delivery-address step: an e-prescribed
+   * prescription (`transport: 'erx'`) that can still be chosen and has no
+   * delivery address confirmed yet. Choosing it without one is
+   * `409 address_required`; confirm it with `PUT …/address`, or send
+   * `address` with the choice. Always false in a fax deployment and once
+   * `action` is not `choose`. Added after the fields above; `/v1` only ever
+   * grows.
+   */
+  addressRequired: boolean;
   /** When the prescription was issued. */
   createdAt: IsoDateTime;
 }
@@ -226,14 +246,153 @@ export interface PharmacyResource {
   reachable: boolean;
   lat?: number;
   lng?: number;
-  /** Great-circle distance from the search origin, km, one decimal. Absent without an origin or a pin. */
+  /**
+   * Great-circle distance from the search origin, km, one decimal. Absent
+   * without an origin or a pin. Always km on the wire: show it in the list's
+   * `distanceUnit` ({@link distanceInUnit}).
+   */
   distanceKm?: number;
+}
+
+/**
+ * A US home / delivery address, structured as the e-prescribing network
+ * takes it — never one line. It is both the patient's home address on file
+ * ({@link PrescriptionAddressStep.onFile}) and, once confirmed for a
+ * prescription, the address that prescription's order carries. Mirrors
+ * `RxAddress` in the platform's `shared/prescriptions.ts`.
+ */
+export interface PrescriptionAddress {
+  /** Street number and name ("350 Fifth Avenue"). */
+  street: string;
+  /** Apartment, suite or unit ("Suite 3300"), when there is one. */
+  street2?: string;
+  city: string;
+  /** Two-letter code of a US state, DC or an inhabited territory ("NY"). Never a military "state" (AA/AE/AP). */
+  state: string;
+  /** Five-digit ZIP code, or ZIP+4 written `12345-6789`. */
+  zipCode: string;
+  /** Always `US`: the only jurisdiction this platform e-prescribes in. */
+  country: 'US';
+}
+
+/**
+ * Why an address was refused — `details.code` of `422 invalid_address`,
+ * naming the field to fix (the codes the platform's own pickers render):
+ *
+ * - `street` / `city` — missing (empty after trimming);
+ * - `state` — not a US state, DC or inhabited territory code, or a `country`
+ *   other than the US;
+ * - `zipCode` — not five digits (or ZIP+4);
+ * - `tooLong` — `street`, `street2` or `city` over
+ *   {@link PRESCRIPTION_ADDRESS_MAX} characters.
+ *
+ * Mirrors `RxAddressError`.
+ */
+export type PrescriptionAddressError = 'street' | 'city' | 'state' | 'zipCode' | 'tooLong';
+
+/** Longest `street` / `street2` / `city` accepted, in characters. Mirrors `RX_ADDRESS_MAX`. */
+export const PRESCRIPTION_ADDRESS_MAX = 100;
+
+/**
+ * The step the picker shows BEFORE its list, in an e-prescribing deployment:
+ * the network needs a structured delivery address, and the platform's signup
+ * asks for a ZIP code only, so the first prescription a patient chooses a
+ * pharmacy for asks for the full home address, and every later one only has
+ * it confirmed. Server-driven — branch on `step`, never on the deployment:
+ *
+ * - `collect` — no home address on file: ask for it (street, apt/unit, city,
+ *   state, ZIP), prefilled with `zipHint`;
+ * - `confirm` — `onFile` is the address on file: "Yes, use this address",
+ *   or "Change address" (the same form, prefilled);
+ * - `null` — nothing to ask: a fax deployment, a prescription that can no
+ *   longer be chosen, or an address already confirmed for THIS prescription
+ *   (a re-choice after a failed transmission, a lost race).
+ *
+ * While `step` is set the list is EMPTY and no search ran. Answer it with
+ * `PUT /v1/prescriptions/{id}/address` (confirming sends `onFile` back
+ * unchanged), whose response is the list itself — or send the address with
+ * the choice (`POST …/pharmacy` `address`). Mirrors `PharmacyAddressStep`.
+ */
+export interface PrescriptionAddressStep {
+  step: 'collect' | 'confirm' | null;
+  /**
+   * The patient's home address on file — the one the last confirmation saved
+   * (on any surface). Null when none is, and on a prescription that is not
+   * e-prescribed or can no longer be chosen.
+   */
+  onFile: PrescriptionAddress | null;
+  /** The patient's ZIP code on file (the one they signed up with), to prefill the form — while `step` is `collect`, else null. */
+  zipHint: string | null;
+}
+
+/**
+ * The prescriber-licensure notice of the picker's list
+ * (`ListPharmaciesResponse.licensure`): the delivery address confirmed for
+ * this prescription is in another state than the one it was issued for —
+ * the patient's state at signing, or the state of the licence it was signed
+ * under (so an address in the patient's own state can carry it too, when
+ * the prescription was signed under another state's licence) —
+ * your tenant enforces state licensure (`licenseEnforcement` on
+ * `GET /v1/physicians/{id}/licenses`), and the prescribing physician holds
+ * no usable licence in that state.
+ *
+ * NON-BLOCKING: the patient may still choose any pharmacy and send. Show it
+ * as a calm, informational notice above the list — not in an error slot,
+ * and never as a reason to disable the choice — for example:
+ *
+ * > Your prescribing doctor isn't registered in New Jersey. Most states and
+ * > pharmacies accept prescriptions from out-of-state doctors, but some
+ * > pharmacies in some states may refuse it.
+ *
+ * It names the state only, never a licence. Mirrors
+ * `PrescriberLicensureNotice` in the platform's `shared/prescriptions.ts`.
+ */
+export interface PrescriberLicensureNotice {
+  /** The delivery address's two-letter state code ("NJ"). */
+  state: string;
+  /** Its full name, in English ("New Jersey"). Localise from `state` when you render another language. */
+  stateName: string;
+}
+
+/**
+ * The unit to SHOW pharmacy distances and search radii in
+ * (`ListPharmaciesResponse.distanceUnit`), chosen by the deployment: `mi`
+ * in the United States, `km` elsewhere. The numbers on the wire stay
+ * kilometres — `distanceKm`, `accuracyKm`, `radiusKm` — whatever the unit;
+ * convert for display with {@link distanceInUnit}. Mirrors `DistanceUnit`.
+ */
+export type DistanceUnit = 'mi' | 'km';
+
+/** Kilometres in one international mile. Mirrors `KM_PER_MILE`. */
+export const KM_PER_MILE = 1.609344;
+
+/**
+ * A kilometre distance (`distanceKm`) in `unit`, rounded to one decimal —
+ * the number to print before the unit label. A pharmacy a few steps away
+ * rounds to 0: print it as "< 0.1 mi" rather than "0 mi". Mirrors
+ * `distanceInUnit`.
+ *
+ * @example
+ * ```ts
+ * distanceInUnit(13.7, 'mi'); // 8.5  → "8.5 mi"
+ * distanceInUnit(13.7, 'km'); // 13.7 → "13.7 km"
+ * distanceInUnit(0.05, 'mi'); // 0    → "< 0.1 mi"
+ * ```
+ */
+export function distanceInUnit(distanceKm: number, unit: DistanceUnit): number {
+  const value = unit === 'mi' ? distanceKm / KM_PER_MILE : distanceKm;
+  return Math.round(value * 10) / 10;
 }
 
 /**
  * The search radii the list endpoint accepts (`radiusKm`), km. Offer them as
  * "search wider" steps: the default is the first, and a search that comes
- * back short is worth repeating at the next.
+ * back short is worth repeating at the next. The value sent is always the
+ * km one; label it in the list's `distanceUnit`, rounded to the NEAREST
+ * whole unit (the platform's pickers read 25 / 50 / 100 km as 16 / 31 / 62
+ * mi). Nearest, not down: in the United States the search itself covers
+ * that many whole miles, so a rounded-down label ("15 mi") would sit above
+ * a pharmacy listed at 15.8 mi.
  */
 export const PHARMACY_SEARCH_RADII_KM = [25, 50, 100] as const;
 

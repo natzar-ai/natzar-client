@@ -350,7 +350,9 @@ test('a current-format key names its deployment: the client derives its endpoint
   // An explicit environment that disagrees with the key is refused, not obeyed.
   assert.throws(() => new NatzarClient({apiKey: live, environment: 'stage'}), /disagrees with the key/);
   // A zone with no deployment throws instead of falling back (F87).
-  assert.throws(() => new NatzarClient({apiKey: `pp_live_ca_${'a'.repeat(48)}`}), /No built-in Natzar endpoints/);
+  assert.throws(() => new NatzarClient({apiKey: `pp_live_eu_${'a'.repeat(48)}`}), /No built-in Natzar endpoints/);
+  // A deployed zone resolves its own registered API host from the key alone.
+  assert.equal(new NatzarClient({apiKey: `pp_live_ca_${'a'.repeat(48)}`}).endpoints.baseUrl, 'https://api.ca.natzar.ai/v1');
   // A sandbox key needs NATZAR_API_URL (or baseUrl).
   const sbx = new NatzarClient({apiKey: `pp_test_sbx_us_${'a'.repeat(48)}`, baseUrl: 'https://sbx.test/v1'});
   assert.equal(sbx.environment, 'sbx');
@@ -489,6 +491,19 @@ test('the contract ships the zone helpers every picker needs, and the new codes'
   assert.equal(contract.bookTelehealthConsultSchema.safeParse({startsAt: '2026-09-15T10:00:00Z', patientTimezone: 'Asia/Tokyo'}).success, true);
 });
 
+test('the contract ships the distance conversion the pharmacy pickers print with', async () => {
+  const contract = await import('../dist/esm/contract/index.js');
+  assert.equal(contract.KM_PER_MILE, 1.609344);
+  assert.equal(contract.distanceInUnit(13.7, 'mi'), 8.5);
+  assert.equal(contract.distanceInUnit(13.7, 'km'), 13.7);
+  assert.equal(contract.distanceInUnit(0.5, 'mi'), 0.3);
+  assert.equal(contract.distanceInUnit(0.05, 'mi'), 0, 'a few steps away rounds to 0 — print "< 0.1 mi"');
+  assert.deepEqual(contract.PHARMACY_SEARCH_RADII_KM.map((km) => contract.distanceInUnit(km, 'mi')), [15.5, 31.1, 62.1]);
+  // Runtime contract symbols stay off the package root (types only there).
+  const root = await import('../dist/esm/index.js');
+  assert.equal('distanceInUnit' in root, false);
+});
+
 test('the contract ships the schedule engine the platform runs', async () => {
   const {resolveDays, closeWindow, diffSchedule} = await import('../dist/esm/contract/index.js');
   const loaded = {rules: [{id: 'r1', weekday: 1, startMinute: 540, endMinute: 720}], exceptions: []};
@@ -515,11 +530,12 @@ test('the prescription routes hit their paths, flatten the search origin and nev
     transport: 'fax',
     pharmacyName: null,
     action: 'choose',
+    addressRequired: false,
     createdAt: '2026-09-18T09:00:00.000Z',
   };
   const {calls, fetchLike} = stubFetch([
     {status: 200, body: {prescription: rx}},
-    {status: 200, body: {prescription: rx, origin: {lat: 43.65, lng: -79.38, source: 'device'}, pharmacies: []}},
+    {status: 200, body: {prescription: rx, origin: {lat: 43.65, lng: -79.38, source: 'device'}, address: {step: null, onFile: null, zipHint: null}, preferred: null, licensure: null, distanceUnit: 'km', pharmacies: []}},
     {status: 200, body: {prescription: {...rx, status: 'transmitting', pharmacyName: 'Main St', action: 'sent'}}},
     {status: 200, body: {ok: true}},
     {status: 201, body: {pharmacy: {directoryId: 'ca:manual:x', name: 'Corner', address: '9 Side St', reachable: false}, status: 'pending_verification', probe: 'sent', faxIssue: null}},
@@ -531,7 +547,9 @@ test('the prescription routes hit their paths, flatten the search origin and nev
   assert.equal(calls[0].url, 'https://x.test/v1/prescriptions/rx_1');
   assert.equal(calls[0].init.method, 'GET');
 
-  await client.prescriptions.pharmacies('rx_1', {lat: 43.65, lng: -79.38, source: 'device', query: 'main', radiusKm: 50});
+  const list = await client.prescriptions.pharmacies('rx_1', {lat: 43.65, lng: -79.38, source: 'device', query: 'main', radiusKm: 50});
+  assert.equal(list.licensure, null);
+  assert.equal(list.distanceUnit, 'km');
   assert.equal(calls[1].url, 'https://x.test/v1/prescriptions/rx_1/pharmacies?lat=43.65&lng=-79.38&source=device&query=main&radiusKm=50');
 
   const chosen = await client.prescriptions.choosePharmacy('rx_1', {directoryId: 'ca:ON:1'});
@@ -596,6 +614,93 @@ test('a referral of another tenant, or of a patient this key did not provision, 
     () => client.referrals.get('someone_elses'),
     (e: unknown) => isNatzarApiError(e) && e.code === 'not_found' && e.status === 404,
   );
+});
+
+test('the e-prescribing address step: PUT …/address answers the list, and a choice may carry the address', async () => {
+  const rx = {
+    id: 'rx_2',
+    externalPatientId: 'u_1',
+    consultId: 't_1',
+    status: 'awaiting_pharmacy',
+    expired: false,
+    expiresAt: '2026-09-19T09:00:00.000Z',
+    transport: 'erx',
+    pharmacyName: null,
+    action: 'choose',
+    addressRequired: true,
+    createdAt: '2026-09-18T09:00:00.000Z',
+  };
+  const home = {street: '350 Fifth Avenue', street2: 'Suite 3300', city: 'New York', state: 'NY', zipCode: '10118', country: 'US' as const};
+  const cvs = {directoryId: 'us:ncpdp:1234567', name: 'CVS Pharmacy', address: '1 W 34th St', reachable: true, distanceKm: 0.3};
+  const {calls, fetchLike} = stubFetch([
+    {status: 200, body: {prescription: rx, address: {step: 'confirm', onFile: home, zipHint: null}, preferred: null, licensure: null, distanceUnit: 'mi', pharmacies: []}},
+    {
+      status: 200,
+      body: {
+        prescription: {...rx, addressRequired: false},
+        origin: {lat: 40.749, lng: -73.986, source: 'address', label: 'Home'},
+        address: {step: null, onFile: home, zipHint: null},
+        preferred: cvs,
+        licensure: {state: 'NJ', stateName: 'New Jersey'},
+        distanceUnit: 'mi',
+        pharmacies: [cvs],
+      },
+    },
+    {status: 200, body: {prescription: {...rx, status: 'transmitting', pharmacyName: 'CVS Pharmacy', action: 'sent', addressRequired: false}}},
+  ]);
+  const client = new NatzarClient({apiKey: KEY, baseUrl: 'https://x.test/v1', fetch: fetchLike, maxRetries: 0});
+
+  const pending = await client.prescriptions.pharmacies('rx_2');
+  assert.equal(pending.prescription.addressRequired, true);
+  assert.equal(pending.address.step, 'confirm');
+  assert.deepEqual(pending.address.onFile, home);
+  assert.equal(pending.pharmacies.length, 0, 'no list while the step is pending');
+  assert.equal(pending.licensure, null, 'no notice before an address is confirmed');
+
+  const listed = await client.prescriptions.setAddress('rx_2', {address: pending.address.onFile!, lat: 40.749, lng: -73.986});
+  assert.equal(calls[1].url, 'https://x.test/v1/prescriptions/rx_2/address');
+  assert.equal(calls[1].init.method, 'PUT');
+  assert.deepEqual(JSON.parse(String(calls[1].init.body)), {address: home, lat: 40.749, lng: -73.986});
+  assert.equal(listed.address.step, null);
+  assert.equal(listed.prescription.addressRequired, false);
+  assert.equal(listed.preferred?.directoryId, 'us:ncpdp:1234567');
+  // The non-blocking notice and the display unit, as typed on the response.
+  assert.equal(listed.licensure?.stateName, 'New Jersey');
+  assert.equal(listed.distanceUnit, 'mi');
+
+  await client.prescriptions.choosePharmacy('rx_2', {directoryId: cvs.directoryId, address: {street: home.street, city: home.city, state: home.state, zipCode: home.zipCode}});
+  assert.equal(calls[2].url, 'https://x.test/v1/prescriptions/rx_2/pharmacy');
+  assert.deepEqual(JSON.parse(String(calls[2].init.body)), {
+    directoryId: 'us:ncpdp:1234567',
+    address: {street: '350 Fifth Avenue', city: 'New York', state: 'NY', zipCode: '10118'},
+  });
+});
+
+test('the address step\'s refusals carry their contract codes; the PUT is not replayed after a 500', async () => {
+  const {fetchLike} = stubFetch([
+    {status: 422, body: {error: {code: 'invalid_address', message: 'no', details: {code: 'zipCode'}}}},
+    {status: 409, body: {error: {code: 'address_required', message: 'no'}}},
+    {status: 409, body: {error: {code: 'address_not_applicable', message: 'no'}}},
+  ]);
+  const client = new NatzarClient({apiKey: KEY, baseUrl: 'https://x.test/v1', fetch: fetchLike, maxRetries: 0});
+  const address = {street: '350 Fifth Avenue', city: 'New York', state: 'NY', zipCode: '1011'};
+  await assert.rejects(
+    () => client.prescriptions.setAddress('rx_2', {address}),
+    (e: unknown) => isNatzarApiError(e) && e.code === 'invalid_address' && e.status === 422 && (e.details as {code?: string})?.code === 'zipCode',
+  );
+  await assert.rejects(
+    () => client.prescriptions.choosePharmacy('rx_2', {directoryId: 'us:ncpdp:1'}),
+    (e: unknown) => isNatzarApiError(e) && e.code === 'address_required' && e.status === 409,
+  );
+  await assert.rejects(
+    () => client.prescriptions.setAddress('rx_fax', {address}),
+    (e: unknown) => isNatzarApiError(e) && e.code === 'address_not_applicable' && e.status === 409,
+  );
+
+  const put = stubFetch([{status: 500, body: {error: {code: 'internal_error', message: 'boom'}}}, {status: 200, body: {}}]);
+  const client2 = new NatzarClient({apiKey: KEY, baseUrl: 'https://x.test/v1', fetch: put.fetchLike, maxRetries: 2, retryBaseMs: 1});
+  await assert.rejects(() => client2.prescriptions.setAddress('rx_2', {address}));
+  assert.equal(put.calls.length, 1, 'a PUT is answered by re-reading the list, never replayed');
 });
 
 test('a refused choice carries the contract code and the prescription status in the body', async () => {

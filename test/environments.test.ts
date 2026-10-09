@@ -36,31 +36,41 @@ test('the deployed embed origins are the Natzar app hosts, per zone', () => {
   // iframe is loaded from — a wrong host here is a blank widget on their page,
   // not an error anyone sees. Pin them.
   //
-  // Every host names its RESIDENCY ZONE. There is deliberately no bare
-  // `app.natzar.ai`: one origin cannot serve three regional backends, and a
-  // default zone whose siblings carry prefixes needs a special case in every
-  // consumer.
-  assert.equal(resolveEndpoints({environment: 'prod', baseUrl: PROD_API}, {}).embedOrigin, 'https://us.app.natzar.ai');
-  assert.equal(resolveEndpoints({environment: 'stage', baseUrl: PROD_API}, {}).embedOrigin, 'https://stage.us.app.natzar.ai');
-  assert.equal(resolveEndpoints({environment: 'dev', baseUrl: PROD_API}, {}).embedOrigin, 'https://dev.us.app.natzar.ai');
+  // App hosts are configured explicitly: US dev/stage use natzar.dev;
+  // US production uses app.natzar.ai and Canada uses app.ca.natzar.ai.
+  assert.equal(resolveEndpoints({environment: 'prod', baseUrl: PROD_API}, {}).embedOrigin, 'https://app.natzar.ai');
+  assert.equal(resolveEndpoints({environment: 'stage', baseUrl: PROD_API}, {}).embedOrigin, 'https://app-stage.natzar.dev');
+  assert.equal(resolveEndpoints({environment: 'dev', baseUrl: PROD_API}, {}).embedOrigin, 'https://app-dev.natzar.dev');
 });
 
-test('an undeployed zone is refused, never silently served by another', () => {
+test('a zone without its API URL is refused, never silently served by another', () => {
   // The failure this prevents is the worst one available: a Canadian clinic's
   // integration quietly talking to the American deployment, which answers
   // "tenant not found" and reads like a data problem.
   assert.throws(
-    () => resolveEndpoints({environment: 'prod', zone: 'ca'}, {}),
-    /No built-in Natzar endpoints .* zone "ca"/,
+    () => resolveEndpoints({environment: 'prod', zone: 'eu'}, {}),
+    /No built-in Natzar endpoints .* zone "eu"/,
   );
+  for (const environment of ['dev', 'stage'] as const) {
+    assert.throws(() => resolveEndpoints({environment, zone: 'ca'}, {}), /No built-in Natzar endpoints/);
+  }
   // ...unless the caller supplies the endpoints themselves, so a new zone is
   // reachable the moment it exists rather than after a release of this package.
   const explicit = resolveEndpoints(
-    {environment: 'prod', zone: 'ca', baseUrl: 'https://ca.example/v1', embedOrigin: 'https://ca.app.natzar.ai'},
+    {environment: 'prod', zone: 'eu', baseUrl: 'https://eu.example/v1', embedOrigin: 'https://app.eu.example'},
     {},
   );
-  assert.equal(explicit.zone, 'ca');
-  assert.equal(explicit.baseUrl, 'https://ca.example/v1');
+  assert.equal(explicit.zone, 'eu');
+  assert.equal(explicit.baseUrl, 'https://eu.example/v1');
+});
+
+test('Canada production resolves its own API and app hosts, never the US ones', () => {
+  const resolved = resolveEndpoints({environment: 'prod', zone: 'ca'}, {});
+  assert.equal(resolved.baseUrl, 'https://api.ca.natzar.ai/v1');
+  assert.equal(resolved.embedOrigin, 'https://app.ca.natzar.ai');
+  for (const environment of ['dev', 'stage'] as const) {
+    assert.throws(() => resolveEndpoints({environment, zone: 'ca', baseUrl: 'https://ca.example/v1'}, {}), /No built-in Natzar endpoints/);
+  }
 });
 
 test('the zone comes from an env var when not passed in code', () => {
@@ -69,15 +79,27 @@ test('the zone comes from an env var when not passed in code', () => {
   assert.equal(resolveEndpoints({baseUrl: PROD_API}, {NATZAR_ZONE: 'nope'}).zone, 'us');
 });
 
-test('hosted US deployments require the new API URL instead of reaching the old region', () => {
-  for (const environment of ['dev', 'stage', 'prod'] as const) {
-    assert.equal(NATZAR_ENDPOINTS[environment].us?.baseUrl, undefined);
-    assert.throws(() => resolveEndpoints({environment}, {}), /set NATZAR_API_URL/);
+test('hosted deployments resolve the API host each one registers, through /v1', () => {
+  // These are the hosts the deployments put in Route 53 themselves
+  // (amplify/api-domain.ts), so they survive a rebuilt backend. Pin them: a
+  // wrong one is a partner integration talking to nothing.
+  const expected = {
+    dev: {us: 'https://api-dev.natzar.dev/v1'},
+    stage: {us: 'https://api-stage.natzar.dev/v1'},
+    prod: {us: 'https://api.natzar.ai/v1', ca: 'https://api.ca.natzar.ai/v1'},
+  } as const;
+  for (const [environment, zones] of Object.entries(expected) as [keyof typeof expected, Record<string, string>][]) {
+    for (const [zone, baseUrl] of Object.entries(zones)) {
+      assert.equal(NATZAR_ENDPOINTS[environment][zone as 'us' | 'ca']?.baseUrl, baseUrl);
+      assert.equal(resolveEndpoints({environment, zone: zone as 'us' | 'ca'}, {}).baseUrl, baseUrl);
+    }
   }
-  assert.throws(() => resolveEndpoints({key: `pp_live_us_${'a'.repeat(48)}`}, {}), /set NATZAR_API_URL/);
+  assert.equal(resolveEndpoints({key: `pp_live_us_${'a'.repeat(48)}`}, {}).baseUrl, 'https://api.natzar.ai/v1');
+  assert.equal(resolveEndpoints({key: `pp_test_dev_us_${'a'.repeat(48)}`}, {}).baseUrl, 'https://api-dev.natzar.dev/v1');
+  // The env var still re-points one artifact at another deployment.
   const resolved = resolveEndpoints({}, {NATZAR_API_URL: PROD_API});
   assert.equal(resolved.baseUrl, PROD_API);
-  assert.equal(resolved.embedOrigin, 'https://us.app.natzar.ai');
+  assert.equal(resolved.embedOrigin, 'https://app.natzar.ai');
 });
 
 test('explicit options beat env vars beat the built-in table', () => {
@@ -122,7 +144,7 @@ test('resolveEndpoints({key}) refuses what is not a key, a disagreeing option, a
   assert.throws(() => resolveEndpoints({key: `pp_live_us_${K}`, environment: 'dev'}, {}), /disagrees with the key/);
   assert.throws(() => resolveEndpoints({key: `pp_live_us_${K}`, zone: 'eu'}, {}), /disagrees with the key/);
   // No built-in deployment: never served by another zone.
-  assert.throws(() => resolveEndpoints({key: `pp_live_ca_${K}`}, {}), /No built-in Natzar endpoints .*zone "ca"/);
+  assert.throws(() => resolveEndpoints({key: `pp_live_eu_${K}`}, {}), /No built-in Natzar endpoints .*zone "eu"/);
   assert.throws(() => resolveEndpoints({key: `pp_test_sbx_us_${K}`}, {}), /sandbox key needs NATZAR_API_URL/);
 });
 

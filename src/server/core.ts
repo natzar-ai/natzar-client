@@ -782,7 +782,13 @@ export function createCore<Req>(options: NatzarOptions<Req>): Core {
       if (options.onStart) body.partnerStart = true;
     } else {
       body.clinician = identity.clinician;
-      if (ask.patient !== undefined) body.patient = {externalId: ask.patient};
+      // Clinician patient mode: the element's `patient` attribute, echoed as
+      // `scope.patient` (via askPatient) exactly as for the patient audience —
+      // the loader requires it to match the attribute.
+      if (ask.patient !== undefined) {
+        body.patient = {externalId: ask.patient};
+        body.askPatient = ask.patient;
+      }
       if (identity.clinicianToken) body.clinicianToken = identity.clinicianToken;
       if (identity.capabilities) body.capabilities = [...identity.capabilities];
       const c = identity.clinician as Record<string, unknown>;

@@ -175,10 +175,13 @@ const GQL_TYPES: Record<string, string> = {
   startsAt: 'AWSDateTime!',
   practitionerId: 'ID',
   // Prescriptions (embedPrescription*). `id` is the prescription id lifted
-  // from the message link; `origin` and `pharmacy` are a.json() — stringified
-  // by the caller, like `attachment`; `radiusKm` is a.integer(), so `Int`,
-  // and the home point is a.float() — a `String` variable for a Float
-  // argument is refused before the resolver runs.
+  // from the message link; `origin`, `pharmacy` and `address` are a.json() —
+  // stringified by the caller, like `attachment`; `radiusKm` is a.integer(),
+  // so `Int`, and the home point is a.float() — a `String` variable for a
+  // Float argument is refused before the resolver runs. `lat`/`lng` are
+  // required on embedPrescriptionHomeLocation and optional on
+  // embedPrescriptionAddress; `Float!` fills both, so the address op OMITS
+  // them without a pick (never null).
   id: 'String!',
   origin: 'AWSJSON',
   query: 'String',
@@ -187,6 +190,7 @@ const GQL_TYPES: Record<string, string> = {
   lat: 'Float!',
   lng: 'Float!',
   pharmacy: 'AWSJSON!',
+  address: 'AWSJSON!',
   // Payments ("accept & pay"). `paymentId` is declared NON-null: that is the
   // one type valid in every position it is sent to — the optional argument of
   // embedAgentConsent / embedAsyncConsent / embedConsultJoin / embedBook (a
