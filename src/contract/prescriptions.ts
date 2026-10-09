@@ -88,9 +88,9 @@ export interface PrescriptionDraftItem {
   /** Extra directions for the patient (max 500 chars). */
   instructions?: string;
   /**
-   * Vendor catalogue reference when the item came from an e-prescribing
-   * catalogue (e.g. Photon `treatmentId`), or a drug database id (Health
-   * Canada DPD DIN). Opaque here; the adapter that minted it knows.
+   * The drug database entry the line was picked from: `ndc:<11 digits>` (an
+   * NDC package, US e-prescribing) or `dpd:<DIN>` (Health Canada's Drug
+   * Product Database, fax). Opaque here; the composer that minted it knows.
    */
   catalogRef?: string;
 }
