@@ -77,9 +77,17 @@ export interface PrescriptionDraftItem {
   dose: string;
   route: PrescriptionRoute;
   frequency: PrescriptionFrequency;
-  /** Days; 0 or absent = open-ended / as needed. */
+  /**
+   * Days the directions run ("for 7 days"); 0 or absent = open-ended / as
+   * needed. Wording only on a US line: its days supply is `erx.daysSupply`.
+   */
   durationDays?: number;
-  /** Total quantity to dispense, with its unit ("30 tablets", "100 g"). */
+  /**
+   * Total quantity to dispense, with its unit ("30 tablets", "100 g").
+   * Canada: required, free text. US: may be empty; the platform derives it
+   * from `erx` (`erx.quantity` in `erx.unit`, "21 capsules") and stores that
+   * instead.
+   */
   quantity: string;
   /** Refills allowed (0–11). */
   refills: number;
@@ -89,10 +97,37 @@ export interface PrescriptionDraftItem {
   instructions?: string;
   /**
    * The drug database entry the line was picked from: `ndc:<11 digits>` (an
-   * NDC package, US e-prescribing) or `dpd:<DIN>` (Health Canada's Drug
-   * Product Database, fax). Opaque here; the composer that minted it knows.
+   * NDC package, US e-prescribing — set by the platform from `erx.ndc`) or
+   * `dpd:<DIN>` (Health Canada's Drug Product Database, fax). Opaque here;
+   * the composer that minted it knows.
    */
   catalogRef?: string;
+  /**
+   * The line's US e-prescribing coding ({@link PrescriptionDraftItemErx}).
+   * REQUIRED on every line in the US (transport `erx`); dropped in Canada.
+   */
+  erx?: PrescriptionDraftItemErx;
+}
+
+/**
+ * How one line of a US prescription is coded for the e-prescribing network:
+ * the package picked in the drug database, and how much of it to dispense.
+ * The network takes the drug from the NDC alone, so `drug` and `unit` are
+ * what the physician saw when picking — the platform re-reads both from the
+ * NDC before it signs. Mirrors `RxItemErx` in the platform's
+ * `shared/prescriptions.ts`.
+ */
+export interface PrescriptionDraftItemErx {
+  /** 11-digit NDC of the package picked from `GET /v1/drugs` (`DrugPackage.ndc`). */
+  ndc: string;
+  /** `DrugPackage.description` as listed (at most 160 characters); the platform re-reads it from the NDC. */
+  drug: string;
+  /** `DrugOption.unit` (e.g. "Capsule", at most 40 characters); re-read from the NDC. */
+  unit: string;
+  /** Quantity to dispense in `unit`: decimal string > 0, at most 5 digits and 3 decimals (`"30"`, `"7.5"`). */
+  quantity: string;
+  /** Days supply, integer 1–90. */
+  daysSupply: number;
 }
 
 /**
@@ -103,7 +138,11 @@ export interface PrescriptionDraftItem {
  */
 export interface PrescriptionDraft {
   items: PrescriptionDraftItem[];
-  /** Note to the pharmacist (max 500 chars). */
+  /**
+   * Note to the pharmacist (max 500 chars). US: at most 210, counted as the
+   * pharmacy is sent it — plain ASCII, where an accented letter is its base
+   * letter and some symbols take more than one character ("…" is three).
+   */
   pharmacistNote?: string;
   /** Diagnosis / indication as free text (optional, printed on the script). */
   indication?: string;
@@ -140,8 +179,11 @@ export type PrescriptionStatus =
  * - `sent` — chosen and on its way, or delivered. Render a disabled button
  *   reading "Sent to {pharmacyName}" (or plainly "Sent" when the name is not
  *   known).
- * - `expired` — the 24-hour window lapsed, or the link does not resolve
- *   (never a 404 on the state read: a dead link is an ordinary answer).
+ * - `expired` — the 24-hour window lapsed, the link does not resolve
+ *   (never a 404 on the state read: a dead link is an ordinary answer), or
+ *   the prescription can no longer be sent from it: a US e-prescription the
+ *   network refused for a reason another pharmacy cannot fix — the clinic
+ *   was told, and only the physician can send it again.
  * - `revoked` — withdrawn by the physician.
  *
  * Keep the button visible for the non-actionable values, with a label that
@@ -179,7 +221,9 @@ export interface PrescriptionResource {
   consultId: string | null;
   /**
    * The EFFECTIVE status: `expired` as soon as the 24-hour window closes,
-   * even before the platform's sweep stamps it.
+   * even before the platform's sweep stamps it — and while the prescription
+   * can no longer be sent from its link ({@link PharmacyLinkAction}
+   * `expired`).
    */
   status: PrescriptionStatus;
   /** True once the pharmacy link is no longer usable. */
@@ -279,19 +323,32 @@ export interface PrescriptionAddress {
  * Why an address was refused — `details.code` of `422 invalid_address`,
  * naming the field to fix (the codes the platform's own pickers render):
  *
- * - `street` / `city` — missing (empty after trimming);
+ * - `street` / `city` — missing: empty after trimming, or empty as the
+ *   network is sent it (nothing left once folded to plain ASCII — a city
+ *   typed in Cyrillic);
  * - `state` — not a US state, DC or inhabited territory code, or a `country`
  *   other than the US;
  * - `zipCode` — not five digits (or ZIP+4);
- * - `tooLong` — `street`, `street2` or `city` over
- *   {@link PRESCRIPTION_ADDRESS_MAX} characters.
+ * - `tooLong` — `street`, `street2` or `city` over its limit in
+ *   {@link PRESCRIPTION_ADDRESS_LIMITS}. One code for the three lines: the
+ *   form marks the line that is over (the platform's pickers compare each
+ *   line with its limit).
  *
  * Mirrors `RxAddressError`.
  */
 export type PrescriptionAddressError = 'street' | 'city' | 'state' | 'zipCode' | 'tooLong';
 
-/** Longest `street` / `street2` / `city` accepted, in characters. Mirrors `RX_ADDRESS_MAX`. */
-export const PRESCRIPTION_ADDRESS_MAX = 100;
+/**
+ * Longest `street`, `street2` (unit) and `city` accepted — the
+ * e-prescribing network's own field limits. Counted in characters of the
+ * line as the network is sent it: plain ASCII, where an accented letter is
+ * its base letter ("Señora" is six) and a few symbols take more than one
+ * ("…" is three), whitespace runs folded to one space and the ends trimmed.
+ * Use them as your inputs' `maxLength`; a longer line (an autocomplete pick,
+ * say) is refused with `tooLong`, and the patient abbreviates it ("Boulevard"
+ * → "Blvd"). Mirrors `RX_ADDRESS_LIMITS`.
+ */
+export const PRESCRIPTION_ADDRESS_LIMITS = {street: 40, street2: 40, city: 35} as const;
 
 /**
  * The step the picker shows BEFORE its list, in an e-prescribing deployment:

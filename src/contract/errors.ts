@@ -365,9 +365,11 @@ export type ErrorCode =
    * `address`: the address as sent cannot be a delivery address —
    * `details.code` names the field to fix (`street`, `city`, `state`,
    * `zipCode`, `tooLong`; see `PrescriptionAddressError`): a street or city
-   * empty after trimming, a state that is not a US state, DC or inhabited
+   * empty after trimming or as the network is sent it (nothing left once
+   * folded to plain ASCII), a state that is not a US state, DC or inhabited
    * territory (or a `country` other than the US), a ZIP that is not five
-   * digits or ZIP+4, a line over 100 characters. Distinct from
+   * digits or ZIP+4, a line over its limit (`PRESCRIPTION_ADDRESS_LIMITS`:
+   * street and unit 40 characters, city 35). Distinct from
    * `invalid_request` (the shape was fine; the values are not an address) —
    * leaving out the `street`, `city`, `state` or `zipCode` key, or sending a
    * non-string, is that `400`. Nothing was saved. HTTP 422.
