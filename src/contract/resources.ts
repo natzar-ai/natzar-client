@@ -191,19 +191,38 @@ export type AsyncNotice =
   | 'escalated'
   | 'awaiting_ack'
   /**
-   * PRESCRIPTIONS (`./prescriptions`): the four things a prescription says
-   * to the patient on the thread. `prescription_issued` and
-   * `prescription_failed` carry the pharmacy link in `body` (detect it with
-   * `PHARMACY_LINK_REGEX`, resolve it with `GET /v1/prescriptions/{id}`);
-   * `prescription_sent` names the pharmacy it went to; `prescription_revoked`
-   * says the physician withdrew it. They arrive as ordinary
-   * `async_consult.message` webhook events — there is no prescription event
-   * type.
+   * PRESCRIPTIONS (`./prescriptions`): the things a prescription says to the
+   * patient on the thread. `prescription_issued` and `prescription_failed`
+   * carry the pharmacy link in `body` (detect it with `PHARMACY_LINK_REGEX`,
+   * resolve it with `GET /v1/prescriptions/{id}`); `prescription_sent` names
+   * the pharmacy it went to; `prescription_revoked` says the physician
+   * withdrew it. They arrive as ordinary `async_consult.message` webhook
+   * events — there is no prescription event type.
+   *
+   * Three more come only from an e-prescribing deployment
+   * (`transport: 'erx'`), and none carries a link — there is nothing for the
+   * patient to choose:
+   *
+   * - `prescription_partially_sent` — some of the medications reached the
+   *   named pharmacy and the rest could not be sent (or failed there
+   *   later); the physician follows up. The prescription is `sent`.
+   * - `prescription_delayed` — the send waits on a final step on the
+   *   physician's side and goes out to the named pharmacy by itself; the
+   *   patient has nothing to do. The prescription stays `transmitting`.
+   * - `prescription_contact_clinic` — the prescription could not be sent to
+   *   the named pharmacy, for a reason another pharmacy would not fix: the
+   *   patient should contact their clinic. A `failed` prescription's link
+   *   reads `action: 'expired'` until the physician sends it again; one that
+   *   had been `sent` (its medication failed at the pharmacy later) stays
+   *   `sent`.
    */
   | 'prescription_issued'
   | 'prescription_sent'
   | 'prescription_failed'
   | 'prescription_revoked'
+  | 'prescription_partially_sent'
+  | 'prescription_delayed'
+  | 'prescription_contact_clinic'
   /**
    * REFERRALS (`./referrals`): the two things a referral says to the patient
    * on the thread. `referral_issued` carries the document link in `body`

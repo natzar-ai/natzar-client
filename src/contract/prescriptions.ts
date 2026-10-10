@@ -14,7 +14,10 @@
  * (e-prescribing where the deployment's jurisdiction has a network, fax where
  * it does not) and the outcome lands on the same transcript as
  * `async:prescription_sent` / `async:prescription_failed`; a withdrawal is
- * `async:prescription_revoked`.
+ * `async:prescription_revoked`. An e-prescribing deployment adds three
+ * notices, none of which carries a link: `async:prescription_partially_sent`,
+ * `async:prescription_delayed` and `async:prescription_contact_clinic` (see
+ * `AsyncNotice` in `./resources`).
  *
  * The public `/pharmacy` page refuses partner-origin consults (their patients
  * are yours to render), so a partner rendering its own chat resolves the
@@ -36,10 +39,12 @@
  *    above the list ({@link PrescriberLicensureNotice}), and every distance
  *    in the list's `distanceUnit` ({@link distanceInUnit}).
  * 4. Poll `GET /v1/prescriptions/{id}` until `action` is `sent` (or the
- *    transcript says `prescription_failed`, which re-opens the choice).
+ *    transcript says `prescription_failed`, which re-opens the choice, or
+ *    `prescription_contact_clinic`, which does NOT: `action` reads
+ *    `expired` until the physician sends it again).
  *
- * No webhook event type is added for prescriptions: the four notices arrive
- * as ordinary `async_consult.message` events, distinguished by their
+ * No webhook event type is added for prescriptions: the notices arrive as
+ * ordinary `async_consult.message` events, distinguished by their
  * {@link MessageClassification | classification}.
  *
  * This module is self-contained on purpose: it is copied verbatim into the
