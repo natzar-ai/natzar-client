@@ -1,3 +1,4 @@
+import type {GetPhysicianEprescribingResponse, SearchDrugsQuery, SearchDrugsResponse} from './contract/eprescribing';
 /**
  * `NatzarClient` — the typed entry point to the Natzar Partner API.
  *
@@ -505,7 +506,14 @@ export class NatzarClient {
   // Physicians
   // -------------------------------------------------------------------------
 
+  readonly drugs = {
+    /** Search US drugs as a physician. With a tenant key, pass physicianToken or physicianId. */
+    search: (query: SearchDrugsQuery, opts?: CallOptions): Promise<SearchDrugsResponse> => this.get('/drugs', {q: query.q}, opts),
+  };
+
   readonly physicians = {
+    /** Read readiness, portal access and open pharmacy requests (a physician session is self-only). */
+    eprescribing: (id: string, opts?: CallOptions): Promise<GetPhysicianEprescribingResponse> => this.get(`/physicians/${enc(id)}/eprescribing`, undefined, opts),
     /**
      * Create a physician + their backing portal account. An IDENTICAL repeat
      * (same externalId, same email) is idempotent; a different email on a known
@@ -785,7 +793,7 @@ export class NatzarClient {
     referrals: (id: string, opts?: CallOptions): Promise<ListAsyncConsultReferralsResponse> =>
       this.get(`/async-consults/${enc(id)}/referrals`, undefined, opts),
 
-    /** Sign and send a prescription (fax jurisdictions). Never auto-retried. */
+    /** Sign a prescription: coded erx lines in the US, free-text fax lines in Canada. Never auto-retried. */
     issuePrescription: (id: string, body: IssuePrescriptionRequest, opts?: CallOptions): Promise<IssuePrescriptionResponse> =>
       this.post(`/async-consults/${enc(id)}/prescriptions`, body, opts),
 

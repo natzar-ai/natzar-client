@@ -116,3 +116,11 @@ test('a bad signature never reaches the handler', async () => {
   assert.equal(result.valid, false);
   assert.equal(called, false);
 });
+
+test('the pharmacy-request event verifies and narrows without patient or drug data', async () => {
+  const rawBody = JSON.stringify({id: 'evt_erx', type: 'eprescribing.pharmacy_request', createdAt: new Date().toISOString(), partnerId: 'partner1', data: {physicianId: 'dr1', request: {id: 'request1', kind: 'renewal', receivedAt: new Date().toISOString(), dueAt: new Date(Date.now() + 48 * 3600_000).toISOString()}, asyncConsultId: 'thread1', prescriptionId: 'rx1', inboxUrl: 'https://portal.test/portal/pharmacy-requests?id=request1'}});
+  const signature = await signWebhook({secret: SECRET, rawBody});
+  const result = await verifyWebhook({secret: SECRET, rawBody, signature});
+  assert.equal(result.valid, true);
+  if (result.valid && result.event.type === 'eprescribing.pharmacy_request') {assert.equal(result.event.data.request.kind, 'renewal'); assert.equal(result.event.data.physicianId, 'dr1');}
+});

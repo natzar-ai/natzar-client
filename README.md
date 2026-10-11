@@ -1091,10 +1091,20 @@ link with `desk.inbox.issueReferrals(consultId, {drafts: [labDraft,
 imagingDraft], lang: 'en'})`. Each referral is a separate signed PDF;
 `care.referrals.document(linkId).files` lists them for a patient-session UI
 (and `GET /v1/referrals/{id}` exposes the same `files` list). A physician
-session also exposes `desk.inbox.issuePrescription(consultId, {draft:
-{items: [...]}})` in fax jurisdictions. The prescription link lets the
-patient choose their pharmacy. US e-prescriptions still require the vendor's
-prescriber composer and cannot be issued through this free-text route.
+session also exposes `desk.inbox.issuePrescription(consultId, {draft: {items: [...]}})`.
+In Canada, use free-text medication lines. In the US, first read
+`desk.prescribing.status()` and complete any returned setup requirements through
+`setupUrl`. Use `desk.prescribing.searchDrugs(q)` to select a non-controlled
+product, strength/form and 11-digit NDC package. Each US line must carry
+`erx: {ndc, drug, unit, quantity, daysSupply}`; quantity is a numeric string.
+The prescription link lets the patient choose their pharmacy.
+
+`prescriber_not_ready` (409) returns `details.requirements` and `details.setupUrl`.
+After setup, issue again. `controlled_substance` and
+`drug_unavailable` (422) identify rejected line indexes in `details.items`;
+correct the draft before issuing again. Temporary `dependency_unavailable` (503) can be tried again. Document issue
+is never retried automatically; reconcile an ambiguous timeout from the
+consultation before issuing another signed document.
 
 A request never silences the assistant, may sit beside an open conversation
 (and beside other requests — `has_open_thread` is never raised for or by one),
@@ -1209,10 +1219,12 @@ already consumed fails loudly, naming the fix), and answers 500 when your
 handler throws so the delivery is retried — delivery is at-least-once, so
 dedupe on `event.id` (`dedupe: {seen: (id) => …}`).
 
-There is no prescription event type: a prescription reaches you as an
-`async_consult.message` whose `classification` is `async:prescription_issued`
-/ `_sent` / `_failed` / `_revoked`, with the link in the body — resolve it with
-`prescriptions.get` as above.
+Prescription notices arrive as `async_consult.message`, classified
+`async:prescription_issued` / `_sent` / `_partially_sent` / `_failed` / `_revoked`,
+with the link in the body — resolve it with `prescriptions.get` as above.
+`eprescribing.pharmacy_request` carries the physician and request IDs, kind,
+received/due timestamps and the provider-portal inbox URL. It contains no patient
+or drug data. The physician answers Change/Renewal requests in that inbox.
 
 Without the middleware, verify the raw body yourself:
 
@@ -1258,6 +1270,12 @@ import {postAgentMessageSchema} from '@natzar/client/contract';
 ---
 
 ## Changelog
+
+### 0.20.0 — US e-prescribing
+
+US prescriptions use coded `item.erx` lines from `client.drugs.search({q}, {physicianId})` or `desk.prescribing.searchDrugs(q)`. Read `client.physicians.eprescribing(id)` / `desk.prescribing.status()` for registration, identity expiry, portal-invite requirements and open pharmacy requests. Complete setup through the returned portal URL. Canada retains free-text fax prescribing. Prescription issue is never automatically retried.
+
+Breaking contract changes: `PROVIDER_EMBED_FAX_CAPABILITIES` becomes `PROVIDER_EMBED_RX_CAPABILITIES`; `prescribingTransport` also supports `erx`; delivery-address limits are field-specific `PRESCRIPTION_ADDRESS_LIMITS`; webhook consumers must handle `eprescribing.pharmacy_request`; new refusals are `prescriber_not_ready`, `controlled_substance` and `drug_unavailable`, and the transcript may contain `async:prescription_partially_sent`. Pharmacy requests carry no patient or drug data and are answered in the provider portal.
 
 ### 0.19.0 — the delivery address and the remembered pharmacy
 

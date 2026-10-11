@@ -3,6 +3,7 @@
 // Copied verbatim from natzar-core's shared/partner-api by
 // scripts/sync-contract.mjs. Edit the source there; this copy exists only so
 // the published package is self-contained.
+import type {SearchDrugsQuery, SearchDrugsResponse, GetPhysicianEprescribingResponse} from './eprescribing';
 /**
  * Route-by-route contract of the Natzar Partner API — every endpoint's
  * request and response type, plus the machine-readable {@link Endpoints}
@@ -1467,6 +1468,10 @@ export interface Endpoints {
   /** List physicians, or look one up by `?externalId=`. */
   'GET /v1/physicians': {request: ListPhysiciansQuery; response: ListPhysiciansResponse};
   /** Fetch one physician by our id, or `me` for the acting one. Physician session: `me` only. */
+  /** E-prescribing readiness and portal access. Physician sessions may read only themselves. */
+  'GET /v1/physicians/{id}/eprescribing': {request: undefined; response: GetPhysicianEprescribingResponse};
+  /** Search the US drug database as the acting physician (session or physician header required). */
+  'GET /v1/drugs': {request: SearchDrugsQuery; response: SearchDrugsResponse};
   'GET /v1/physicians/{id}': {request: undefined; response: GetPhysicianResponse};
   /** (Re-)send the portal invitation email. */
   'POST /v1/physicians/{id}/portal-invite': {request: undefined; response: SendPortalInviteResponse};
@@ -1594,7 +1599,7 @@ export interface Endpoints {
    * not_found` for a consult that is not yours.
    */
   'GET /v1/async-consults/{id}/referrals': {request: undefined; response: ListAsyncConsultReferralsResponse};
-  /** Sign and send a prescription. Physician session; available in fax jurisdictions. */
+  /** Sign and send a prescription. Physician session; US: coded lines (erx), checked against the drug database; Canada: faxed. */
   'POST /v1/async-consults/{id}/prescriptions': {
     request: IssuePrescriptionRequest;
     response: IssuePrescriptionResponse;

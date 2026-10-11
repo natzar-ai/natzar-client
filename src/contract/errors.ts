@@ -515,6 +515,12 @@ export type ErrorCode =
    * the tenant's licensure enforcement. HTTP 409.
    */
   | 'prescriber_not_eligible'
+  /** E-prescribing setup is incomplete. Details contain requirements and setupUrl. HTTP 409. */
+  | 'prescriber_not_ready'
+  /** A controlled medication cannot be e-prescribed here. Details contain item indexes and NDCs. HTTP 422. */
+  | 'controlled_substance'
+  /** An NDC is no longer available; search again. Details contain item indexes and NDCs. HTTP 422. */
+  | 'drug_unavailable'
   /**
    * The cursor was tampered with, expired, or belongs to another session or
    * query. Restart the listing without a cursor. HTTP 400.
@@ -714,6 +720,9 @@ export const ERROR_HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
   cursor_invalid: 400,
   upload_rejected: 422,
   dependency_unavailable: 503,
+  prescriber_not_ready: 409,
+  controlled_substance: 422,
+  drug_unavailable: 422,
   protocol_pending: 409,
   protocol_handoff_required: 409,
   protocol_unavailable: 503,

@@ -286,7 +286,16 @@ interface Event<TType extends string, TData> {
  * }
  * ```
  */
+/** A pharmacy Change/Renewal request. No patient or medication data; answer in the provider portal. */
+export interface EprescribingPharmacyRequestData {
+  physicianId: string;
+  request: {id: string; kind: 'renewal' | 'change'; receivedAt: IsoDateTime; dueAt: IsoDateTime};
+  asyncConsultId: string | null;
+  prescriptionId: string | null;
+  inboxUrl: string;
+}
 export type WebhookEvent =
+  | Event<'eprescribing.pharmacy_request', EprescribingPharmacyRequestData>
   | Event<'async_consult.created', AsyncConsultEventData>
   | Event<'async_consult.consented', AsyncConsultEventData>
   | Event<'async_consult.declined', AsyncConsultEventData>
@@ -316,6 +325,7 @@ export type WebhookEventType = WebhookEvent['type'];
  * for validating an incoming `X-Natzar-Event` header.
  */
 export const WEBHOOK_EVENT_TYPES = [
+  'eprescribing.pharmacy_request',
   'async_consult.created',
   'async_consult.consented',
   'async_consult.declined',

@@ -1890,3 +1890,6 @@ export type SetHomeLocationRequest = z.infer<typeof setHomeLocationSchema>;
 
 /** Inferred body of `POST /v1/prescriptions/{id}/pharmacies`. See {@link addPharmacySchema}. */
 export type AddPharmacyRequest = z.infer<typeof addPharmacySchema>;
+
+/** US drug search: acting physician credentials are required. */
+export const searchDrugsQuerySchema = z.object({q: z.string().trim().min(3).max(80)}).strict();
