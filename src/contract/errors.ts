@@ -365,9 +365,11 @@ export type ErrorCode =
    * `address`: the address as sent cannot be a delivery address —
    * `details.code` names the field to fix (`street`, `city`, `state`,
    * `zipCode`, `tooLong`; see `PrescriptionAddressError`): a street or city
-   * empty after trimming, a state that is not a US state, DC or inhabited
+   * empty after trimming or as the network is sent it (nothing left once
+   * folded to plain ASCII), a state that is not a US state, DC or inhabited
    * territory (or a `country` other than the US), a ZIP that is not five
-   * digits or ZIP+4, a line over 100 characters. Distinct from
+   * digits or ZIP+4, a line over its limit (`PRESCRIPTION_ADDRESS_LIMITS`:
+   * street and unit 40 characters, city 35). Distinct from
    * `invalid_request` (the shape was fine; the values are not an address) —
    * leaving out the `street`, `city`, `state` or `zipCode` key, or sending a
    * non-string, is that `400`. Nothing was saved. HTTP 422.
@@ -513,6 +515,12 @@ export type ErrorCode =
    * the tenant's licensure enforcement. HTTP 409.
    */
   | 'prescriber_not_eligible'
+  /** E-prescribing setup is incomplete. Details contain requirements and setupUrl. HTTP 409. */
+  | 'prescriber_not_ready'
+  /** A controlled medication cannot be e-prescribed here. Details contain item indexes and NDCs. HTTP 422. */
+  | 'controlled_substance'
+  /** An NDC is no longer available; search again. Details contain item indexes and NDCs. HTTP 422. */
+  | 'drug_unavailable'
   /**
    * The cursor was tampered with, expired, or belongs to another session or
    * query. Restart the listing without a cursor. HTTP 400.
@@ -712,6 +720,9 @@ export const ERROR_HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
   cursor_invalid: 400,
   upload_rejected: 422,
   dependency_unavailable: 503,
+  prescriber_not_ready: 409,
+  controlled_substance: 422,
+  drug_unavailable: 422,
   protocol_pending: 409,
   protocol_handoff_required: 409,
   protocol_unavailable: 503,

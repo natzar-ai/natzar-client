@@ -184,3 +184,6 @@ export type ProviderEmbedPresenceBody = z.infer<typeof providerEmbedPresenceSche
 export type ProviderEmbedAvailabilityBody = z.infer<typeof providerEmbedAvailabilitySchema>;
 /** Parsed patient-history query. See {@link providerEmbedPatientHistoryQuerySchema}. */
 export type ProviderEmbedPatientHistoryQueryParsed = z.infer<typeof providerEmbedPatientHistoryQuerySchema>;
+
+/** Drug search never accepts an acting physician id from the browser. */
+export const providerEmbedDrugsQuerySchema = z.object({q: z.string().trim().min(3).max(80)}).strict();

@@ -933,7 +933,35 @@ export const issueReferralSchema = z.object({
   lang: referralLanguageSchema.optional(),
 }).strict());
 
-/** Signed prescription in a physician session (fax jurisdictions only). */
+/**
+ * The US e-prescribing coding of one prescription line
+ * (`PrescriptionDraftItemErx`). Zone-agnostic, like the rest of the draft:
+ * only its shape is checked here — an 11-digit NDC, the package's
+ * description (1–160) and unit (1–40) as listed, a quantity greater than 0
+ * with at most five digits and three decimals, a whole days supply of 1–90.
+ * Whether a line must carry it (every line in the US) or loses it (Canada)
+ * is the zone's draft rule, which the issue route applies after this.
+ */
+const prescriptionItemErxSchema = z
+  .object({
+    ndc: z.string().regex(/^\d{11}$/, 'must be an 11-digit NDC, no hyphens'),
+    drug: z.string().min(1).max(160),
+    unit: z.string().min(1).max(40),
+    quantity: z
+      .string()
+      .regex(/^\d{1,5}(\.\d{1,3})?$/, 'must be a decimal number: up to 5 digits and 3 decimals')
+      .refine((v) => Number(v) > 0, {message: 'must be greater than 0'}),
+    daysSupply: z.number().int().min(1).max(90),
+  })
+  .strict();
+
+/**
+ * Signed prescription in a physician session. US: coded lines (`erx`);
+ * Canada: free text. The schema stays zone-agnostic — it checks the shape
+ * and bounds both zones share — and the zone's own rule decides the rest
+ * (a fax line without a `quantity` is refused there, a US line derives its
+ * `quantity` from `erx`, so it may be empty).
+ */
 export const issuePrescriptionSchema = z.object({
   draft: z.object({
     items: z.array(z.object({
@@ -944,11 +972,12 @@ export const issuePrescriptionSchema = z.object({
       route: z.enum(['oral', 'sublingual', 'topical', 'inhaled', 'nasal', 'ophthalmic', 'otic', 'rectal', 'vaginal', 'subcutaneous', 'intramuscular', 'other']),
       frequency: z.enum(['once', 'daily', 'bid', 'tid', 'qid', 'q4h', 'q6h', 'q8h', 'q12h', 'qhs', 'qam', 'weekly', 'prn', 'other']),
       durationDays: z.number().int().min(0).optional(),
-      quantity: z.string().min(1).max(120),
+      quantity: z.string().max(120),
       refills: z.number().int().min(0).max(11),
       noSubstitution: z.boolean().optional(),
       instructions: z.string().max(500).optional(),
       catalogRef: z.string().max(120).optional(),
+      erx: prescriptionItemErxSchema.optional(),
     }).strict()).min(1).max(8),
     pharmacistNote: z.string().max(500).optional(),
     indication: z.string().max(500).optional(),
@@ -1578,9 +1607,11 @@ const coordinateQuerySchema = z
  * `state` and `zipCode` present as strings (a key left out, a non-string or
  * an unknown key is `400 invalid_request`), every value bounded only against
  * an oversize request. Whether they make an address — a street and a city
- * not empty after trimming, a US state, DC or territory code (`NY`, or
- * `US-NY`) in the US (`country` `US` or omitted), a ZIP or ZIP+4, no line
- * over `PRESCRIPTION_ADDRESS_MAX` characters — is decided by the route as
+ * not empty after trimming nor as the network is sent them, a US state, DC
+ * or territory code (`NY`, or `US-NY`) in the US (`country` `US` or
+ * omitted), a ZIP or ZIP+4, no line over its `PRESCRIPTION_ADDRESS_LIMITS`
+ * limit (street and unit 40, city 35, counted as the network is sent it) —
+ * is decided by the route as
  * `422 invalid_address` with `details.code` naming the field
  * (`PrescriptionAddressError`): the same rule and the same codes the
  * platform's own pickers apply, so one copy table serves every surface.
@@ -1859,3 +1890,6 @@ export type SetHomeLocationRequest = z.infer<typeof setHomeLocationSchema>;
 
 /** Inferred body of `POST /v1/prescriptions/{id}/pharmacies`. See {@link addPharmacySchema}. */
 export type AddPharmacyRequest = z.infer<typeof addPharmacySchema>;
+
+/** US drug search: acting physician credentials are required. */
+export const searchDrugsQuerySchema = z.object({q: z.string().trim().min(3).max(80)}).strict();

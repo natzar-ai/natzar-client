@@ -131,3 +131,5 @@ export * from './sessions';
 export * from './sessions-schemas';
 export * from './sessions-origins';
 export * from './sessions-crypto';
+
+export * from './eprescribing';

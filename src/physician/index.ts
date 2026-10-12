@@ -1,3 +1,4 @@
+import type {PhysicianEprescribing, SearchDrugsResponse} from '../contract/eprescribing';
 // The PHYSICIAN surface — a clinician's screen inside YOUR portal.
 //
 //   import {connectPhysician} from '@natzar/client/physician';
@@ -206,6 +207,8 @@ export type PatientRef = {patientId: string; externalPatientId?: never} | {exter
 
 /** A physician-scoped handle. Create with {@link connectPhysician}. */
 export interface PhysicianClient {
+  /** US readiness and coded drug search. Complete enrollment and identity verification at status().setupUrl. */
+  prescribing: {status(signal?: AbortSignal): Promise<PhysicianEprescribing>; searchDrugs(q: string, signal?: AbortSignal): Promise<SearchDrugsResponse>};
   workspace: {
     /**
      * Subscribe to the whole clinician screen. Calls back immediately, then
@@ -328,7 +331,7 @@ export interface PhysicianClient {
       input?: {drafts?: ReferralDraft[]; lang?: ReferralLanguage},
       signal?: AbortSignal,
     ): Promise<IssueReferralResponse>;
-    /** Sign and send a prescription using the jurisdiction's fax workflow. */
+    /** Sign a prescription: e-prescribed in the US with coded lines, faxed in Canada. */
     issuePrescription(consultId: string, input: IssuePrescriptionRequest, signal?: AbortSignal): Promise<IssuePrescriptionResponse['prescription']>;
     /**
      * Post the physician's reply. Resolves when the platform has ACCEPTED it
@@ -678,6 +681,10 @@ export async function connectPhysician(source: ConnectPhysicianSource = {}, opti
   // --- the handle -----------------------------------------------------------
 
   const desk: PhysicianClient = {
+    prescribing: {
+      status: async (signal) => (await call((c) => c.physicians.eprescribing('me', {signal}))).eprescribing,
+      searchDrugs: (q, signal) => call((c) => c.drugs.search({q}, {signal})),
+    },
     workspace: {
       subscribe: (onChange, watchOptions = {}) => {
         subscribers += 1;

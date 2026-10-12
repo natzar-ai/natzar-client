@@ -815,3 +815,13 @@ test('billing.waitForPayment gives up on a payment that can no longer be paid, a
     return true;
   });
 });
+
+test('US e-prescribing routes keep physician credentials and query options', async () => {
+  const {calls, fetchLike} = stubFetch([{status: 200, body: {eprescribing: {transport: 'erx'}}}, {status: 200, body: {products: [], truncated: false}}]);
+  const client = new NatzarClient({apiKey: KEY, baseUrl: 'https://x.test/v1', fetch: fetchLike});
+  await client.physicians.eprescribing('dr/a', {physicianId: 'dr_1'});
+  await client.drugs.search({q: 'Amoxicillin 500 mg'}, {physicianId: 'dr_1'});
+  assert.equal(calls[0].url, 'https://x.test/v1/physicians/dr%2Fa/eprescribing');
+  assert.equal(calls[1].url, 'https://x.test/v1/drugs?q=Amoxicillin+500+mg');
+  for (const call of calls) {assert.equal(call.init.method, 'GET'); assert.equal((call.init.headers as Record<string, string>)['X-Natzar-Physician-Id'], 'dr_1');}
+});

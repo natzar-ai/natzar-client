@@ -721,3 +721,23 @@ describe('connectPhysician — attachments & specialties', () => {
     assert.deepEqual(calls[0].body, {languages: ['fr', 'en']});
   });
 });
+
+describe('US e-prescribing desk', () => {
+  it('reads self readiness and searches drugs under the clinician session', async () => {
+    const api = stubApi({'GET /physicians/me/eprescribing': {eprescribing: {transport: 'erx', ready: false, requirements: ['identity_verification']}}, 'GET /drugs': {products: [], truncated: false}});
+    const desk = await connect({fetch: api.fetchLike});
+    try {
+      assert.equal((await desk.prescribing.status()).ready, false);
+      assert.deepEqual(await desk.prescribing.searchDrugs('amoxicillin'), {products: [], truncated: false});
+      assert.ok(api.calls.every((call) => call.headers.Authorization?.startsWith('Bearer nz1.')));
+      assert.equal(new URL(api.calls.find((c) => c.path === '/drugs')!.url).searchParams.get('q'), 'amoxicillin');
+    } finally {desk.disconnect();}
+  });
+  it('preserves setup, drug refusal and dependency error codes', async () => {
+    for (const [status, code] of [[409, 'prescriber_not_ready'], [422, 'controlled_substance'], [422, 'drug_unavailable'], [503, 'dependency_unavailable']] as const) {
+      const api = stubApi({'GET /drugs': () => refused(status, code)});
+      const desk = await connect({fetch: api.fetchLike});
+      try {await assert.rejects(desk.prescribing.searchDrugs('amoxicillin'), (e: unknown) => typeof e === 'object' && e !== null && (e as {code: string}).code === code);} finally {desk.disconnect();}
+    }
+  });
+});

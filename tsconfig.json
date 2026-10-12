@@ -22,7 +22,7 @@
     "verbatimModuleSyntax": true,
     // Tests import their shared helpers as `./support/x.ts` (node --test runs
     // them with type stripping, which resolves literal paths only). The
-    // emitting configs (tsconfig.build.json, tsconfig.cjs.json) switch it off.
+    // The ESM emitting config (tsconfig.build.json) switches it off.
     "allowImportingTsExtensions": true
   },
   "include": ["src", "test"]

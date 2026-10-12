@@ -3,6 +3,7 @@
 // Copied verbatim from natzar-core's shared/partner-api by
 // scripts/sync-contract.mjs. Edit the source there; this copy exists only so
 // the published package is self-contained.
+import type {EprescribingRequirement, SearchDrugsQuery, SearchDrugsResponse} from './eprescribing';
 /**
  * Provider embed contract: the `<natzar-provider>` clinician element, the
  * session your server mints for it, the provider REST route table under
@@ -213,7 +214,7 @@ export const PROVIDER_EMBED_MEDIA_CAPABILITIES = ['telehealth.join', 'telehealth
 /** Only grantable in patient mode (D9). */
 export const PROVIDER_EMBED_PATIENT_ONLY_CAPABILITIES = ['patient.history.read'] as const satisfies readonly ProviderEmbedCapability[];
 /** Only grantable where the deployment's prescribing transport is fax. */
-export const PROVIDER_EMBED_FAX_CAPABILITIES = ['prescriptions.preview', 'prescriptions.issue'] as const satisfies readonly ProviderEmbedCapability[];
+export const PROVIDER_EMBED_RX_CAPABILITIES = ['prescriptions.preview', 'prescriptions.issue'] as const satisfies readonly ProviderEmbedCapability[];
 
 /** Key of the mode/capability matrix (consultation mode is split by kind). */
 export type ProviderEmbedModeKey = 'workspace' | 'consultation:async' | 'consultation:telehealth' | 'patient';
@@ -381,7 +382,7 @@ export interface ProviderEmbedSessionView {
   /** Residency zone. */
   zone: string;
   /** Deployment features the UI adapts to. */
-  features: {mediaEnabled: boolean; prescribingTransport: 'fax' | null};
+  features: {mediaEnabled: boolean; prescribingTransport: 'fax' | 'erx' | null};
   /** The partner the session belongs to; the frame requires it to equal its configuration. */
   partnerId: string;
   /** Provider API version; the frame requires equality with {@link PROVIDER_EMBED_API_VERSION}. */
@@ -784,7 +785,7 @@ export interface ProviderEmbedDocumentRow {
 /** Why a clinical action is not available. */
 export type ProviderEmbedActionBlock =
   | 'capability_not_granted' | 'not_assigned' | 'not_active' | 'request_thread' | 'transport_unsupported'
-  | 'prescriber_not_eligible';
+  | 'prescriber_not_eligible' | 'prescriber_not_ready' | 'prescribing_unavailable';
 /** `GET …/consultations/async/{id}/clinical-actions` response. */
 export interface ProviderEmbedClinicalActions {
   /** The consultation. */
@@ -794,7 +795,7 @@ export interface ProviderEmbedClinicalActions {
   /** Referral availability. */
   referrals: {available: boolean; blockedBy?: ProviderEmbedActionBlock};
   /** Prescribing availability. */
-  prescribing: {available: boolean; transport: 'fax' | null; prescriberEligible: boolean; blockedBy?: ProviderEmbedActionBlock};
+  prescribing: {available: boolean; transport: 'fax' | 'erx' | null; prescriberEligible: boolean; blockedBy?: ProviderEmbedActionBlock; setupUrl?: string; requirements?: EprescribingRequirement[]};
   /** Documents already issued on the episode. */
   documents: ProviderEmbedDocumentRow[];
 }
@@ -1011,9 +1012,11 @@ export interface ProviderEmbedEndpoints {
   'POST /v1/provider-embed/consultations/async/{id}/referrals/preview': {auth: 'browser'; params: ProviderEmbedIdParams; query: undefined; request: ProviderEmbedReferralRequest; response: ProviderEmbedReferralPreviewResponse};
   /** Sign and issue referrals (`referrals.issue`, idempotent). */
   'POST /v1/provider-embed/consultations/async/{id}/referrals': {auth: 'browser'; params: ProviderEmbedIdParams; query: undefined; request: ProviderEmbedReferralRequest; response: ProviderEmbedReferralIssueResponse};
-  /** Unsigned prescription preview (`prescriptions.preview`, fax only). */
+  /** Unsigned prescription preview (`prescriptions.preview`, fax or erx). */
+  /** Search the US drug database for this session’s physician. */
+  'GET /v1/provider-embed/drugs': {auth: 'browser'; params: ProviderEmbedNoParams; query: SearchDrugsQuery; request: undefined; response: SearchDrugsResponse};
   'POST /v1/provider-embed/consultations/async/{id}/prescriptions/preview': {auth: 'browser'; params: ProviderEmbedIdParams; query: undefined; request: ProviderEmbedPrescriptionRequest; response: ProviderEmbedPdfPreview};
-  /** Sign and issue a prescription (`prescriptions.issue`, fax only, idempotent). */
+  /** Sign and issue a prescription (`prescriptions.issue`, fax or erx, idempotent). */
   'POST /v1/provider-embed/consultations/async/{id}/prescriptions': {auth: 'browser'; params: ProviderEmbedIdParams; query: undefined; request: ProviderEmbedPrescriptionRequest; response: ProviderEmbedPrescriptionIssueResponse};
   /** Join the call, or extend the media lease (`telehealth.join`). */
   'POST /v1/provider-embed/consultations/telehealth/{id}/room': {auth: 'browser'; params: ProviderEmbedIdParams; query: undefined; request: ProviderEmbedRoomRequest; response: ProviderEmbedRoomResponse};
@@ -1080,6 +1083,7 @@ export const PROVIDER_EMBED_ROUTES = [
   'GET /v1/provider-embed/consultations/async/{id}/clinical-actions',
   'POST /v1/provider-embed/consultations/async/{id}/referrals/preview',
   'POST /v1/provider-embed/consultations/async/{id}/referrals',
+  'GET /v1/provider-embed/drugs',
   'POST /v1/provider-embed/consultations/async/{id}/prescriptions/preview',
   'POST /v1/provider-embed/consultations/async/{id}/prescriptions',
   'POST /v1/provider-embed/consultations/telehealth/{id}/room',
@@ -1104,6 +1108,7 @@ export const PROVIDER_EMBED_ERROR_CODES = [
   'not_assigned', 'already_closed', 'message_rejected', 'consult_not_cancellable', 'idempotency_conflict',
   'idempotency_in_progress', 'lease_conflict', 'renew_conflict', 'prescriber_not_eligible', 'upload_rejected',
   'rate_limited', 'internal_error', 'dependency_unavailable',
+  'prescriber_not_ready', 'controlled_substance', 'drug_unavailable',
 ] as const satisfies readonly ErrorCode[];
 /** An error code of the provider routes. */
 export type ProviderEmbedErrorCode = (typeof PROVIDER_EMBED_ERROR_CODES)[number];
@@ -1126,7 +1131,9 @@ export type ProviderEmbedErrorDetails =
   | {issues: ProviderEmbedValidationIssue[]}
   | {unavailable: ProviderEmbedUnavailableCapability[]}
   | {capability: ProviderEmbedCapability}
-  | {draftCode: string}
+  | {draftCode: string; issues?: {index: number}[]}
+  | {issues: {index: number; ndc?: string}[]}
+  | {requirements: EprescribingRequirement[]; setupUrl?: string}
   | {reason: string};
 /** The JSON body of every provider error response. `message` is a fixed safe string per code. */
 export interface ProviderEmbedApiError {

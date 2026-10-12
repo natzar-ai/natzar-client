@@ -456,6 +456,8 @@ export type ClinicianCapability = ProviderEmbedCapability | (typeof PHYSICIAN_RE
  * holds this list equal to the handler's.
  */
 export const PHYSICIAN_REST_ROUTES = [
+  'GET /v1/drugs',
+  'GET /v1/physicians/{id}/eprescribing',
   'GET /v1/physicians/{id}',
   'POST /v1/physicians/{id}/presence',
   'POST /v1/physicians/{id}/heartbeat',
@@ -500,12 +502,14 @@ export type PhysicianRestRoute = (typeof PHYSICIAN_REST_ROUTES)[number];
  * exactly one. partner-api dispatch checks it on every request of a headless
  * or native clinician session (§7, M3), after the session `GetItem`.
  *
- * The provider embed's deployment gates (media flag, fax-only prescribing,
+ * The provider embed's deployment gates (media flag, prescribing transport readiness,
  * patient-mode only) narrow the FRAME surfaces; this preset keeps today's REST
  * behaviour, video included, and is released separately after rmc's e2e
  * suites (RG6).
  */
 export const PHYSICIAN_REST_ROUTE_CAPABILITY: {readonly [R in PhysicianRestRoute]: ClinicianCapability} = {
+  'GET /v1/drugs': 'prescriptions.issue',
+  'GET /v1/physicians/{id}/eprescribing': 'profile.read',
   'GET /v1/physicians/{id}': 'profile.read',
   'POST /v1/physicians/{id}/presence': 'presence.write',
   'POST /v1/physicians/{id}/heartbeat': 'presence.write',
