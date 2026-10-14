@@ -530,12 +530,13 @@ describe('connectPatientRoom — a room retired during its first connect (liveki
     room.rooms.t1 = {metadata: '', leaveBeforePc: DISCONNECT_REASON.ROOM_DELETED};
     room.rooms.t2 = {metadata: meta('n-t2')};
     const {pull, state} = pulls<LiveKitGrant>({kind: 'live', grant: grant('t2')});
-    const t0 = Date.now();
     const {session, phases} = patient(room, grant('t1'), pull);
     assert.ok(await until(() => session.state.phase === 'live', 2_000));
-    assert.ok(Date.now() - t0 >= 150, 'connected only once the first attempt had ended');
     assert.deepEqual(room.handedPending(), []);
-    assert.ok(room.log.includes('attempt-timed-out:t1'));
+    // Check the lifecycle order itself: a timer's wall-clock duration can be
+    // slightly below its requested delay even though the attempt ended first.
+    const ended = room.log.indexOf('attempt-timed-out:t1');
+    assert.ok(ended >= 0 && room.log.indexOf('connect:t2') > ended, 'connected only once the first attempt had ended');
     assert.deepEqual(room.connects(), ['connect:t1', 'connect:t2']);
     assert.equal(state.count, 1);
     assert.deepEqual(phases(), ['connecting', 'repulling', 'connecting', 'live']);
