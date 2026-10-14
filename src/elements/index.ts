@@ -27,7 +27,7 @@
  */
 
 import type {ElementErrorCode, PatientEventName, ProviderEventName, ProviderNavigationMode, ProviderView} from '../contract/sessions';
-import type {PatientEventDetailMap, ProviderEventDetailMap, SessionGrant} from '../contract/sessions-schemas';
+import type {PatientEventDetailMap, ProviderEventDetailMap, SessionGrant, EndpointStartRequest} from '../contract/sessions-schemas';
 import type {SessionAsk} from '../broker';
 
 export type {PatientEventDetailMap, ProviderEventDetailMap, PatientEventName, ProviderEventName, ProviderView, ProviderNavigationMode, ElementErrorCode};
@@ -48,6 +48,10 @@ export type NatzarElementState = 'idle' | 'connecting' | 'connected' | 'signed_o
 /** Manual mode (`manual` attribute): your callback returns the grant for each ask (mint and renew). */
 export interface NatzarConnectOptions {
   getSession(ask: SessionAsk): Promise<SessionGrant> | SessionGrant;
+  /** Optional server callback for in-widget Start; the server must authorize the action. */
+  getStart?(ask: EndpointStartRequest): Promise<SessionGrant> | SessionGrant;
+  /** Public deployment facts when there is no HTTP endpoint/config. */
+  config?: {partnerId: string; zone: string};
 }
 
 /** Methods every tag has. */
