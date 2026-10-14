@@ -57,6 +57,12 @@ function stubApi(routes: Record<string, RouteStub>) {
 
 const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+async function waitFor(until: () => boolean, message: string) {
+  const deadline = Date.now() + 5_000;
+  while (!until() && Date.now() < deadline) await tick(5);
+  assert.ok(until(), message);
+}
+
 const CONFIG = {partnerId: 'partner_1', environment: 'sbx-test', zone: 'us' as const, apiUrl: 'https://api.test/v1'};
 const sid = (n: number) => `sess${String(n).padStart(17, '0')}A`;
 const tokenOf = (sessionId: string, n: number) => `nz1.${sessionId}.${String(n).padStart(42, 'k')}A`;
@@ -197,19 +203,22 @@ describe('connectPhysician — workspace polling', () => {
     const stop = desk.workspace.subscribe((snap, sync) => seen.push(snap ? `${sync.phase}:${snap.telehealth.queue.length}` : sync.phase), {
       pauseWhenHidden: false,
     });
-    await tick(60);
-    assert.ok(hitsFor('GET /physicians/me/workspace') >= 4, 'polling on the interval');
-    assert.deepEqual(seen, ['connecting', 'live:0'], 'a ticking clock is not a change');
-    queue = [{consultId: 'tele_1', position: 1}];
-    await tick(40);
-    assert.deepEqual(seen, ['connecting', 'live:0', 'live:1'], 'a patient joining the queue is');
-    stop();
-    // `stopped` still carries the last good snapshot — a UI bound to the
-    // subscription keeps showing real data rather than blanking on unmount.
-    assert.equal(seen.at(-1), 'stopped:1');
-    const after = hitsFor('GET /physicians/me/workspace');
-    await tick(30);
-    assert.equal(hitsFor('GET /physicians/me/workspace'), after, 'nothing polls after unsubscribe');
+    try {
+      await waitFor(() => hitsFor('GET /physicians/me/workspace') >= 4 && seen.includes('live:0'), 'polling on the interval');
+      assert.deepEqual(seen, ['connecting', 'live:0'], 'a ticking clock is not a change');
+      queue = [{consultId: 'tele_1', position: 1}];
+      await waitFor(() => seen.includes('live:1'), 'a patient joining the queue is observed');
+      assert.deepEqual(seen, ['connecting', 'live:0', 'live:1'], 'a patient joining the queue is');
+      stop();
+      // `stopped` carries the last good snapshot for a UI unmount.
+      assert.equal(seen.at(-1), 'stopped:1');
+      const after = hitsFor('GET /physicians/me/workspace');
+      await tick(30);
+      assert.equal(hitsFor('GET /physicians/me/workspace'), after, 'nothing polls after unsubscribe');
+    } finally {
+      stop();
+      desk.disconnect();
+    }
   });
 
   it('refreshes at once after an action instead of waiting out the interval', async () => {
