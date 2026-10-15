@@ -161,12 +161,22 @@ export function ensureNatzarLoader(src: string, tag?: string, doc: Document | un
       return;
     }
   }
-  const script = doc.createElement('script');
-  script.src = src;
-  script.async = true;
-  script.setAttribute('data-natzar-loader', '');
-  (doc.head ?? doc.body ?? doc.documentElement).appendChild(script);
-  injected.add(src);
+  const append = (attempt: number) => {
+    const script = doc.createElement('script');
+    script.src = src;
+    script.async = true;
+    script.setAttribute('data-natzar-loader', '');
+    script.addEventListener('error', () => {
+      script.remove();
+      injected.delete(src);
+      // A transient CDN/network failure gets one fresh request. A later mount
+      // can retry after both attempts fail; failures never poison this cache.
+      if (attempt === 0) append(1);
+    }, {once: true});
+    injected.add(src);
+    (doc.head ?? doc.body ?? doc.documentElement).appendChild(script);
+  };
+  append(0);
 }
 
 // ------------------------------------------------------- the one component

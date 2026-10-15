@@ -106,7 +106,11 @@ describe('React components — attributes and the loader', () => {
     const doc = {
       getElementsByTagName: () => scripts,
       createElement: () => {
-        const s = {src: '', async: false, attrs: {} as Record<string, string>, setAttribute(n: string, v: string) {
+        const listeners = new Map<string, () => void>();
+        const s = {src: '', async: false, removed: false,
+          addEventListener: (name: string, listener: () => void) => listeners.set(name, listener),
+          emit: (name: string) => listeners.get(name)?.(),
+          remove() {this.removed = true;}, attrs: {} as Record<string, string>, setAttribute(n: string, v: string) {
           this.attrs[n] = v;
         }};
         return s;
@@ -134,6 +138,20 @@ describe('React components — attributes and the loader', () => {
     ensureNatzarLoader('/natzar-us/embed.js', 'natzar-provider', defined.doc as never);
     assert.equal(defined.appended.length, 0, 'a pinned loader already defined the tag');
     ensureNatzarLoader('/natzar-us/embed.js', undefined, undefined);
+  });
+
+  it('retries a failed script once and permits another mount after both attempts fail', () => {
+    const {doc, appended} = fakeDocument();
+    ensureNatzarLoader('/retry/embed.js', 'natzar-agent', doc as never);
+    const script = (i: number) => appended[i] as typeof appended[number] & {emit(name: string): void; removed: boolean};
+    script(0).emit('error');
+    assert.equal(script(0).removed, true);
+    assert.equal(appended.length, 2);
+    script(1).emit('error');
+    assert.equal(script(1).removed, true);
+    assert.equal(appended.length, 2, 'automatic retry is bounded');
+    ensureNatzarLoader('/retry/embed.js', 'natzar-agent', doc as never);
+    assert.equal(appended.length, 3, 'a new mount can recover');
   });
 
   it('derives the loader URL: a valid endpoint prop, else a PLAIN natzarConfig.endpoint, else /natzar', () => {
