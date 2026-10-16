@@ -1,0 +1,151 @@
+<!DOCTYPE html><html class="default" lang="en" data-base="../"><head><meta charset="utf-8"/><meta http-equiv="x-ua-compatible" content="IE=edge"/><title>ListPharmaciesResponse | Natzar Partner API Reference - v1.0.0</title><meta name="description" content="Documentation for Natzar Partner API Reference"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="stylesheet" href="../assets/style.css"/><link rel="stylesheet" href="../assets/highlight.css"/><script defer src="../assets/main.js"></script><script async src="../assets/icons.js" id="tsd-icons-script"></script><script async src="../assets/search.js" id="tsd-search-script"></script><script async src="../assets/navigation.js" id="tsd-nav-script"></script><script async src="../assets/hierarchy.js" id="tsd-hierarchy-script"></script></head><body><script>document.documentElement.dataset.theme = localStorage.getItem("tsd-theme") || "os";document.body.style.display="none";setTimeout(() => window.app?app.showPage():document.body.style.removeProperty("display"),500)</script><header class="tsd-page-toolbar">
+<div class="tsd-toolbar-contents container"><a href="../index.html" class="title">Natzar Partner API Reference - v1.0.0</a>
+<div id="tsd-toolbar-links"></div><button id="tsd-search-trigger" class="tsd-widget" aria-label="Search"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-search"></use></svg></button><dialog id="tsd-search" aria-label="Search"><input role="combobox" id="tsd-search-input" aria-controls="tsd-search-results" aria-autocomplete="list" aria-expanded="true" autocapitalize="off" autocomplete="off" placeholder="Search the docs" maxLength="100"/>
+<ul role="listbox" id="tsd-search-results"></ul>
+<div id="tsd-search-status" aria-live="polite" aria-atomic="true">
+<div>Preparing search index...</div></div></dialog><a href="#" class="tsd-widget menu" id="tsd-toolbar-menu-trigger" data-toggle="menu" aria-label="Menu"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-menu"></use></svg></a></div></header>
+<div class="container container-main">
+<div class="col-content">
+<div class="tsd-page-title">
+<ul class="tsd-breadcrumb" aria-label="Breadcrumb">
+<li><a href="../modules/index.html">index</a></li>
+<li><a href="" aria-current="page">ListPharmaciesResponse</a></li></ul>
+<h1>Interface ListPharmaciesResponse</h1></div>
+<section class="tsd-panel tsd-comment">
+<div class="tsd-comment tsd-typography"><p><code>GET /v1/prescriptions/{id}/pharmacies</code> response — the picker's list,
+framed by the prescription's state so a client can settle on it.</p>
+<p>When the prescription is no longer choosable (<code>prescription.action !== 'choose'</code>) the list is EMPTY and the resource says why — render its
+<code>action</code> instead of an empty picker. In an e-prescribing deployment the
+list is also empty while <code>address.step</code> is set: run the address step first
+(<code>PUT …/address</code> answers with this same shape, list included). Otherwise
+<code>pharmacies</code> is ranked by distance from <code>origin</code> when one was used;
+without any origin (none passed, none cached) it is unranked and
+<code>homeAddress</code> invites you to geocode the patient's home and store it with
+<code>POST …/home-location</code>. Pre-select <code>preferred</code> when there is one, show
+<code>licensure</code> (when set) as a calm notice above the list, and print every
+distance in <code>distanceUnit</code>.</p>
+</div></section>
+<div class="tsd-signature"><span class="tsd-signature-keyword">interface</span> <span class="tsd-kind-interface">ListPharmaciesResponse</span> <span class="tsd-signature-symbol">{</span><br/>    <a class="tsd-kind-property" href="#prescription">prescription</a><span class="tsd-signature-symbol">:</span> <a href="index.PrescriptionResource.html" class="tsd-signature-type tsd-kind-interface">PrescriptionResource</a><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-property" href="#origin">origin</a><span class="tsd-signature-symbol">?:</span> <a href="index.PharmacySearchOrigin.html" class="tsd-signature-type tsd-kind-interface">PharmacySearchOrigin</a><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-property" href="#homeaddress">homeAddress</a><span class="tsd-signature-symbol">?:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-property" href="#address">address</a><span class="tsd-signature-symbol">:</span> <a href="index.PrescriptionAddressStep.html" class="tsd-signature-type tsd-kind-interface">PrescriptionAddressStep</a><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-property" href="#preferred">preferred</a><span class="tsd-signature-symbol">:</span> <a href="index.PharmacyResource.html" class="tsd-signature-type tsd-kind-interface">PharmacyResource</a> <span class="tsd-signature-symbol">|</span> <span class="tsd-signature-type">null</span><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-property" href="#licensure">licensure</a><span class="tsd-signature-symbol">:</span> <a href="index.PrescriberLicensureNotice.html" class="tsd-signature-type tsd-kind-interface">PrescriberLicensureNotice</a> <span class="tsd-signature-symbol">|</span> <span class="tsd-signature-type">null</span><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-property" href="#distanceunit">distanceUnit</a><span class="tsd-signature-symbol">:</span> <a href="../types/index.DistanceUnit.html" class="tsd-signature-type tsd-kind-type-alias">DistanceUnit</a><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-property" href="#pharmacies">pharmacies</a><span class="tsd-signature-symbol">:</span> <a href="index.PharmacyResource.html" class="tsd-signature-type tsd-kind-interface">PharmacyResource</a><span class="tsd-signature-symbol">[]</span><span class="tsd-signature-symbol">;</span><br/><span class="tsd-signature-symbol">}</span></div><aside class="tsd-sources">
+<ul>
+<li>Defined in <a href="https://github.com/natzar-ai/natzar-core/blob/e3f5463bfd430a990e6158209e57a830330f3625/shared/partner-api/endpoints.ts#L1293">endpoints.ts:1293</a></li></ul></aside>
+<section class="tsd-panel-group tsd-index-group">
+<section class="tsd-panel tsd-index-panel">
+<details class="tsd-index-content tsd-accordion" open><summary class="tsd-accordion-summary tsd-index-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
+<h5 class="tsd-index-heading uppercase">Index</h5></summary>
+<div class="tsd-accordion-details">
+<section class="tsd-index-section">
+<h3 class="tsd-index-heading tsd-anchor-link" id="properties">Properties<a href="#properties" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<div class="tsd-index-list"><a href="#prescription" class="tsd-index-link"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Property"><use href="../assets/icons.svg#icon-1024"></use></svg><span>prescription</span></a>
+<a href="#origin" class="tsd-index-link"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Property"><use href="../assets/icons.svg#icon-1024"></use></svg><span>origin?</span></a>
+<a href="#homeaddress" class="tsd-index-link"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Property"><use href="../assets/icons.svg#icon-1024"></use></svg><span>home<wbr/>Address?</span></a>
+<a href="#address" class="tsd-index-link"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Property"><use href="../assets/icons.svg#icon-1024"></use></svg><span>address</span></a>
+<a href="#preferred" class="tsd-index-link"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Property"><use href="../assets/icons.svg#icon-1024"></use></svg><span>preferred</span></a>
+<a href="#licensure" class="tsd-index-link"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Property"><use href="../assets/icons.svg#icon-1024"></use></svg><span>licensure</span></a>
+<a href="#distanceunit" class="tsd-index-link"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Property"><use href="../assets/icons.svg#icon-1024"></use></svg><span>distance<wbr/>Unit</span></a>
+<a href="#pharmacies" class="tsd-index-link"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Property"><use href="../assets/icons.svg#icon-1024"></use></svg><span>pharmacies</span></a>
+</div></section></div></details></section></section>
+<details class="tsd-panel-group tsd-member-group tsd-accordion" open><summary class="tsd-accordion-summary" data-key="section-Properties"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
+<h2 class="tsd-anchor-link" id="properties-1">Properties<a href="#properties-1" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2></summary>
+<section>
+<section class="tsd-panel tsd-member">
+<h3 class="tsd-anchor-link" id="prescription"><span>prescription</span><a href="#prescription" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<div class="tsd-signature"><span class="tsd-kind-property">prescription</span><span class="tsd-signature-symbol">:</span> <a href="index.PrescriptionResource.html" class="tsd-signature-type tsd-kind-interface">PrescriptionResource</a></div>
+<div class="tsd-comment tsd-typography"><p>The prescription as of this read (its effective status and action).</p>
+</div><aside class="tsd-sources">
+<ul>
+<li>Defined in <a href="https://github.com/natzar-ai/natzar-core/blob/e3f5463bfd430a990e6158209e57a830330f3625/shared/partner-api/endpoints.ts#L1295">endpoints.ts:1295</a></li></ul></aside></section>
+<section class="tsd-panel tsd-member">
+<h3 class="tsd-anchor-link" id="origin"><code class="tsd-tag">Optional</code><span>origin</span><a href="#origin" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<div class="tsd-signature"><span class="tsd-kind-property">origin</span><span class="tsd-signature-symbol">?:</span> <a href="index.PharmacySearchOrigin.html" class="tsd-signature-type tsd-kind-interface">PharmacySearchOrigin</a></div>
+<div class="tsd-comment tsd-typography"><p>The origin the list was ranked by — yours, else the patient's cached home. Absent when neither exists.</p>
+</div><aside class="tsd-sources">
+<ul>
+<li>Defined in <a href="https://github.com/natzar-ai/natzar-core/blob/e3f5463bfd430a990e6158209e57a830330f3625/shared/partner-api/endpoints.ts#L1297">endpoints.ts:1297</a></li></ul></aside></section>
+<section class="tsd-panel tsd-member">
+<h3 class="tsd-anchor-link" id="homeaddress"><code class="tsd-tag">Optional</code><span>home<wbr/>Address</span><a href="#homeaddress" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<div class="tsd-signature"><span class="tsd-kind-property">homeAddress</span><span class="tsd-signature-symbol">?:</span> <span class="tsd-signature-type">string</span></div>
+<div class="tsd-comment tsd-typography"><p>The patient's one-line home address, offered ONLY when no origin exists, for you to geocode.</p>
+</div><aside class="tsd-sources">
+<ul>
+<li>Defined in <a href="https://github.com/natzar-ai/natzar-core/blob/e3f5463bfd430a990e6158209e57a830330f3625/shared/partner-api/endpoints.ts#L1299">endpoints.ts:1299</a></li></ul></aside></section>
+<section class="tsd-panel tsd-member">
+<h3 class="tsd-anchor-link" id="address"><span>address</span><a href="#address" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<div class="tsd-signature"><span class="tsd-kind-property">address</span><span class="tsd-signature-symbol">:</span> <a href="index.PrescriptionAddressStep.html" class="tsd-signature-type tsd-kind-interface">PrescriptionAddressStep</a></div>
+<div class="tsd-comment tsd-typography"><p>The delivery-address step to run before the list (e-prescribing
+deployments; <code>step</code> is always null in a fax one). While <code>address.step</code>
+is set, <code>pharmacies</code> is empty. Carries the patient's home address on
+file (<code>onFile</code>) for the confirmation. Added after the fields above.</p>
+</div><aside class="tsd-sources">
+<ul>
+<li>Defined in <a href="https://github.com/natzar-ai/natzar-core/blob/e3f5463bfd430a990e6158209e57a830330f3625/shared/partner-api/endpoints.ts#L1306">endpoints.ts:1306</a></li></ul></aside></section>
+<section class="tsd-panel tsd-member">
+<h3 class="tsd-anchor-link" id="preferred"><span>preferred</span><a href="#preferred" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<div class="tsd-signature"><span class="tsd-kind-property">preferred</span><span class="tsd-signature-symbol">:</span> <a href="index.PharmacyResource.html" class="tsd-signature-type tsd-kind-interface">PharmacyResource</a> <span class="tsd-signature-symbol">|</span> <span class="tsd-signature-type">null</span></div>
+<div class="tsd-comment tsd-typography"><p>The patient's remembered pharmacy — the one their last prescription
+reached, on any surface — resolved even when it falls outside this list
+(with its <code>distanceKm</code> from <code>origin</code>). Pre-select it, pinned first, so
+sending to it again is one tap. Null when there is none, when it cannot
+be reached any more, when it is the pharmacy this prescription just
+failed at, or while the address step is pending. Added after the fields
+above.</p>
+</div><aside class="tsd-sources">
+<ul>
+<li>Defined in <a href="https://github.com/natzar-ai/natzar-core/blob/e3f5463bfd430a990e6158209e57a830330f3625/shared/partner-api/endpoints.ts#L1316">endpoints.ts:1316</a></li></ul></aside></section>
+<section class="tsd-panel tsd-member">
+<h3 class="tsd-anchor-link" id="licensure"><span>licensure</span><a href="#licensure" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<div class="tsd-signature"><span class="tsd-kind-property">licensure</span><span class="tsd-signature-symbol">:</span> <a href="index.PrescriberLicensureNotice.html" class="tsd-signature-type tsd-kind-interface">PrescriberLicensureNotice</a> <span class="tsd-signature-symbol">|</span> <span class="tsd-signature-type">null</span></div>
+<div class="tsd-comment tsd-typography"><p>The prescriber-licensure notice to show above the list, or null when
+there is nothing to warn about. Set when the delivery address confirmed
+for this prescription is in another state than the one it was issued
+for — the patient's state at signing, or the state of the licence it
+was signed under — your tenant enforces state licensure, and the
+prescribing physician holds no usable licence there. So an address in
+the patient's own state can carry it too; read it on every list.
+NON-BLOCKING — the patient may still choose any pharmacy; render it as
+a calm notice, never an error (see <a href="index.PrescriberLicensureNotice.html" class="tsd-kind-interface">PrescriberLicensureNotice</a>).
+Null while the address step is pending, in a fax deployment, once the
+prescription is not choosable, when licensure is not enforced, and when
+the check could not run. Computed from the prescription on every read,
+so a reload shows it again. Added after the fields above.</p>
+</div><aside class="tsd-sources">
+<ul>
+<li>Defined in <a href="https://github.com/natzar-ai/natzar-core/blob/e3f5463bfd430a990e6158209e57a830330f3625/shared/partner-api/endpoints.ts#L1332">endpoints.ts:1332</a></li></ul></aside></section>
+<section class="tsd-panel tsd-member">
+<h3 class="tsd-anchor-link" id="distanceunit"><span>distance<wbr/>Unit</span><a href="#distanceunit" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<div class="tsd-signature"><span class="tsd-kind-property">distanceUnit</span><span class="tsd-signature-symbol">:</span> <a href="../types/index.DistanceUnit.html" class="tsd-signature-type tsd-kind-type-alias">DistanceUnit</a></div>
+<div class="tsd-comment tsd-typography"><p>The unit to SHOW distances and radii in — <code>mi</code> in the United States,
+<code>km</code> elsewhere (see <a href="../types/index.DistanceUnit.html" class="tsd-kind-type-alias">DistanceUnit</a>). <code>distanceKm</code> and <code>radiusKm</code>
+stay kilometres on the wire; convert with <code>distanceInUnit</code>. Added after
+the fields above.</p>
+</div><aside class="tsd-sources">
+<ul>
+<li>Defined in <a href="https://github.com/natzar-ai/natzar-core/blob/e3f5463bfd430a990e6158209e57a830330f3625/shared/partner-api/endpoints.ts#L1339">endpoints.ts:1339</a></li></ul></aside></section>
+<section class="tsd-panel tsd-member">
+<h3 class="tsd-anchor-link" id="pharmacies"><span>pharmacies</span><a href="#pharmacies" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<div class="tsd-signature"><span class="tsd-kind-property">pharmacies</span><span class="tsd-signature-symbol">:</span> <a href="index.PharmacyResource.html" class="tsd-signature-type tsd-kind-interface">PharmacyResource</a><span class="tsd-signature-symbol">[]</span></div>
+<div class="tsd-comment tsd-typography"><p>The pharmacies, nearest first when an origin exists; empty when the prescription is not choosable or the address step is pending.</p>
+</div><aside class="tsd-sources">
+<ul>
+<li>Defined in <a href="https://github.com/natzar-ai/natzar-core/blob/e3f5463bfd430a990e6158209e57a830330f3625/shared/partner-api/endpoints.ts#L1341">endpoints.ts:1341</a></li></ul></aside></section></section></details></div>
+<div class="col-sidebar">
+<div class="page-menu">
+<div class="tsd-navigation settings">
+<details class="tsd-accordion"><summary class="tsd-accordion-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
+<h3>Settings</h3></summary>
+<div class="tsd-accordion-details">
+<div class="tsd-filter-visibility"><span class="settings-label">Member Visibility</span>
+<ul id="tsd-filter-options">
+<li class="tsd-filter-item"><label class="tsd-filter-input"><input type="checkbox" id="tsd-filter-protected" name="protected"/><svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect class="tsd-checkbox-background" width="30" height="30" x="1" y="1" rx="6" fill="none"></rect><path class="tsd-checkbox-checkmark" d="M8.35422 16.8214L13.2143 21.75L24.6458 10.25" stroke="none" stroke-width="3.5" stroke-linejoin="round" fill="none"></path></svg><span>Protected</span></label></li>
+<li class="tsd-filter-item"><label class="tsd-filter-input"><input type="checkbox" id="tsd-filter-inherited" name="inherited" checked/><svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect class="tsd-checkbox-background" width="30" height="30" x="1" y="1" rx="6" fill="none"></rect><path class="tsd-checkbox-checkmark" d="M8.35422 16.8214L13.2143 21.75L24.6458 10.25" stroke="none" stroke-width="3.5" stroke-linejoin="round" fill="none"></path></svg><span>Inherited</span></label></li></ul></div>
+<div class="tsd-theme-toggle"><label class="settings-label" for="tsd-theme">Theme</label><select id="tsd-theme"><option value="os">OS</option><option value="light">Light</option><option value="dark">Dark</option></select></div></div></details></div>
+<details open class="tsd-accordion tsd-page-navigation"><summary class="tsd-accordion-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
+<h3>On This Page</h3></summary>
+<div class="tsd-accordion-details">
+<details open class="tsd-accordion tsd-page-navigation-section"><summary class="tsd-accordion-summary" data-key="section-Properties"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>Properties</summary>
+<div><a href="#prescription"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Property"><use href="../assets/icons.svg#icon-1024"></use></svg><span>prescription</span></a><a href="#origin"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Property"><use href="../assets/icons.svg#icon-1024"></use></svg><span>origin</span></a><a href="#homeaddress"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Property"><use href="../assets/icons.svg#icon-1024"></use></svg><span>home<wbr/>Address</span></a><a href="#address"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Property"><use href="../assets/icons.svg#icon-1024"></use></svg><span>address</span></a><a href="#preferred"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Property"><use href="../assets/icons.svg#icon-1024"></use></svg><span>preferred</span></a><a href="#licensure"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Property"><use href="../assets/icons.svg#icon-1024"></use></svg><span>licensure</span></a><a href="#distanceunit"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Property"><use href="../assets/icons.svg#icon-1024"></use></svg><span>distance<wbr/>Unit</span></a><a href="#pharmacies"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Property"><use href="../assets/icons.svg#icon-1024"></use></svg><span>pharmacies</span></a></div></details></div></details></div>
+<div class="site-menu">
+<nav class="tsd-navigation"><a href="../index.html">Natzar Partner API Reference - v1.0.0</a>
+<ul class="tsd-small-nested-navigation" id="tsd-nav-container">
+<li>Loading...</li></ul></nav></div></div></div><footer>
+<p class="tsd-generator">Generated using <a href="https://typedoc.org/" target="_blank">TypeDoc</a></p></footer>
+<div class="overlay"></div></body></html>
