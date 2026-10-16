@@ -45,8 +45,8 @@ export type IsoDate = string;
  * - `active` — assigned to exactly one physician; patient messages route to
  *   them and their replies flow back.
  * - `resolve_requested` — the physician marked it resolved; the patient has a
- *   bounded window to reply (reply reopens to `active`, silence closes as
- *   accepted).
+ *   bounded window to reply (a follow-up reopens to `active`; a social closing
+ *   stays resolved without extending the window; silence closes as accepted).
  * - `closed` — terminal; why is in {@link AsyncConsultResource.closedReason}.
  */
 export type AsyncConsultStatus =

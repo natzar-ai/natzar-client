@@ -1024,7 +1024,8 @@ export const takeoverAsyncConsultSchema = z
 /**
  * Body of `POST /v1/async-consults/{id}/resolve` — the assigned physician
  * marks the consult resolved. The patient gets a bounded window to reply
- * (which reopens the thread); silence closes it as accepted.
+ * (a follow-up reopens the thread; a social closing leaves it resolved);
+ * silence closes it as accepted.
  */
 export const resolveAsyncConsultSchema = z
   .object({

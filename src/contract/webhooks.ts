@@ -256,7 +256,7 @@ interface Event<TType extends string, TData> {
  *   not be routed (thread closed underneath).
  * - `async_consult.resolve_requested` — the physician marked it resolved;
  *   the acceptance window is running.
- * - `async_consult.reopened` — the patient replied during the acceptance
+ * - `async_consult.reopened` — the patient sent a follow-up during the acceptance
  *   window; back to `active` with the same physician.
  * - `async_consult.closed` — terminal; `data.closedReason` says why.
  * - `async_consult.rated` — the patient rated the consult.

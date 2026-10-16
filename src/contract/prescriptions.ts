@@ -38,7 +38,7 @@
  *    last prescription reached; show `licensure` (when set) as a calm notice
  *    above the list ({@link PrescriberLicensureNotice}), and every distance
  *    in the list's `distanceUnit` ({@link distanceInUnit}).
- * 4. Poll `GET /v1/prescriptions/{id}` until `action` is `sent` (or the
+ * 4. Poll `GET /v1/prescriptions/{id}` until `status` is `sent` (or the
  *    transcript says `prescription_failed`, which re-opens the choice, or
  *    `prescription_contact_clinic`, which does NOT: `action` reads
  *    `expired` until the physician sends it again).
@@ -180,8 +180,8 @@ export type PrescriptionStatus =
  * state so every surface (our widget, our app, your UI) agrees:
  *
  * - `choose` — actionable: the patient may pick (or re-pick, after a
- *   failure) a pharmacy. The only actionable value.
- * - `sent` — chosen and on its way, or delivered. Render a disabled button
+ *   failure) a pharmacy.
+ * - `sent` — chosen and transmission is in progress. Render a disabled button
  *   reading "Sent to {pharmacyName}" (or plainly "Sent" when the name is not
  *   known).
  * - `expired` — the 24-hour window lapsed, the link does not resolve
@@ -189,12 +189,13 @@ export type PrescriptionStatus =
  *   the prescription can no longer be sent from it: a US e-prescription the
  *   network refused for a reason another pharmacy cannot fix — the clinic
  *   was told, and only the physician can send it again.
+ * - `change` — delivered; open the pharmacy link / embedded view for a pharmacy-led transfer handoff. This action never authorizes another send.
  * - `revoked` — withdrawn by the physician.
  *
  * Keep the button visible for the non-actionable values, with a label that
  * says what happened — the convention the embed widget follows.
  */
-export type PharmacyLinkAction = 'choose' | 'sent' | 'expired' | 'revoked';
+export type PharmacyLinkAction = 'choose' | 'change' | 'sent' | 'expired' | 'revoked';
 
 /**
  * How the prescription reaches the pharmacy. Decided by the deployment's
