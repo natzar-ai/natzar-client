@@ -296,6 +296,8 @@ export interface PharmacyResource {
    * all: choosing one is refused with `409 pharmacy_unreachable`.
    */
   reachable: boolean;
+  /** LogiCoy stage only: whether the directory row is an enabled test receiver. */
+  sandboxReceiver?: boolean;
   lat?: number;
   lng?: number;
   /**
