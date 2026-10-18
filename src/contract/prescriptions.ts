@@ -107,6 +107,8 @@ export interface PrescriptionDraftItem {
    * the composer that minted it knows.
    */
   catalogRef?: string;
+  /** Immutable Canadian catalogue release, when selected from the synchronized DPD copy. */
+  catalogVersion?: string;
   /**
    * The line's US e-prescribing coding ({@link PrescriptionDraftItemErx}).
    * REQUIRED on every line in the US (transport `erx`); dropped in Canada.
