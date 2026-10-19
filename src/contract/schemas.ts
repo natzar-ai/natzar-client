@@ -964,6 +964,11 @@ const prescriptionItemErxSchema = z
  */
 export const issuePrescriptionSchema = z.object({
   draft: z.object({
+    measurements: z.object({
+      heightCm: z.number().positive().max(250), weightKg: z.number().positive().max(400),
+      heightObservationDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      weightObservationDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    }).strict().optional(),
     items: z.array(z.object({
       medication: z.string().min(1).max(120),
       strength: z.string().max(120).optional(),

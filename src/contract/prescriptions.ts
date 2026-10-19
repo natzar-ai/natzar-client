@@ -144,6 +144,8 @@ export interface PrescriptionDraftItemErx {
  * one, awaiting the physician's review and signature). Mirrors `RxDraft`.
  */
 export interface PrescriptionDraft {
+  /** Required for patients under 18 in US and Canada. Actual measurements; dates are YYYY-MM-DD. */
+  measurements?: {heightCm: number; weightKg: number; heightObservationDate: string; weightObservationDate: string};
   items: PrescriptionDraftItem[];
   /**
    * Note to the pharmacist (max 500 chars). US: at most 210, counted as the
