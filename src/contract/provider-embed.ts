@@ -1128,6 +1128,7 @@ export interface ProviderEmbedValidationIssue {
 }
 /** Structured, data-free details of a provider error. */
 export type ProviderEmbedErrorDetails =
+  | {missingFields: string[]}
   | {issues: ProviderEmbedValidationIssue[]}
   | {unavailable: ProviderEmbedUnavailableCapability[]}
   | {capability: ProviderEmbedCapability}

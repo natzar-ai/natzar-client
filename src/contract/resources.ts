@@ -70,7 +70,7 @@ export type AsyncConsultStatus =
  *   open.
  * - `cancelled` — closed via `POST /v1/async-consults/{id}/close` or by a
  *   physician/admin from the portal.
- * - `escalated` — the physician escalated to a live video consult.
+ * - `escalated` — the physician escalated to video or in-person care.
  * - `declined` — the patient answered the consent prompt with "no"; no
  *   thread ever started (never rateable).
  * - `patient_closed` — the patient ended the open thread themselves.
@@ -680,12 +680,10 @@ export interface AsyncConsultResource {
    */
   patientLang?: PatientLang;
   /**
-   * Which async modality this is (mirrors `AsyncConsultMode`): `live` — a
-   * thread picked up as soon as a clinician has capacity (the default, and
-   * every thread created before booking existed); `scheduled` — a thread
-   * booked for a chosen time. Absent means `live`.
+   * Async messaging is picked up when a clinician has capacity. No appointment
+   * is needed. This legacy field, when present, is always `live`.
    */
-  mode?: 'live' | 'scheduled';
+  mode?: 'live';
   /**
    * Our id of the currently assigned physician (or the last assignee on a
    * closed thread). Absent before first assignment.

@@ -86,7 +86,7 @@ export const visitBillingCheckoutSchema = z.union([
     modality: z.enum(['async', 'telehealth', 'in_person']),
     mode: z.enum(['live', 'book']),
     ...visitCheckoutCommon,
-  }).strict(),
+  }).strict().refine(({modality, mode}) => modality !== 'async' || mode === 'live', {message: 'Async messaging does not support booking', path: ['mode']}),
   z.object({
     /** An async consult invite (`status: 'invited'`) — pays for consenting to it. */
     asyncConsultId: z.string().min(1).max(128),
@@ -1069,19 +1069,19 @@ export const closeAsyncConsultSchema = z
 
 /**
  * Body of `POST /v1/async-consults/{id}/escalate` — the assigned physician
- * turns the messaging thread into a live video consult. An empty object (or
- * omit it).
+ * turns the messaging thread into video or in-person care. Omit `modality`
+ * (or the body) for video, or send `modality: "in_person"` for clinic booking.
  *
  * Requires a physician credential naming the CURRENT assignee (`409
  * not_assigned`) and an open thread (`409 thread_not_active`). The platform
- * opens a telehealth consult for the same patient, closes the thread with
+ * opens the requested consult for the same patient, closes the thread with
  * `closedReason: 'escalated'`, and sends the patient the `escalated` notice
- * with their join link through their usual channel — for your patients, onto
+ * with a 48-hour video or booking link through their usual channel — for your patients, onto
  * the transcript and the `async_consult.message` webhook, exactly as the
- * portal does it. The response names the new consult so your physician UI can
- * go `ready` for it.
+ * portal does it. Video follows the clinic's enabled live/booking modes;
+ * in-person care always opens a booking invitation.
  */
-export const escalateAsyncConsultSchema = z.object({}).strict();
+export const escalateAsyncConsultSchema = z.object({modality: z.enum(['telehealth', 'in_person']).optional()}).strict();
 
 /**
  * Body of `POST /v1/async-consults/{id}/consent` — the PATIENT's answer to
@@ -1189,6 +1189,20 @@ export const physicianLicenseSchema = z
     state: z.string().min(2).max(3),
     country: z.string().length(2).optional(),
     licenseNumber: z.string().max(64).optional(),
+    prescriberNumber: z.string().max(64).optional(),
+    billingNumber: z.string().max(64).optional(),
+    labNumber: z.string().max(64).optional(),
+    professionalDesignation: z.string().max(64).optional(),
+    rnLicenseNumber: z.string().max(64).optional(),
+    populationFocus: z.string().max(64).optional(),
+    practiceAuthority: z.enum(['independent', 'collaborative']).optional(),
+    prescriptiveAuthority: z.enum(['active', 'none']).optional(),
+    collaboratorName: z.string().max(128).optional(),
+    collaboratorAddress: z.string().max(256).optional(),
+    collaboratorPhone: z.string().max(64).optional(),
+    collaboratorLicenseNumber: z.string().max(64).optional(),
+    stateRegistrationNumber: z.string().max(64).optional(),
+    authorityExpiresAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
     /** Local date, YYYY-MM-DD. A lapsed licence stops routing automatically. */
     expiresAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
     /** Absent/true = usable. False keeps the record but stops routing on it. */
