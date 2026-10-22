@@ -1,0 +1,514 @@
+<!DOCTYPE html><html class="default" lang="en" data-base="../"><head><meta charset="utf-8"/><meta http-equiv="x-ua-compatible" content="IE=edge"/><title>Prescriptions | Natzar Partner API Reference - v1.0.0</title><meta name="description" content="Documentation for Natzar Partner API Reference"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="stylesheet" href="../assets/style.css"/><link rel="stylesheet" href="../assets/highlight.css"/><script defer src="../assets/main.js"></script><script async src="../assets/icons.js" id="tsd-icons-script"></script><script async src="../assets/search.js" id="tsd-search-script"></script><script async src="../assets/navigation.js" id="tsd-nav-script"></script><script async src="../assets/hierarchy.js" id="tsd-hierarchy-script"></script></head><body><script>document.documentElement.dataset.theme = localStorage.getItem("tsd-theme") || "os";document.body.style.display="none";setTimeout(() => window.app?app.showPage():document.body.style.removeProperty("display"),500)</script><header class="tsd-page-toolbar">
+<div class="tsd-toolbar-contents container"><a href="../index.html" class="title">Natzar Partner API Reference - v1.0.0</a>
+<div id="tsd-toolbar-links"></div><button id="tsd-search-trigger" class="tsd-widget" aria-label="Search"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-search"></use></svg></button><dialog id="tsd-search" aria-label="Search"><input role="combobox" id="tsd-search-input" aria-controls="tsd-search-results" aria-autocomplete="list" aria-expanded="true" autocapitalize="off" autocomplete="off" placeholder="Search the docs" maxLength="100"/>
+<ul role="listbox" id="tsd-search-results"></ul>
+<div id="tsd-search-status" aria-live="polite" aria-atomic="true">
+<div>Preparing search index...</div></div></dialog><a href="#" class="tsd-widget menu" id="tsd-toolbar-menu-trigger" data-toggle="menu" aria-label="Menu"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-menu"></use></svg></a></div></header>
+<div class="container container-main">
+<div class="col-content">
+<div class="tsd-page-title">
+<ul class="tsd-breadcrumb" aria-label="Breadcrumb">
+<li><a href="" aria-current="page">Prescriptions</a></li></ul></div>
+<div class="tsd-panel tsd-typography"><h1 id="prescriptions-physician-issue-and-patient-pharmacy-choice" class="tsd-anchor-link">Prescriptions — physician issue and patient pharmacy choice<a href="#prescriptions-physician-issue-and-patient-pharmacy-choice" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h1>
+<p>A physician writing on an async consult can issue a prescription without
+leaving the thread. What the <strong>patient</strong> then has to do is choose the
+pharmacy it goes to — and a partner rendering its own chat has to offer
+that choice, because the platform's public <code>/pharmacy</code> page refuses
+consults that belong to a partner. This guide is the whole loop: detect
+the link, resolve it, list pharmacies (after the delivery-address step, in
+an e-prescribing deployment), show the list's licensure notice and
+distances, choose one, watch the outcome.</p>
+<p>Everything below assumes the <a href="Getting_started.html">getting-started</a> setup:</p>
+<pre><code class="bash"><span class="hl-0">export</span><span class="hl-1"> </span><span class="hl-2">NATZAR_API</span><span class="hl-1">=</span><span class="hl-3">&quot;https://&lt;your-assigned-api-host&gt;&quot;</span><br/><span class="hl-0">export</span><span class="hl-1"> </span><span class="hl-2">NATZAR_KEY</span><span class="hl-1">=</span><span class="hl-3">&quot;pp_test_...&quot;</span>
+</code><button type="button">Copy</button></pre>
+
+<p>The embed widget (<code>&lt;natzar-async&gt;</code>, <code>&lt;natzar-agent&gt;</code>) does all of this
+itself — the routes here exist for the headless integration.</p>
+<h2 id="patients-under-18" class="tsd-anchor-link">Patients under 18<a href="#patients-under-18" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>In both US and Canadian prescribing, include the actual patient's measured
+height, weight and both measurement dates in the physician's prescription draft:</p>
+<pre><code class="json"><span class="hl-3">&quot;measurements&quot;</span><span class="hl-1">: {</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;heightCm&quot;</span><span class="hl-1">: </span><span class="hl-9">140.5</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;weightKg&quot;</span><span class="hl-1">: </span><span class="hl-9">34.2</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;heightObservationDate&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;2026-10-18&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;weightObservationDate&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;2026-10-19&quot;</span><br/><span class="hl-1">}</span>
+</code><button type="button">Copy</button></pre>
+
+<p>Dates must be real calendar dates, no earlier than the patient's birthdate and
+not in the future. Missing or implausible measurements refuse signing with
+<code>invalid_request</code> and reason <code>pediatric_measurements_unavailable</code>; correct the
+measurements and retry. This requirement ends on the patient's 18th birthday.
+Use the child's clinical identity when prescribing for a child, even if an adult
+requested care. US transmission converts the signed metric originals into
+LogiCoy's integer pounds and feet/inches; Canadian fax documents show the metric
+originals and both dates.</p>
+<h2 id="1-what-lands-on-the-transcript" class="tsd-anchor-link">1. What lands on the transcript<a href="#1-what-lands-on-the-transcript" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>Prescription outcome notices, all ordinary <code>async_consult.message</code> events (these outcomes have no separate prescription event type — your existing webhook handler already receives them; pharmacy requests have their own event below), distinguished by their <code>classification</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Classification</th>
+<th>When</th>
+<th>What the body carries</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>async:prescription_issued</code></td>
+<td>The physician signed the prescription.</td>
+<td>The <strong>pharmacy link</strong> <code>&lt;host&gt;/pharmacy?id=&lt;prescriptionId&gt;</code> and its validity (&quot;active for the next 24 hours&quot;).</td>
+</tr>
+<tr>
+<td><code>async:prescription_sent</code></td>
+<td>The transport delivered it.</td>
+<td>The pharmacy's name.</td>
+</tr>
+<tr>
+<td><code>async:prescription_failed</code></td>
+<td>The transport gave up after its retries.</td>
+<td>The pharmacy's name <strong>and the link again</strong> — the choice is re-opened.</td>
+</tr>
+<tr>
+<td><code>async:prescription_revoked</code></td>
+<td>The physician withdrew it.</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>async:prescription_partially_sent</code></td>
+<td>Some medication lines reached the network and others did not.</td>
+<td>Outcome summary, no pharmacy link.</td>
+</tr>
+<tr>
+<td><code>async:prescription_delayed</code></td>
+<td>Send is held for prescriber readiness recovery.</td>
+<td>Clinic follow-up information, no new choice link.</td>
+</tr>
+<tr>
+<td><code>async:prescription_contact_clinic</code></td>
+<td>A prescription-scoped failure requires physician action.</td>
+<td>Contact instruction; the old link is expired.</td>
+</tr>
+</tbody>
+</table>
+<p>Detect the link with <a href="../variables/index.PHARMACY_LINK_REGEX.html" class="tsd-kind-variable"> PHARMACY_LINK_REGEX</a>: group 1 is the
+prescription id, the whole match is the URL to strip from the prose before
+you render the message — the same treatment as the consent, video and
+booking links:</p>
+<pre><code class="ts"><span class="hl-10">import</span><span class="hl-1"> {</span><span class="hl-2">PHARMACY_LINK_REGEX</span><span class="hl-1">} </span><span class="hl-10">from</span><span class="hl-1"> </span><span class="hl-3">&#39;@natzar/client/contract&#39;</span><span class="hl-1">;</span><br/><br/><span class="hl-0">const</span><span class="hl-1"> </span><span class="hl-8">m</span><span class="hl-1"> = </span><span class="hl-8">PHARMACY_LINK_REGEX</span><span class="hl-1">.</span><span class="hl-4">exec</span><span class="hl-1">(</span><span class="hl-2">message</span><span class="hl-1">.</span><span class="hl-2">body</span><span class="hl-1">);</span><br/><span class="hl-10">if</span><span class="hl-1"> (</span><span class="hl-2">m</span><span class="hl-1">) {</span><br/><span class="hl-1">  </span><span class="hl-0">const</span><span class="hl-1"> </span><span class="hl-8">prescriptionId</span><span class="hl-1"> = </span><span class="hl-2">m</span><span class="hl-1">[</span><span class="hl-9">1</span><span class="hl-1">];</span><br/><span class="hl-1">  </span><span class="hl-0">const</span><span class="hl-1"> </span><span class="hl-8">text</span><span class="hl-1"> = </span><span class="hl-2">message</span><span class="hl-1">.</span><span class="hl-2">body</span><span class="hl-1">.</span><span class="hl-4">replace</span><span class="hl-1">(</span><span class="hl-2">m</span><span class="hl-1">[</span><span class="hl-9">0</span><span class="hl-1">], </span><span class="hl-3">&#39;&#39;</span><span class="hl-1">).</span><span class="hl-4">trim</span><span class="hl-1">();</span><br/><span class="hl-1">  </span><span class="hl-12">// render `text` + a &quot;Choose your pharmacy&quot; button bound to prescriptionId</span><br/><span class="hl-1">}</span>
+</code><button type="button">Copy</button></pre>
+
+<p>(The runtime contract symbols live at <code>@natzar/client/contract</code>; the
+package root exports only their types. The root's <code>detectLink</code>, <code>stripLink</code>
+and <code>pharmacyActionFor</code> do the same detect-and-strip without the raw regex —
+see the SDK README.)</p>
+<h2 id="2-resolve-the-link" class="tsd-anchor-link">2. Resolve the link<a href="#2-resolve-the-link" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-s</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/prescriptions/aB3xK9mQpZ4r&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$NATZAR_KEY</span><span class="hl-3">&quot;</span>
+</code><button type="button">Copy</button></pre>
+
+<pre><code class="json"><span class="hl-1">{</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;prescription&quot;</span><span class="hl-1">: {</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;id&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;aB3xK9mQpZ4r&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;externalPatientId&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;pat-001&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;consultId&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;kQ7wN2pT9xLm&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;status&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;awaiting_pharmacy&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;expired&quot;</span><span class="hl-1">: </span><span class="hl-0">false</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;expiresAt&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;2026-09-19T09:30:00.000Z&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;transport&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;fax&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;pharmacyName&quot;</span><span class="hl-1">: </span><span class="hl-0">null</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;action&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;choose&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;addressRequired&quot;</span><span class="hl-1">: </span><span class="hl-0">false</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;createdAt&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;2026-09-18T09:30:00.000Z&quot;</span><br/><span class="hl-1">  }</span><br/><span class="hl-1">}</span>
+</code><button type="button">Copy</button></pre>
+
+<p>Render from <code>action</code> (<a href="../types/index.PharmacyLinkAction.html" class="tsd-kind-type-alias"> PharmacyLinkAction</a>); it is decided
+server-side from the <strong>effective</strong> state, so your screen, the app and the
+widget can never disagree:</p>
+<table>
+<thead>
+<tr>
+<th><code>action</code></th>
+<th>Button</th>
+<th>Actionable</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>choose</code></td>
+<td>&quot;Choose your pharmacy&quot;</td>
+<td><strong>yes</strong> — open the picker (§3–5)</td>
+</tr>
+<tr>
+<td><code>sent</code></td>
+<td>&quot;Sent to {pharmacyName}&quot; (or &quot;Sent&quot;) while transmission is in progress</td>
+<td>no</td>
+</tr>
+<tr>
+<td><code>change</code></td>
+<td>&quot;Change pharmacy&quot; after delivery</td>
+<td><strong>yes</strong> — open the authenticated embed's pharmacy view for a pharmacy-led transfer handoff; this never authorizes a new send</td>
+</tr>
+<tr>
+<td><code>expired</code></td>
+<td>&quot;Link expired&quot;</td>
+<td>no</td>
+</tr>
+<tr>
+<td><code>revoked</code></td>
+<td>&quot;Withdrawn&quot;</td>
+<td>no</td>
+</tr>
+</tbody>
+</table>
+<p>Keep the button visible for the non-actionable values, with the label
+saying what happened. A prescription of yours whose 24-hour link lapsed
+answers <code>action: 'expired'</code>, <strong>not</strong> a 404 — the state read is a probe your
+chat fires for every pharmacy link it renders, and a dead link is an
+ordinary answer. <code>404 not_found</code> means the id is not a prescription of
+this tenant (or of a patient you provisioned).</p>
+<p><code>addressRequired: true</code> means the picker will open on the delivery-address
+step (§4): an e-prescribed prescription (<code>transport: 'erx'</code>) with no address
+confirmed for it yet. It is always <code>false</code> in a fax deployment.</p>
+<p><code>GET /v1/patients/state</code> also carries the newest prescription still
+waiting for a choice as <code>prescription</code>, so a screen opening cold can offer
+the picker without first scanning the transcript.</p>
+<h2 id="3-list-the-pharmacies" class="tsd-anchor-link">3. List the pharmacies<a href="#3-list-the-pharmacies" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-s</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/prescriptions/aB3xK9mQpZ4r/pharmacies?lat=45.4215&amp;lng=-75.6972&amp;source=device&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$NATZAR_KEY</span><span class="hl-3">&quot;</span>
+</code><button type="button">Copy</button></pre>
+
+<pre><code class="json"><span class="hl-1">{</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;prescription&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;id&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;aB3xK9mQpZ4r&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;action&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;choose&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;...&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;...&quot;</span><span class="hl-1">},</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;origin&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;lat&quot;</span><span class="hl-1">: </span><span class="hl-9">45.4215</span><span class="hl-1">, </span><span class="hl-6">&quot;lng&quot;</span><span class="hl-1">: </span><span class="hl-9">-75.6972</span><span class="hl-1">, </span><span class="hl-6">&quot;source&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;device&quot;</span><span class="hl-1">},</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;address&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;step&quot;</span><span class="hl-1">: </span><span class="hl-0">null</span><span class="hl-1">, </span><span class="hl-6">&quot;onFile&quot;</span><span class="hl-1">: </span><span class="hl-0">null</span><span class="hl-1">, </span><span class="hl-6">&quot;zipHint&quot;</span><span class="hl-1">: </span><span class="hl-0">null</span><span class="hl-1">},</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;preferred&quot;</span><span class="hl-1">: </span><span class="hl-0">null</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;licensure&quot;</span><span class="hl-1">: </span><span class="hl-0">null</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;distanceUnit&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;km&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;pharmacies&quot;</span><span class="hl-1">: [</span><br/><span class="hl-1">    {</span><br/><span class="hl-1">      </span><span class="hl-6">&quot;directoryId&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;ca:ON:305123&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-6">&quot;name&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;Shoppers Drug Mart&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-6">&quot;address&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;1 Rideau St&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-6">&quot;city&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;Ottawa&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-6">&quot;region&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;ON&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-6">&quot;postalCode&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;K1N 8S7&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-6">&quot;phone&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;+16135550100&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-6">&quot;reachable&quot;</span><span class="hl-1">: </span><span class="hl-0">true</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-6">&quot;lat&quot;</span><span class="hl-1">: </span><span class="hl-9">45.4262</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-6">&quot;lng&quot;</span><span class="hl-1">: </span><span class="hl-9">-75.6925</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-6">&quot;distanceKm&quot;</span><span class="hl-1">: </span><span class="hl-9">0.6</span><br/><span class="hl-1">    }</span><br/><span class="hl-1">  ]</span><br/><span class="hl-1">}</span>
+</code><button type="button">Copy</button></pre>
+
+<p>The list is ranked by distance from the <strong>origin</strong>, resolved in this
+order — the same order the platform's own picker uses:</p>
+<ol>
+<li><strong>What you pass</strong>: <code>lat</code>/<code>lng</code> (both or neither), with <code>source</code> saying
+how you got it (<code>device</code> for geolocation, <code>manual</code> for a typed place,
+<code>address</code> for a home address you geocoded) and an optional <code>label</code>. A
+pair that is not a place on Earth (latitude beyond ±90, longitude beyond
+±180, or <code>0,0</code>) is <code>422 invalid_location</code> — never silently replaced by
+the cached home.</li>
+<li><strong>The patient's cached home</strong>, when the platform holds one (see §4 and
+§6).</li>
+<li><strong>Nothing</strong> — the response has no <code>origin</code>, the list is unranked, and
+<code>homeAddress</code> carries the patient's one-line address on file for you to
+geocode; store the result with <code>POST …/home-location</code> and the next
+search (yours, the app's, the widget's) starts from it.</li>
+</ol>
+<p><code>query</code> filters by name, city or postal code; <code>radiusKm</code> widens the search
+in the steps of <a href="../variables/index.PHARMACY_SEARCH_RADII_KM.html" class="tsd-kind-variable"> PHARMACY_SEARCH_RADII_KM</a> (<code>25</code>, <code>50</code>, <code>100</code> —
+&quot;search wider&quot;; always kilometres, whatever the list's <code>distanceUnit</code> —
+see §4b). <code>reachable: false</code> means the transport cannot deliver
+there (a fax jurisdiction with no verified fax line on file): show it
+greyed out, or not at all — choosing it is <code>409 pharmacy_unreachable</code>.</p>
+<p>Once the prescription is no longer choosable the list is <strong>empty</strong> and
+<code>prescription.action</code> says why — render that instead of an empty picker.</p>
+<p><strong>The remembered pharmacy.</strong> <code>preferred</code> is the pharmacy the patient's last
+prescription reached — on any surface: your screen, the widget, the app —
+resolved even when it falls outside this search (with its <code>distanceKm</code> from
+the origin). Pre-select it, pinned at the top, so sending to it again is one
+tap. It is <code>null</code> when there is none, when it can no longer be reached, when
+it is the pharmacy this prescription just failed at (a re-choice after
+<code>prescription_failed</code>), and while the address step is pending. The platform
+learns it by itself when a transmission is delivered; there is nothing to
+write.</p>
+<h2 id="4-the-delivery-address-e-prescribing-deployments" class="tsd-anchor-link">4. The delivery address (e-prescribing deployments)<a href="#4-the-delivery-address-e-prescribing-deployments" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>The e-prescribing network receives the patient's full
+structured address, and the platform's signup asks for a ZIP code only. So
+in an <code>erx</code> deployment the list answers an <strong>address step</strong> before its
+pharmacies — the first time a patient chooses a pharmacy it collects their
+home address, and for every later prescription it only asks them to confirm
+it. In a <code>fax</code> deployment <code>address.step</code> is always <code>null</code> and nothing in this
+section applies.</p>
+<pre><code class="json"><span class="hl-1">{</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;prescription&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;id&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;aB3xK9mQpZ4r&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;transport&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;erx&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;action&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;choose&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;addressRequired&quot;</span><span class="hl-1">: </span><span class="hl-0">true</span><span class="hl-1">, </span><span class="hl-6">&quot;...&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;...&quot;</span><span class="hl-1">},</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;address&quot;</span><span class="hl-1">: {</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;step&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;confirm&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;onFile&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;street&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;350 Fifth Avenue&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;street2&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;Suite 3300&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;city&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;New York&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;state&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;NY&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;zipCode&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;10118&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;country&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;US&quot;</span><span class="hl-1">},</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;zipHint&quot;</span><span class="hl-1">: </span><span class="hl-0">null</span><br/><span class="hl-1">  },</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;preferred&quot;</span><span class="hl-1">: </span><span class="hl-0">null</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;licensure&quot;</span><span class="hl-1">: </span><span class="hl-0">null</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;distanceUnit&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;mi&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;pharmacies&quot;</span><span class="hl-1">: []</span><br/><span class="hl-1">}</span>
+</code><button type="button">Copy</button></pre>
+
+<table>
+<thead>
+<tr>
+<th><code>address.step</code></th>
+<th>When</th>
+<th>Show</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>collect</code></td>
+<td>No home address on file</td>
+<td>The address form — street, apt/unit (optional), city, state, ZIP — prefilled with <code>zipHint</code> (the patient's ZIP on file, from their signup)</td>
+</tr>
+<tr>
+<td><code>confirm</code></td>
+<td><code>onFile</code> is the address on file</td>
+<td>&quot;Yes, use this address&quot;, and &quot;Change address&quot; (the same form, prefilled with <code>onFile</code>)</td>
+</tr>
+<tr>
+<td><code>null</code></td>
+<td>A fax deployment, a prescription that can no longer be chosen, or an address already confirmed for THIS prescription (a re-choice after a failure)</td>
+<td>The list</td>
+</tr>
+</tbody>
+</table>
+<p>While the step is set, <code>pharmacies</code> is empty and no search ran. Answer it
+with the address — the one typed, picked from your own autocomplete, or
+<code>onFile</code> sent back unchanged to confirm:</p>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-s</span><span class="hl-1"> </span><span class="hl-0">-X</span><span class="hl-1"> </span><span class="hl-3">PUT</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/prescriptions/aB3xK9mQpZ4r/address&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$NATZAR_KEY</span><span class="hl-3">&quot;</span><span class="hl-1"> </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&#39;Content-Type: application/json&#39;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-d</span><span class="hl-1"> </span><span class="hl-3">&#39;{&quot;address&quot;: {&quot;street&quot;: &quot;350 Fifth Avenue&quot;, &quot;street2&quot;: &quot;Suite 3300&quot;, &quot;city&quot;: &quot;New York&quot;, &quot;state&quot;: &quot;NY&quot;, &quot;zipCode&quot;: &quot;10118&quot;}, &quot;lat&quot;: 40.748, &quot;lng&quot;: -73.986}&#39;</span>
+</code><button type="button">Copy</button></pre>
+
+<p>The response is the list itself (<code>address.step: null</code>,
+<code>prescription.addressRequired: false</code>), ranked from <code>lat</code>/<code>lng</code>, with the
+<code>licensure</code> notice judged against the address just sent (§4a) — so go
+straight on to the choice (§5). What the platform does with it:</p>
+<ul>
+<li><strong>Freezes it on this prescription</strong> as its delivery address — one atomic
+write, only while the prescription is waiting for a pharmacy — so a
+re-choice after a failed transmission never asks again.</li>
+<li><strong>Saves it as the patient's home address</strong>, which every later
+prescription (on every surface) only asks to confirm, and which moves the
+patient's state of residence and current ZIP code with it.</li>
+<li><strong>Caches its point.</strong> <code>lat</code>/<code>lng</code> (both or neither — three decimals are
+plenty) become the patient's home point, the origin of every later search.
+Without them a NEW address drops the old point (it belonged to the old
+address) and the list offers <code>homeAddress</code> for you to geocode (§6); the
+same address confirmed again keeps it.</li>
+</ul>
+<p>The address is judged by the same rule as the platform's own pickers.
+<code>422 invalid_address</code> with <code>details.code</code> naming the field to fix
+(<a href="../types/index.PrescriptionAddressError.html" class="tsd-kind-type-alias"> PrescriptionAddressError</a>): <code>street</code> or <code>city</code> empty (after
+trimming, or as the network is sent it — nothing left once folded to plain
+ASCII), a <code>state</code> that is not a US state, DC or inhabited territory code (or
+a <code>country</code> other than <code>US</code>), a <code>zipCode</code> that is not five digits or ZIP+4, a
+line over its <a href="../variables/index.PRESCRIPTION_ADDRESS_LIMITS.html" class="tsd-kind-variable"> PRESCRIPTION_ADDRESS_LIMITS</a> limit (street and unit 40,
+city 35, counted as the network is sent it) (<code>tooLong</code>). Values come back
+normalised — trimmed, the state uppercase, ZIP+4 as <code>12345-6789</code>. Leaving
+out the <code>street</code>, <code>city</code>, <code>state</code> or <code>zipCode</code> key (send <code>&quot;&quot;</code> for a line the
+patient left blank) or sending a non-string is <code>400 invalid_request</code>.
+<code>422 invalid_location</code> for an off-Earth pair; <code>409 prescription_not_choosable</code> (with <code>details.status</code>) once the prescription is
+settled; <code>409 address_not_applicable</code> on a faxed prescription. Repeating the
+call while the prescription is choosable writes the same state.</p>
+<p><strong>One call instead of two.</strong> When you already hold the address (the patient
+confirmed it on your screen), send it with the choice:</p>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-s</span><span class="hl-1"> </span><span class="hl-0">-X</span><span class="hl-1"> </span><span class="hl-3">POST</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/prescriptions/aB3xK9mQpZ4r/pharmacy&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$NATZAR_KEY</span><span class="hl-3">&quot;</span><span class="hl-1"> </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&#39;Content-Type: application/json&#39;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-d</span><span class="hl-1"> </span><span class="hl-3">&#39;{&quot;directoryId&quot;: &quot;us:ncpdp:1234567&quot;, &quot;address&quot;: {&quot;street&quot;: &quot;350 Fifth Avenue&quot;, &quot;city&quot;: &quot;New York&quot;, &quot;state&quot;: &quot;NY&quot;, &quot;zipCode&quot;: &quot;10118&quot;}}&#39;</span>
+</code><button type="button">Copy</button></pre>
+
+<p>It is judged first (<code>422 invalid_address</code>), frozen in the same atomic
+transition as the choice, and saved as the home address once the choice
+commits (its cached point is kept only when the address is unchanged).
+Without it, choosing an e-prescribed prescription that has no confirmed
+address is <code>409 address_required</code> — run the step, then choose again.</p>
+<p>Autocomplete belongs to your side: the patient types into your page, your
+autocomplete (Google Places, or any other) runs in their browser, and the
+platform receives only the submitted address and the point.</p>
+<h3 id="4a-the-prescriber-licensure-notice" class="tsd-anchor-link">4a. The prescriber-licensure notice<a href="#4a-the-prescriber-licensure-notice" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<p>A prescription is written for the state the patient was in when the
+physician signed it, under the licence the physician held for the state the
+consult was opened in (usually the same state). When the delivery address
+confirmed for it is in a <strong>different</strong> state than either, your tenant
+enforces state licensure (see
+<code>licenseEnforcement</code> on <code>GET /v1/physicians/{id}/licenses</code>), and the
+prescribing physician holds no usable licence in that state, the list says so:</p>
+<pre><code class="json"><span class="hl-1">{</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;prescription&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;id&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;aB3xK9mQpZ4r&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;transport&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;erx&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;action&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;choose&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;addressRequired&quot;</span><span class="hl-1">: </span><span class="hl-0">false</span><span class="hl-1">, </span><span class="hl-6">&quot;...&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;...&quot;</span><span class="hl-1">},</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;address&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;step&quot;</span><span class="hl-1">: </span><span class="hl-0">null</span><span class="hl-1">, </span><span class="hl-6">&quot;onFile&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;street&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;1 Main St&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;city&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;Hoboken&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;state&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;NJ&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;zipCode&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;07030&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;country&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;US&quot;</span><span class="hl-1">}, </span><span class="hl-6">&quot;zipHint&quot;</span><span class="hl-1">: </span><span class="hl-0">null</span><span class="hl-1">},</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;preferred&quot;</span><span class="hl-1">: </span><span class="hl-0">null</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;licensure&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;state&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;NJ&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;stateName&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;New Jersey&quot;</span><span class="hl-1">},</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;distanceUnit&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;mi&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;pharmacies&quot;</span><span class="hl-1">: [</span><span class="hl-3">&quot;...&quot;</span><span class="hl-1">]</span><br/><span class="hl-1">}</span>
+</code><button type="button">Copy</button></pre>
+
+<p>It is <strong>non-blocking</strong>. The patient may still choose any pharmacy and send;
+nothing about the choice (§5) changes. Show it as a calm, informational
+notice above the list — an info or amber banner, not your error slot, and
+never a reason to disable a pharmacy or the button. The platform's own
+pickers word it:</p>
+<blockquote>
+<p>Your prescribing doctor isn't registered in New Jersey. Most states and
+pharmacies accept prescriptions from out-of-state doctors, but some
+pharmacies in some states may refuse it.</p>
+</blockquote>
+<p><code>stateName</code> is the English name; when you render another language, localise
+the state from its two-letter <code>state</code>. The notice names the state only,
+never a licence.</p>
+<p><code>licensure</code> is <code>null</code> — show nothing — while the address step is pending
+(look for it on the <code>PUT …/address</code> response and every read after it), in a
+<code>fax</code> deployment, once the prescription can no longer be chosen, when the
+address is in the state the prescription was written for and the licence it
+was signed under is for that state too, when your tenant does not enforce
+licensure, when the physician is licensed there, and when the platform could
+not run the check (it never fails the list for it). An address in the
+prescription's own state can still carry the notice: a prescription signed
+under another state's licence (a second prescription after the patient
+moved, say) is checked against the physician's licences like any other.
+Read the field on every list rather than only when the state changed. It is
+computed on every read, so a reload shows it again; there is nothing to
+store or dismiss server-side.</p>
+<h3 id="4b-distances-and-the-unit-to-show-them-in" class="tsd-anchor-link">4b. Distances and the unit to show them in<a href="#4b-distances-and-the-unit-to-show-them-in" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<p>Every list carries <code>distanceUnit</code>: <code>&quot;mi&quot;</code> in the United States deployment,
+<code>&quot;km&quot;</code> elsewhere. The numbers on the wire stay kilometres — <code>distanceKm</code> on
+each pharmacy and on <code>preferred</code>, <code>accuracyKm</code> on an <code>ip</code> origin, the
+<code>radiusKm</code> you send — so convert for display with <code>distanceInUnit</code> (one
+decimal) from <code>@natzar/client/contract</code>, or divide by <code>KM_PER_MILE</code>
+(1.609344) yourself:</p>
+<pre><code class="ts"><span class="hl-10">import</span><span class="hl-1"> {</span><span class="hl-2">distanceInUnit</span><span class="hl-1">, </span><span class="hl-2">PHARMACY_SEARCH_RADII_KM</span><span class="hl-1">} </span><span class="hl-10">from</span><span class="hl-1"> </span><span class="hl-3">&#39;@natzar/client/contract&#39;</span><span class="hl-1">;</span><br/><br/><span class="hl-0">const</span><span class="hl-1"> </span><span class="hl-4">distance</span><span class="hl-1"> = (</span><span class="hl-2">km</span><span class="hl-1">: </span><span class="hl-18">number</span><span class="hl-1">, </span><span class="hl-2">unit</span><span class="hl-1">: </span><span class="hl-3">&#39;mi&#39;</span><span class="hl-1"> | </span><span class="hl-3">&#39;km&#39;</span><span class="hl-1">) </span><span class="hl-0">=&gt;</span><span class="hl-1"> {</span><br/><span class="hl-1">  </span><span class="hl-0">const</span><span class="hl-1"> </span><span class="hl-8">n</span><span class="hl-1"> = </span><span class="hl-4">distanceInUnit</span><span class="hl-1">(</span><span class="hl-2">km</span><span class="hl-1">, </span><span class="hl-2">unit</span><span class="hl-1">);</span><br/><span class="hl-1">  </span><span class="hl-10">return</span><span class="hl-1"> </span><span class="hl-2">n</span><span class="hl-1"> === </span><span class="hl-9">0</span><span class="hl-1"> ? </span><span class="hl-3">`&lt; 0.1 </span><span class="hl-0">${</span><span class="hl-2">unit</span><span class="hl-0">}</span><span class="hl-3">`</span><span class="hl-1"> : </span><span class="hl-3">`</span><span class="hl-0">${</span><span class="hl-2">n</span><span class="hl-11">.</span><span class="hl-4">toLocaleString</span><span class="hl-11">(</span><span class="hl-2">locale</span><span class="hl-11">)</span><span class="hl-0">}</span><span class="hl-3"> </span><span class="hl-0">${</span><span class="hl-2">unit</span><span class="hl-0">}</span><span class="hl-3">`</span><span class="hl-1">;</span><br/><span class="hl-1">};</span><br/><span class="hl-4">distance</span><span class="hl-1">(</span><span class="hl-9">13.7</span><span class="hl-1">, </span><span class="hl-3">&#39;mi&#39;</span><span class="hl-1">); </span><span class="hl-12">// &quot;8.5 mi&quot;</span><br/><span class="hl-4">distance</span><span class="hl-1">(</span><span class="hl-9">0.05</span><span class="hl-1">, </span><span class="hl-3">&#39;mi&#39;</span><span class="hl-1">); </span><span class="hl-12">// &quot;&lt; 0.1 mi&quot;</span><br/><span class="hl-4">distance</span><span class="hl-1">(</span><span class="hl-9">13.7</span><span class="hl-1">, </span><span class="hl-3">&#39;km&#39;</span><span class="hl-1">); </span><span class="hl-12">// &quot;13.7 km&quot;</span>
+</code><button type="button">Copy</button></pre>
+
+<p>Label the &quot;search wider&quot; steps in the same unit but keep sending the km
+value, rounded to the nearest whole unit: <code>radiusKm=25 | 50 | 100</code> reads as
+16 / 31 / 62 mi, as on the platform's own pickers. Round to the nearest, not
+down: in the United States the search itself covers that many whole miles,
+so a &quot;15 mi&quot; label would sit above a pharmacy listed at 15.8 mi. Use one
+formatter for the list, the remembered pharmacy and any map pins, so the
+same pharmacy never shows two different numbers.</p>
+<h2 id="5-choose" class="tsd-anchor-link">5. Choose<a href="#5-choose" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-s</span><span class="hl-1"> </span><span class="hl-0">-X</span><span class="hl-1"> </span><span class="hl-3">POST</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/prescriptions/aB3xK9mQpZ4r/pharmacy&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$NATZAR_KEY</span><span class="hl-3">&quot;</span><span class="hl-1"> </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&#39;Content-Type: application/json&#39;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-d</span><span class="hl-1"> </span><span class="hl-3">&#39;{&quot;directoryId&quot;: &quot;ca:ON:305123&quot;}&#39;</span>
+</code><button type="button">Copy</button></pre>
+
+<pre><code class="json"><span class="hl-1">{</span><span class="hl-6">&quot;prescription&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;id&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;aB3xK9mQpZ4r&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;status&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;transmitting&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;pharmacyName&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;Shoppers Drug Mart&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;action&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;sent&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;...&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;...&quot;</span><span class="hl-1">}}</span>
+</code><button type="button">Copy</button></pre>
+
+<p>The choice is <strong>atomic</strong> — one conditional transition shared with every
+other surface — so a choice from your screen and one from the widget
+cannot both succeed. The loser gets <code>409 prescription_not_choosable</code> with
+the effective <code>status</code> in <code>details</code>; the same code answers a lapsed link
+and an already-settled prescription. Re-read <code>GET /v1/prescriptions/{id}</code>
+and render its <code>action</code>. <code>404 pharmacy_not_found</code> is a <code>directoryId</code> no
+listing of this deployment produced. In an e-prescribing deployment,
+<code>409 address_required</code> means the delivery address was never confirmed for
+this prescription (§4).</p>
+<p>Then watch the outcome: poll <code>GET /v1/prescriptions/{id}</code> until <code>status</code>
+is <code>sent</code> or <code>failed</code>, or simply keep rendering the transcript —
+<code>prescription_sent</code> names the pharmacy; <code>prescription_failed</code> re-opens the
+choice (<code>action</code> is <code>choose</code> again, with the link in the body).</p>
+<h2 id="6-cache-the-home-location" class="tsd-anchor-link">6. Cache the home location<a href="#6-cache-the-home-location" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>When you geocoded the patient's home address (<code>homeAddress</code> from §3, or an
+address they typed), hand the point back so no surface has to geocode it
+again (the address step, §4, does the same with its <code>lat</code>/<code>lng</code>):</p>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-s</span><span class="hl-1"> </span><span class="hl-0">-X</span><span class="hl-1"> </span><span class="hl-3">POST</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/prescriptions/aB3xK9mQpZ4r/home-location&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$NATZAR_KEY</span><span class="hl-3">&quot;</span><span class="hl-1"> </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&#39;Content-Type: application/json&#39;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-d</span><span class="hl-1"> </span><span class="hl-3">&#39;{&quot;lat&quot;: 45.4215, &quot;lng&quot;: -75.6972}&#39;</span>
+</code><button type="button">Copy</button></pre>
+
+<p><code>{&quot;ok&quot;: true}</code>, or <code>422 invalid_location</code> for coordinates that are not a
+place on Earth. The write is gated on a prescription you can see, so it is
+only reachable from a live picker.</p>
+<h2 id="7-a-pharmacy-the-directory-does-not-list" class="tsd-anchor-link">7. A pharmacy the directory does not list<a href="#7-a-pharmacy-the-directory-does-not-list" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>Fax jurisdictions only (<code>transport: 'fax'</code>): the directory is the
+platform's own, fed by the provincial registers, and a pharmacy may be
+missing from it. The patient can add one:</p>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-s</span><span class="hl-1"> </span><span class="hl-0">-X</span><span class="hl-1"> </span><span class="hl-3">POST</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/prescriptions/aB3xK9mQpZ4r/pharmacies&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$NATZAR_KEY</span><span class="hl-3">&quot;</span><span class="hl-1"> </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&#39;Content-Type: application/json&#39;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-d</span><span class="hl-1"> </span><span class="hl-3">&#39;{&quot;name&quot;: &quot;Pharmacie du Coin&quot;, &quot;address&quot;: &quot;12 rue Principale&quot;, &quot;city&quot;: &quot;Gatineau&quot;, &quot;region&quot;: &quot;QC&quot;, &quot;postalCode&quot;: &quot;J8X 1A1&quot;, &quot;fax&quot;: &quot;(819) 555-0199&quot;}&#39;</span>
+</code><button type="button">Copy</button></pre>
+
+<pre><code class="json"><span class="hl-1">{</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;pharmacy&quot;</span><span class="hl-1">: {</span><span class="hl-6">&quot;directoryId&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;ca:manual:7hQ2pL9x&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;name&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;Pharmacie du Coin&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;reachable&quot;</span><span class="hl-1">: </span><span class="hl-0">false</span><span class="hl-1">, </span><span class="hl-6">&quot;...&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;...&quot;</span><span class="hl-1">},</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;status&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;pending_verification&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;probe&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;sent&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;faxIssue&quot;</span><span class="hl-1">: </span><span class="hl-0">null</span><br/><span class="hl-1">}</span>
+</code><button type="button">Copy</button></pre>
+
+<p><code>201</code>: the pharmacy now exists (<code>reachable: false</code>) and appears in searches
+at once. The prescription is <strong>not</strong> chosen for it yet — no prescription is
+ever faxed to an unverified line. <code>probe: 'sent'</code> means the platform has
+dispatched a one-page verification fax to the line; the moment the line
+acknowledges it, the platform chooses this pharmacy for the prescription on
+its own (poll <code>GET /v1/prescriptions/{id}</code> — the state moves to
+<code>action: 'sent'</code>). <code>probe: 'not_sent'</code> means no line to verify: the fax was
+missing or dropped (<code>faxIssue</code>), and a clinician adds it from the portal.
+Tell the patient the pharmacy is being verified; until then the
+prescription stays choosable, and they may still pick a listed pharmacy
+instead.</p>
+<p><code>409 pharmacy_add_unavailable</code> on an e-prescribed prescription (the network
+already lists every pharmacy it can reach) or a deployment without a
+directory; <code>409 prescription_not_choosable</code> once settled;
+<code>422 invalid_pharmacy</code> with <code>details.code</code> when the address cannot be
+placed in a province; <code>faxIssue</code> (<code>same_as_phone</code>, <code>toll_free</code>, <code>invalid</code>)
+when the fax line as typed was dropped while the rest was kept.</p>
+<h2 id="what-the-patient-pharmacy-routes-deliberately-do-not-do" class="tsd-anchor-link">What the patient pharmacy routes deliberately do not do<a href="#what-the-patient-pharmacy-routes-deliberately-do-not-do" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<ul>
+<li><strong>No clinical content.</strong> <a href="../interfaces/index.PrescriptionResource.html" class="tsd-kind-interface"> PrescriptionResource</a> is the link state:
+what was prescribed is between the physician and the pharmacy. The one
+patient datum the picker reads back is the home address on file
+(<code>address.onFile</code>), on the list of a prescription you can see, while it
+can be chosen — the confirmation step cannot be shown without it.</li>
+<li><strong>No listing.</strong> A prescription is reached by the id in its transcript
+link, or as <code>prescription</code> on <code>GET /v1/patients/state</code>.</li>
+<li><strong>Physician sessions</strong> cannot call these routes — they are patient-side,
+tenant-key only (<code>403 forbidden</code> to a session).</li>
+</ul>
+<p>In an <code>erx</code> deployment the pharmacy search is answered by the e-prescribing
+network through the Rx gateway, in a <code>fax</code> one by the platform's own directory. All patient surfaces use the same search/resolve core; your tenant key authenticates Natzar, and vendor credentials stay only in the prescriptions service.</p>
+<h2 id="the-physician-side-e-prescribing-us" class="tsd-anchor-link">The physician side: e-prescribing (US)<a href="#the-physician-side-e-prescribing-us" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>SDK 0.20.0 supports native coded US prescribing. Canada continues to accept
+free-text fax drafts. A US physician must finish network enrollment and
+app-initiated <a href="http://ID.me">ID.me</a> in the Natzar portal; routine search/issue then works
+through the physician API. This is an implemented contract; the current
+sandbox's fresh-registration and real-send certification gates are still
+pending (<a href="../media/LOGICOY-CERTIFICATION.md">validation record</a>).</p>
+<p>Use one of the <a href="Physicians.html">physician credentials</a>, not a tenant key
+alone. On your server, the asserted physician ID header may accompany the
+key; in a browser use the short-lived physician session and keep the key
+server-side. Read readiness for the acting physician:</p>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-s</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/physicians/me/eprescribing&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$PHYSICIAN_SESSION</span><span class="hl-3">&quot;</span>
+</code><button type="button">Copy</button></pre>
+
+<p><code>eprescribing</code> contains <code>transport</code>, <code>ready</code>, ordered <code>requirements</code>,
+<code>identity.status</code>/<code>verifiedUntil</code>, <code>portalAccess</code>, <code>setupUrl</code> and
+<code>pharmacyRequests.{open,dueSoon,inboxUrl}</code>. In Canada readiness is transport
+configuration and portal/identity/request fields are null. In the US,
+<code>portalAccess: 'invite_required'</code> means your server must request the normal
+portal invite before the physician follows <code>setupUrl</code>:</p>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-X</span><span class="hl-1"> </span><span class="hl-3">POST</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/physicians/</span><span class="hl-2">$PHYSICIAN_ID</span><span class="hl-3">/portal-invite&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$NATZAR_KEY</span><span class="hl-3">&quot;</span>
+</code><button type="button">Copy</button></pre>
+
+<p>The physician completes their own enrollment and <a href="http://ID.me">ID.me</a>, then rereads
+readiness. Never hard-code <code>ready</code>, adopt historical vendor IDs, or treat a
+vendor login as the app's identity proof. Verification needs at least two
+days remaining on issue. Offer setup/renewal for the returned requirement;
+network errors should be retried with backoff.</p>
+<p>Search a trimmed query of 3–80 characters:</p>
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-s</span><span class="hl-1"> </span><span class="hl-0">--get</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/drugs&quot;</span><span class="hl-1"> </span><span class="hl-0">--data-urlencode</span><span class="hl-1"> </span><span class="hl-3">&#39;q=lisinopril&#39;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$PHYSICIAN_SESSION</span><span class="hl-3">&quot;</span>
+</code><button type="button">Copy</button></pre>
+
+<p>The response groups <code>products</code> → strength/form <code>options</code> → <code>packages</code> and
+reports <code>truncated</code>. Controlled options are visible but must be disabled.
+Have the physician choose an option and package. Use its <code>ndc</code>,
+<code>description</code> and option <code>unit</code> for <code>erx</code>; names alone cannot authorize a
+prescription. A properly segmented NDC query or 11-digit NDC searches the
+package directly; a bare ambiguous 10-digit number is not a valid substitute.</p>
+<p>Save <code>coded-prescription.json</code> with the draft below, replacing every package
+placeholder with the chosen search result and confirming directions and
+quantity with the physician:</p>
+<pre><code class="json"><span class="hl-1">{</span><br/><span class="hl-1">  </span><span class="hl-6">&quot;draft&quot;</span><span class="hl-1">: {</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;items&quot;</span><span class="hl-1">: [{</span><br/><span class="hl-1">      </span><span class="hl-6">&quot;medication&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;Lisinopril&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;strength&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;10 mg&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;form&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;tablet&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-6">&quot;dose&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;1 tablet&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;route&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;oral&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;frequency&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;daily&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-6">&quot;quantity&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;refills&quot;</span><span class="hl-1">: </span><span class="hl-9">0</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-6">&quot;erx&quot;</span><span class="hl-1">: {</span><br/><span class="hl-1">        </span><span class="hl-6">&quot;ndc&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;&lt;selected 11-digit NDC&gt;&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">        </span><span class="hl-6">&quot;drug&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;&lt;selected package description&gt;&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">        </span><span class="hl-6">&quot;unit&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;&lt;selected option unit&gt;&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">        </span><span class="hl-6">&quot;quantity&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;30&quot;</span><span class="hl-1">, </span><span class="hl-6">&quot;daysSupply&quot;</span><span class="hl-1">: </span><span class="hl-9">30</span><br/><span class="hl-1">      }</span><br/><span class="hl-1">    }],</span><br/><span class="hl-1">    </span><span class="hl-6">&quot;pharmacistNote&quot;</span><span class="hl-1">: </span><span class="hl-3">&quot;&quot;</span><br/><span class="hl-1">  }</span><br/><span class="hl-1">}</span>
+</code><button type="button">Copy</button></pre>
+
+<pre><code class="bash"><span class="hl-4">curl</span><span class="hl-1"> </span><span class="hl-0">-X</span><span class="hl-1"> </span><span class="hl-3">POST</span><span class="hl-1"> </span><span class="hl-3">&quot;</span><span class="hl-2">$NATZAR_API</span><span class="hl-3">/v1/async-consults/</span><span class="hl-2">$CONSULT_ID</span><span class="hl-3">/prescriptions&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&quot;Authorization: Bearer </span><span class="hl-2">$PHYSICIAN_SESSION</span><span class="hl-3">&quot;</span><span class="hl-1"> </span><span class="hl-5">\</span><br/><span class="hl-1">  </span><span class="hl-0">-H</span><span class="hl-1"> </span><span class="hl-3">&#39;Content-Type: application/json&#39;</span><span class="hl-1"> </span><span class="hl-0">--data-binary</span><span class="hl-1"> </span><span class="hl-3">@coded-prescription.json</span>
+</code><button type="button">Copy</button></pre>
+
+<p>The server prepares/rechecks the NDC package and readiness and freezes
+routing; client drug descriptions/units cannot override the network result.
+A US uncoded line is <code>400 invalid_request</code> with <code>details.code: 'item_not_coded'</code>; quantity comes from <code>erx.quantity</code>/<code>unit</code>, days supply is
+1–90, and the pharmacist note is ≤210 after ASCII transliteration. A not-ready
+physician gets <code>409 prescriber_not_ready</code> with <code>requirements</code> and <code>setupUrl</code>;
+controlled or unavailable drugs get <code>422 controlled_substance</code> or
+<code>drug_unavailable</code> with affected line indexes. A gateway/network outage gives
+503 <code>dependency_unavailable</code>; retry after backoff. Canada still requires its
+free-text <code>quantity</code>.</p>
+<p>A successful issue returns 201 with prescription ID, issue time and pharmacy
+link. It creates no network draft yet. The patient performs §§1–6: confirms
+address, chooses pharmacy, and sees the actual send outcome. Street, optional
+unit and city limits are 40, 40 and 35 characters. Locally accepted ZIP+4 is
+sent to the US network as its five-digit prefix. A prescription-scoped failure
+expires the old link; it must not invite another pharmacy choice.</p>
+<p>When a linked Change/Renewal request arrives, the
+<code>eprescribing.pharmacy_request</code> webhook carries physician/request IDs,
+kind, receipt/deadline, linked consult/prescription IDs and <code>inboxUrl</code>.
+Refresh the readiness count and offer that inbox link. Request/medication
+clinical details remain in the protected portal; only the named physician
+answers there. Answers do not edit the original prescription or send a
+patient transcript notice. Unlinked requests are portal-only.</p>
+</div></div>
+<div class="col-sidebar">
+<div class="page-menu">
+<div class="tsd-navigation settings">
+<details class="tsd-accordion"><summary class="tsd-accordion-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
+<h3>Settings</h3></summary>
+<div class="tsd-accordion-details">
+<div class="tsd-filter-visibility"><span class="settings-label">Member Visibility</span>
+<ul id="tsd-filter-options">
+<li class="tsd-filter-item"><label class="tsd-filter-input"><input type="checkbox" id="tsd-filter-protected" name="protected"/><svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect class="tsd-checkbox-background" width="30" height="30" x="1" y="1" rx="6" fill="none"></rect><path class="tsd-checkbox-checkmark" d="M8.35422 16.8214L13.2143 21.75L24.6458 10.25" stroke="none" stroke-width="3.5" stroke-linejoin="round" fill="none"></path></svg><span>Protected</span></label></li>
+<li class="tsd-filter-item"><label class="tsd-filter-input"><input type="checkbox" id="tsd-filter-inherited" name="inherited" checked/><svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect class="tsd-checkbox-background" width="30" height="30" x="1" y="1" rx="6" fill="none"></rect><path class="tsd-checkbox-checkmark" d="M8.35422 16.8214L13.2143 21.75L24.6458 10.25" stroke="none" stroke-width="3.5" stroke-linejoin="round" fill="none"></path></svg><span>Inherited</span></label></li></ul></div>
+<div class="tsd-theme-toggle"><label class="settings-label" for="tsd-theme">Theme</label><select id="tsd-theme"><option value="os">OS</option><option value="light">Light</option><option value="dark">Dark</option></select></div></div></details></div>
+<details open class="tsd-accordion tsd-page-navigation"><summary class="tsd-accordion-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
+<h3>On This Page</h3></summary>
+<div class="tsd-accordion-details"><a href="#prescriptions-physician-issue-and-patient-pharmacy-choice"><span>Prescriptions — physician issue and patient pharmacy choice</span></a>
+<ul>
+<li><a href="#patients-under-18"><span>Patients under 18</span></a></li>
+<li><a href="#1-what-lands-on-the-transcript"><span>1. <wbr/>What lands on the transcript</span></a></li>
+<li><a href="#2-resolve-the-link"><span>2. <wbr/>Resolve the link</span></a></li>
+<li><a href="#3-list-the-pharmacies"><span>3. <wbr/>List the pharmacies</span></a></li>
+<li><a href="#4-the-delivery-address-e-prescribing-deployments"><span>4. <wbr/>The delivery address (e-<wbr/>prescribing deployments)</span></a></li>
+<li>
+<ul>
+<li><a href="#4a-the-prescriber-licensure-notice"><span>4a. <wbr/>The prescriber-<wbr/>licensure notice</span></a></li>
+<li><a href="#4b-distances-and-the-unit-to-show-them-in"><span>4b. <wbr/>Distances and the unit to show them in</span></a></li></ul></li>
+<li><a href="#5-choose"><span>5. <wbr/>Choose</span></a></li>
+<li><a href="#6-cache-the-home-location"><span>6. <wbr/>Cache the home location</span></a></li>
+<li><a href="#7-a-pharmacy-the-directory-does-not-list"><span>7. <wbr/>A pharmacy the directory does not list</span></a></li>
+<li><a href="#what-the-patient-pharmacy-routes-deliberately-do-not-do"><span>What the patient pharmacy routes deliberately do not do</span></a></li>
+<li><a href="#the-physician-side-e-prescribing-us"><span>The physician side: e-<wbr/>prescribing (<wbr/>US)</span></a></li></ul></div></details></div>
+<div class="site-menu">
+<nav class="tsd-navigation"><a href="../index.html">Natzar Partner API Reference - v1.0.0</a>
+<ul class="tsd-small-nested-navigation" id="tsd-nav-container">
+<li>Loading...</li></ul></nav></div></div></div><footer>
+<p class="tsd-generator">Generated using <a href="https://typedoc.org/" target="_blank">TypeDoc</a></p></footer>
+<div class="overlay"></div></body></html>
