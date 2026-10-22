@@ -356,10 +356,13 @@ describe('broker — renewal, single-flight and backoff (fake timers)', () => {
     let settled: unknown = 'pending';
     connecting.then(() => (settled = 'resolved'), (e) => (settled = e));
     for (let i = 0; i < 4; i++) {
-      await settle();
+      // Initial frame-key generation uses WebCrypto outside the fake clock.
+      // Wait for each attempt before advancing its retry timer on slower CI.
+      await settle(() => p.asks.length === i + 1);
+      assert.equal(p.asks.length, i + 1);
       mock.timers.tick(60_000);
     }
-    await settle();
+    await settle(() => settled !== 'pending');
     assert.equal(p.asks.length, 4, 'bounded');
     assert.equal((settled as {code?: string}).code, 'unavailable');
   });
