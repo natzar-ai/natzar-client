@@ -179,7 +179,7 @@ export const sessionConsultRefSchema = z.object(consultRefShape).strict();
  */
 export const sessionPatientSchema = z.union([
   z.object({externalId: externalIdSchema}).strict(),
-  upsertPatientSchema.partial({email: true, givenName: true, familyName: true, birthdate: true, sex: true}),
+  upsertPatientSchema.partial({email: true, givenName: true, familyName: true, birthdate: true, sexAssignedAtBirth: true}),
 ]);
 /** The clinician a session acts as: your `externalId` or our `physicianId`. Must already exist (D6). */
 export const sessionClinicianRefSchema = z.union([
@@ -514,7 +514,7 @@ export const patientProfileCompletionSchema = z.object({
   familyName: NAME_FIELD.optional(),
   email: z.string().min(3).max(254).optional(),
   birthdate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  sex: z.enum(['male', 'female']).optional(),
+  sexAssignedAtBirth: z.enum(['male', 'female', 'intersex']).optional(),
   state: z.string().min(1).max(64).optional(),
   country: z.string().min(1).max(64).optional(),
 }).strict().refine((p) => Object.keys(p).length > 0, {message: 'empty'});

@@ -121,9 +121,9 @@ export interface IdentifyAsk {
  *
  * Typed as plain strings so your own user type fits as it is; the values are
  * validated before anything is sent (`phone` E.164, `birthdate`
- * `YYYY-MM-DD`, `sex` `male`/`female`, `lang` `en_US`/`es_US`/`de_CH`/
+ * `YYYY-MM-DD`, `sexAssignedAtBirth` `male`/`female`/`intersex`, `lang` `en_US`/`es_US`/`de_CH`/
  * `fr_CH`/`it_CH`). A value that fails is logged by FIELD name
- * (`identify_result_invalid:patient.sex`) and answered `unavailable`.
+ * (`identify_result_invalid:patient.sexAssignedAtBirth`) and answered `unavailable`.
  */
 export interface PatientIdentity {
   externalId: string;
@@ -132,7 +132,7 @@ export interface PatientIdentity {
   givenName?: string | null;
   familyName?: string | null;
   birthdate?: string | Date | null;
-  sex?: string | null;
+  sexAssignedAtBirth?: string | null;
   lang?: string | null;
   state?: string | null;
   country?: string | null;
@@ -425,7 +425,7 @@ function normalizeUntil(value: Identity['until']): string | null | undefined {
 const LOGIN_MAX_LENGTH = 1_024;
 
 /** The profile branch of the mint's `patient` (the contract's `sessionPatientSchema`, second member). */
-const patientProfileSchema = upsertPatientSchema.partial({email: true, givenName: true, familyName: true, birthdate: true, sex: true});
+const patientProfileSchema = upsertPatientSchema.partial({email: true, givenName: true, familyName: true, birthdate: true, sexAssignedAtBirth: true});
 
 /**
  * A `login` as the string to hash, `null` for none, `undefined` for a value
@@ -764,7 +764,7 @@ export function createCore<Req>(options: NatzarOptions<Req>): Core {
       if (!normalized.ok) return broken(`identify_result_invalid:${normalized.field}`);
       const patient = normalized.value;
       // A profile (more than the id) is checked on its own first, so the log
-      // names the field (`patient.sex`): zod reports the union's other branch
+      // names the field (`patient.sexAssignedAtBirth`): zod reports the union's other branch
       // ("unknown keys") otherwise (RG5 N6). Paths only, never values.
       if (Object.keys(patient).length > 1) {
         const profile = patientProfileSchema.safeParse(patient);

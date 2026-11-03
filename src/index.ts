@@ -14,7 +14,7 @@
  *
  * await natzar.patients.upsert({
  *   externalId: 'u_42', phone: '+15551234567', email: 'a@b.co',
- *   givenName: 'Ada', familyName: 'Lovelace', birthdate: '1990-04-17', sex: 'female',
+ *   givenName: 'Ada', familyName: 'Lovelace', birthdate: '1990-04-17', sexAssignedAtBirth: 'female',
  * });
  * await natzar.agent.send({externalPatientId: 'u_42', text: 'I have a sore throat'});
  * const {items, cursor} = await natzar.agent.messages({externalPatientId: 'u_42'});

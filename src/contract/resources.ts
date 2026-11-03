@@ -3,6 +3,8 @@
 // Copied verbatim from natzar-core's shared/partner-api by
 // scripts/sync-contract.mjs. Edit the source there; this copy exists only so
 // the published package is self-contained.
+import {ASYNC_CONSULT_STATUSES, ASYNC_CLOSED_REASONS, TELEHEALTH_STATUSES, PATIENT_SEX_VALUES, PATIENT_LANGUAGES} from './model-values';
+export {ASYNC_CONSULT_STATUSES, ASYNC_CLOSED_REASONS, TELEHEALTH_STATUSES, PATIENT_SEX_VALUES, PATIENT_LANGUAGES} from './model-values';
 /**
  * Wire representations ("resources") returned by the Natzar Partner API.
  *
@@ -49,12 +51,8 @@ export type IsoDate = string;
  *   stays resolved without extending the window; silence closes as accepted).
  * - `closed` — terminal; why is in {@link AsyncConsultResource.closedReason}.
  */
-export type AsyncConsultStatus =
-  | 'invited'
-  | 'queued'
-  | 'active'
-  | 'resolve_requested'
-  | 'closed';
+
+export type AsyncConsultStatus = (typeof ASYNC_CONSULT_STATUSES)[number];
 
 /**
  * Why an async consult closed. Mirrors `AsyncClosedReason` in
@@ -75,21 +73,8 @@ export type AsyncConsultStatus =
  *   thread ever started (never rateable).
  * - `patient_closed` — the patient ended the open thread themselves.
  */
-export type AsyncClosedReason =
-  | 'accept_timeout'
-  | 'inactivity'
-  | 'consent_timeout'
-  | 'no_capacity'
-  | 'opted_out'
-  | 'cancelled'
-  | 'escalated'
-  | 'declined'
-  | 'patient_closed'
-  /**
-   * `referral_request` threads only: the referral the request asked for was
-   * delivered to the patient — the request is answered.
-   */
-  | 'fulfilled';
+
+export type AsyncClosedReason = (typeof ASYNC_CLOSED_REASONS)[number];
 
 /**
  * The two kinds of async thread.
@@ -131,37 +116,20 @@ export const ASYNC_REQUEST_SUBJECT_MAX = 120;
  * - `cancelled` — cancelled via the API or the patient left the queue.
  * - `no_show` — invited but the patient never joined.
  */
-export type TelehealthStatus =
-  | 'invited'
-  /**
-   * Booked, not yet due: a `scheduled`-mode consult holding a slot. It moves
-   * to `waiting` when either side enters the waiting room (which opens
-   * `waitingRoomOpensMinutes` before `scheduledAt`), and is what a
-   * physician's `upcoming` appointments read until then.
-   */
-  | 'scheduled'
-  | 'waiting'
-  /**
-   * A physician has been reserved and the patient's client is being asked to
-   * confirm it is still there. The call has not started and the physician has
-   * not been sent in; an unanswered ring returns the consult to `waiting` and
-   * frees the physician for the next patient.
-   */
-  | 'ringing'
-  | 'in_progress'
-  | 'completed'
-  | 'cancelled'
-  | 'no_show';
 
-/** Patient biological sex as stored on the record. */
-export type PatientSex = 'male' | 'female';
+export type TelehealthStatus = (typeof TELEHEALTH_STATUSES)[number];
+
+/** Patient sex assigned at birth, as stored on the record. */
+
+export type PatientSex = (typeof PATIENT_SEX_VALUES)[number];
 
 /**
  * Patient locale — drives the language of every system-generated message on
  * the consult transcript and of the embedded widgets. Mirrors the
  * `Languages` enum in `amplify/data/resource.ts`. Defaults to `en_US`.
  */
-export type PatientLang = 'en_US' | 'es_US' | 'de_CH' | 'fr_CH' | 'it_CH';
+
+export type PatientLang = (typeof PATIENT_LANGUAGES)[number];
 
 /**
  * Semantic type of a system-generated notice on an async consult thread.
@@ -308,17 +276,17 @@ export interface PatientResource {
   familyName?: string;
   /** Date of birth, `YYYY-MM-DD`. */
   birthdate?: IsoDate;
-  /** Biological sex. */
-  sex?: PatientSex;
+  /** Sex assigned at birth. */
+  sexAssignedAtBirth?: PatientSex;
   /**
    * The profile's completeness and provenance (D5): `missing` — the fields the
-   * patient has not given yet (care opens only once name, birthdate and sex
+   * patient has not given yet (care opens only once name, birthdate and sex assigned at birth
    * are there); `patientReported` — the fields the patient entered in the
    * widget (not confirmed by you; your next upsert of a field takes it back).
    */
   profile: {
-    missing: Array<'givenName' | 'familyName' | 'email' | 'birthdate' | 'sex' | 'state' | 'country'>;
-    patientReported: Array<'givenName' | 'familyName' | 'email' | 'birthdate' | 'sex' | 'state' | 'country'>;
+    missing: Array<'givenName' | 'familyName' | 'email' | 'birthdate' | 'sexAssignedAtBirth' | 'state' | 'country'>;
+    patientReported: Array<'givenName' | 'familyName' | 'email' | 'birthdate' | 'sexAssignedAtBirth' | 'state' | 'country'>;
   };
   /** Locale for system messages and embeds; defaults to `en_US`. */
   lang: PatientLang;
@@ -363,8 +331,8 @@ export interface PatientSummary {
   familyName?: string;
   /** Date of birth, `YYYY-MM-DD`, if known. */
   birthdate?: IsoDate;
-  /** Biological sex, if known. */
-  sex?: PatientSex;
+  /** Sex assigned at birth, if known. */
+  sexAssignedAtBirth?: PatientSex;
   /** Locale of the patient's messages and notices, if set. */
   lang?: PatientLang;
   /**

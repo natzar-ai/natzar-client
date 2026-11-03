@@ -29,12 +29,16 @@ const BANNER = `// GENERATED FILE — do not edit.
 
 const check = process.argv.includes('--check');
 const files = readdirSync(SOURCE).filter((f) => f.endsWith('.ts'));
+// Guest onboarding has no chart authority and its contract intentionally lives
+// outside the partner REST API. It still ships from the same checked source.
+const sources = [...files.map(file => ({file, source: join(SOURCE, file)})),
+  {file: 'guest.ts', source: join(SOURCE, '..', 'guest.ts')}];
 
 mkdirSync(TARGET, {recursive: true});
 
 let drifted = [];
-for (const file of files) {
-  const wanted = BANNER + readFileSync(join(SOURCE, file), 'utf8');
+for (const {file, source} of sources) {
+  const wanted = BANNER + readFileSync(source, 'utf8');
   const dest = join(TARGET, file);
   let current = null;
   try {

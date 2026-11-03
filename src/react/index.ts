@@ -52,6 +52,7 @@ import type {
   NatzarProviderElement,
   NatzarTelehealthElement,
 } from '../elements/index';
+export {NatzarGuest} from '../guest/react';
 
 export type {
   NatzarAgentElement,

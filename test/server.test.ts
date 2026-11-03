@@ -323,7 +323,7 @@ describe('natzar() — identify and result checks (rule 4, T17)', () => {
   it('builds the mint: loginRef = sha256(natzar-login:login), until, verified parentOrigin, the key, and no browser header', async () => {
     const {nz, mock} = setup({
       identify: () => ({
-        patient: {externalId: 'u-1', phone: '+15551234567', email: null, givenName: 'Ada', familyName: 'L', birthdate: new Date('1990-04-17T00:00:00Z'), sex: 'female'},
+        patient: {externalId: 'u-1', phone: '+15551234567', email: null, givenName: 'Ada', familyName: 'L', birthdate: new Date('1990-04-17T00:00:00Z'), sexAssignedAtBirth: 'female'},
         login: 'sess-abc',
         until: UNTIL,
       }),
@@ -336,7 +336,7 @@ describe('natzar() — identify and result checks (rule 4, T17)', () => {
     assert.equal(JSON.stringify(body).includes('sess-abc'), false, 'the raw login never leaves your server');
     assert.equal(body.until, UNTIL.toISOString());
     assert.equal(body.parentOrigin, ORIGIN);
-    assert.deepEqual(body.patient, {externalId: 'u-1', phone: '+15551234567', givenName: 'Ada', familyName: 'L', birthdate: '1990-04-17', sex: 'female'});
+    assert.deepEqual(body.patient, {externalId: 'u-1', phone: '+15551234567', givenName: 'Ada', familyName: 'L', birthdate: '1990-04-17', sexAssignedAtBirth: 'female'});
     assert.equal('partnerStart' in body, false, 'no onStart, no Start button');
     // Rule 7: nothing of the browser request is forwarded.
     assert.equal(call.headers.authorization, `Bearer ${API_KEY}`);
@@ -581,7 +581,7 @@ describe('natzar() — helpers for your own routes', () => {
   });
 
   it('startConsult: async (consent in the widget), referral_request (collected), telehealth; a complete profile is upserted first', async () => {
-    const full = {externalId: 'u-1', phone: '+15551234567', email: 'a@b.test', givenName: 'Ada', familyName: 'L', birthdate: '1990-04-17', sex: 'female' as const};
+    const full = {externalId: 'u-1', phone: '+15551234567', email: 'a@b.test', givenName: 'Ada', familyName: 'L', birthdate: '1990-04-17', sexAssignedAtBirth: 'female' as const};
     const {nz, mock} = setup({identify: () => ({patient: full})});
     const a = await nz.startConsult(browser('/x'), {kind: 'async', context: 'Follow-up'});
     assert.equal(a.kind, 'async');
@@ -903,10 +903,10 @@ describe('natzar() — RG5 review fixes', () => {
     assert.equal((await ms.nz.fetch(browser('/natzar/session'))).status, 200);
   });
 
-  it('N6: a refused profile field is logged by its path through the union (patient.sex), never its value', async () => {
-    const {nz, logs} = setup({identify: () => ({patient: {externalId: 'u-1', phone: '+15551234567', sex: 'M'}})});
+  it('N6: a refused profile field is logged by its path through the union (patient.sexAssignedAtBirth), never its value', async () => {
+    const {nz, logs} = setup({identify: () => ({patient: {externalId: 'u-1', phone: '+15551234567', sexAssignedAtBirth: 'M'}})});
     assert.equal((await nz.fetch(browser('/natzar/session'))).status, 502);
-    assert.deepEqual(logs.map((l) => l.code), ['identify_result_invalid:patient.sex']);
+    assert.deepEqual(logs.map((l) => l.code), ['identify_result_invalid:patient.sexAssignedAtBirth']);
   });
 
   it('N2/N3: Retry-After is capped at an hour; the grant is relayed PARSED (unknown keys dropped) and a malformed one refused', async () => {

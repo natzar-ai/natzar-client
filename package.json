@@ -1,7 +1,7 @@
 {
   "name": "@natzar/client",
   "version": "0.20.0",
-  "description": "Official TypeScript client for the Natzar Partner API \u2014 AI health-assistant chat, async physician consults, live video consults, prescriptions with an in-app pharmacy picker, referrals as signed PDF requisitions, non-blocking referral requests, a browser-side patient surface and physician workspace, the natzar() embed middleware with React components, and webhook signature verification.",
+  "description": "Official TypeScript client for the Natzar Partner API — AI health-assistant chat, async physician consults, live video consults, prescriptions with an in-app pharmacy picker, referrals as signed PDF requisitions, non-blocking referral requests, a browser-side patient surface and physician workspace, the natzar() embed middleware with React components, and webhook signature verification.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -23,6 +23,21 @@
   "module": "./dist/esm/index.js",
   "types": "./dist/esm/index.d.ts",
   "exports": {
+    "./guest": {
+      "types": "./dist/esm/guest/index.d.ts",
+      "import": "./dist/esm/guest/index.js",
+      "require": "./dist/cjs/guest/index.js"
+    },
+    "./guest/react": {
+      "types": "./dist/esm/guest/react.d.ts",
+      "import": "./dist/esm/guest/react.js",
+      "require": "./dist/cjs/guest/react.js"
+    },
+    "./guest/elements": {
+      "types": "./dist/esm/guest/elements.d.ts",
+      "import": "./dist/esm/guest/elements.js",
+      "require": "./dist/cjs/guest/elements.js"
+    },
     ".": {
       "types": "./dist/esm/index.d.ts",
       "import": "./dist/esm/index.js",
@@ -74,8 +89,8 @@
     "README.md"
   ],
   "scripts": {
-    "sync-contract": "node scripts/sync-contract.mjs",
-    "check-contract": "node scripts/sync-contract.mjs --check",
+    "sync-contract": "node scripts/sync-contract.mjs && node scripts/sync-guest-ui.mjs",
+    "check-contract": "node scripts/sync-contract.mjs --check && node scripts/sync-guest-ui.mjs --check",
     "clean": "rm -rf dist",
     "build": "npm run check-contract && npm run clean && npm run build:esm && npm run build:cjs",
     "build:esm": "tsc -p tsconfig.build.json && node scripts/esm-extensions.mjs",
@@ -86,17 +101,25 @@
     "prepublishOnly": "npm test"
   },
   "dependencies": {
+    "@stripe/stripe-js": "^9.17.0",
+    "flowbite-datepicker": "^1.3.2",
+    "libphonenumber-js": "^1.12.25",
+    "react-phone-number-input": "^3.4.18",
     "zod": "^3.25.17"
   },
   "peerDependencies": {
     "livekit-client": "^2.22.0",
-    "react": ">=18"
+    "react": ">=18",
+    "react-dom": ">=18"
   },
   "peerDependenciesMeta": {
     "livekit-client": {
       "optional": true
     },
     "react": {
+      "optional": true
+    },
+    "react-dom": {
       "optional": true
     }
   },

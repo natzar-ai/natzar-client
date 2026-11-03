@@ -10,7 +10,8 @@ physician's workspace inside your own portal).
 - **[API reference →](https://natzar-ai.github.io/natzar-client/)** — generated
   from the contract, every route, field, error code and webhook payload.
 - Works in Node 20+, Fetch runtimes (Workers, Bun, Deno) and the browser.
-- No framework dependency (React is an optional peer, for `/react` only).
+- Headless entries have no framework dependency. React and React DOM are optional
+  peers for the React and guest UI entries.
 
 ```bash
 npm install @natzar/client
@@ -23,6 +24,52 @@ Each hosted deployment serves its REST API from a fixed host, built in:
 `NATZAR_API_URL` (or `baseUrl`) is needed only for a sandbox, or to override.
 
 ---
+
+## Guest chat and quick intake
+
+Enable guest chat for the clinic and add your website's exact origin to the
+clinic's guest allowlist. This separate guest entry does not require an existing
+patient or change authenticated patient modules.
+
+```tsx
+import {NatzarGuest} from '@natzar/client/guest/react';
+
+<NatzarGuest
+  clinicId="YOUR_CLINIC_GROUP_ID"
+  graphqlUrl="https://YOUR_APPSYNC_HOST/graphql"
+  apiKey="YOUR_PUBLIC_APPSYNC_API_KEY"
+  locale="en_US"
+/>
+```
+
+Use the deployment's **public AppSync API key**, never a partner server key.
+Guests can ask questions before registering. Choosing care starts identity and
+phone verification, eligibility, payment agreement, payment, and a quick health
+history before clinician care. The same form opens from WhatsApp/SMS links.
+Existing patient records require normal account sign-in.
+
+With no on-demand services enabled, guests see the same welcome message,
+background, and composer as signed-in patients. With on-demand services enabled,
+only those services appear alongside “Text our agent about your symptoms”. The
+button focuses the composer; leaving it before sending restores the options with
+a short animation. Guests can attach files up to 20 MB, including file-only
+messages. Uploaded files accompany the conversation when its history is saved.
+
+Questionnaires use the same in-frame Back-to-conversation layout as pharmacy
+selection and live video. Optional steps reopen without losing their draft.
+Health-history fields reuse the signup form's searchable catalog selections
+and save validated clinical codes. Payment uses the original separate desktop
+dialog / phone bottom sheet and the existing Stripe configuration.
+
+For plain HTML, call `registerGuestElement()` from
+`@natzar/client/guest/elements`, then add `<natzar-guest clinic-id="…"
+graphql-url="…" api-key="…" locale="en_US"></natzar-guest>`. For custom UIs,
+`createGuestClient()` from `@natzar/client/guest` exposes the typed journey API.
+
+The default host cookie resumes saved guest conversations automatically on
+revisits. Custom clients can control persistence with `rememberOnDevice()`. Guest credentials never unlock patient chart operations. Hosted
+checkout returns use short-lived, one-use tickets. English, Spanish, French,
+German, and Italian are supported.
 
 ## The 30-second version
 
@@ -39,7 +86,7 @@ app.use('/natzar', natzar({
   identify: (req) => req.user && {
     patient: {externalId: req.user.id, phone: req.user.phone, email: req.user.email,
               givenName: req.user.firstName, familyName: req.user.lastName,
-              birthdate: req.user.birthdate, sex: req.user.sex},
+              birthdate: req.user.birthdate, sexAssignedAtBirth: req.user.sexAssignedAtBirth},
     login: req.sessionID, until: req.session.cookie.expires,
   },
 }));

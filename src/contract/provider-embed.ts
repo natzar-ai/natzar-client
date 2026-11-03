@@ -392,7 +392,7 @@ export interface ProviderEmbedSessionView {
  * The patient summary values that can carry the "patient-reported" marker
  * (D5, RG2.8): the identity values a summary shows.
  */
-export const PROVIDER_EMBED_PATIENT_REPORTED_FIELDS = ['givenName', 'familyName', 'birthdate', 'sex'] as const;
+export const PROVIDER_EMBED_PATIENT_REPORTED_FIELDS = ['givenName', 'familyName', 'birthdate', 'sexAssignedAtBirth'] as const;
 /** One of {@link PROVIDER_EMBED_PATIENT_REPORTED_FIELDS}. */
 export type ProviderEmbedPatientReportedField = (typeof PROVIDER_EMBED_PATIENT_REPORTED_FIELDS)[number];
 /** The minimum patient context shown beside an authorized episode. */
@@ -406,7 +406,7 @@ export interface ProviderEmbedPatientSummary {
   /** Date of birth. */
   birthdate?: IsoDate;
   /** Sex as recorded. */
-  sex?: PatientSex;
+  sexAssignedAtBirth?: PatientSex;
   /** Patient locale. */
   lang?: PatientLang;
   /**

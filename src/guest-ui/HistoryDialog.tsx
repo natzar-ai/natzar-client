@@ -1,0 +1,160 @@
+// GENERATED FILE — edit frontend/guest or shared/jurisdictions.ts, then run sync-contract.
+import {GuestSingleSelect} from './GuestSingleSelect';
+import {useEffect, useId, useRef, useState} from 'react';
+import type {GuestAction, GuestRequest, GuestResult, GuestSignup, GuestView} from '../contract/guest';
+import {guestPhoneNumber} from './guest-phone';
+import {smsLoginAllowed} from './login-policy';
+import {GuestPhoneInput} from './PhoneInput';
+import {historyCopy} from './history-copy';
+import {loginCopy} from './login-copy';
+import {revealWithin} from './form-focus';
+import {RequiredMark} from './RequiredMark';
+import {GuestDialog} from './GuestDialog';
+import {guestCopy} from './copy';
+import {guestConsentCopy} from './consent-copy';
+import {SignupFields} from './SignupFields';
+import {signupCopy} from './signup-copy';
+import {GuestSignupError, normalizeGuestSignup} from './guest-signup';
+
+export type HistoryAction = Extract<GuestAction, 'sendHistoryCode' | 'verifyHistoryCode'>;
+
+/** An optional, contained dialog. The website outside the chat remains usable. */
+export function HistoryDialog({open, history, locale, busy, onRequest, onClose, purpose = 'history', initialPhone, phoneLocked = false, country = 'US', initialProfile, clinicName = '', privacyUrl, termsUrl}: {
+  open: boolean; history: NonNullable<GuestView['history']>; locale: string; busy: boolean;
+  onRequest(action: HistoryAction, input: Omit<GuestRequest, 'action' | 'credential'>): Promise<GuestResult>; onClose(): void;
+  purpose?: 'history' | 'login' | 'signup' | 'care';
+  initialProfile?: Partial<GuestSignup>; clinicName?: string; privacyUrl?: string; termsUrl?: string; country?: 'US' | 'CA';
+  initialPhone?: string;
+  phoneLocked?: boolean;
+}) {
+  const isProfile = purpose === 'signup' || purpose === 'care';
+  const careCopy = guestCopy(locale), consents = guestConsentCopy(locale);
+  const brand = (text: string) => text.replace(/\{\{brand\}\}/g, () => clinicName);
+  const copy = purpose === 'care' ? {...signupCopy(locale), title: careCopy.details, why: careCopy.detailsBody, send: careCopy.next} : purpose === 'signup' ? signupCopy(locale) : purpose === 'login' ? loginCopy(locale) : historyCopy(locale), id = useId();
+  const [signup, setSignup] = useState<Partial<GuestSignup>>({...initialProfile, email: initialProfile?.email ?? ''}), [invalidSignup, setInvalidSignup] = useState<keyof GuestSignup>();
+  const [calendarOpen, setCalendarOpen] = useState(false), [healthConsent, setHealthConsent] = useState(false), [messagingConsent, setMessagingConsent] = useState(false);
+  const [signupSent, setSignupSent] = useState(false);
+  const panel = useRef<HTMLDivElement>(null), scroll = useRef<HTMLDivElement>(null), heading = useRef<HTMLHeadingElement>(null);
+  const phoneField = useRef<HTMLInputElement>(null), codeField = useRef<HTMLInputElement>(null);
+  const previous = useRef<HTMLElement | null>(null);
+  const [phone, setPhone] = useState(history.verification?.phone ?? initialPhone ?? '');
+  const [code, setCode] = useState(''), [error, setError] = useState('');
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [editing, setEditing] = useState(false), [channel, setChannel] = useState<'sms' | 'whatsapp'>(history.verification?.channel ?? 'whatsapp');
+  const [now, setNow] = useState(Date.now()), [retryAt, setRetryAt] = useState(0);
+  const pending = history.verification;
+  const step = history.saved ? 'saved' : pending && !editing && (purpose !== 'signup' || signupSent) ? 'code' : 'phone';
+  const normalized = guestPhoneNumber(phone);
+  const smsAllowed = !phone.trim() || !normalized && phone.trim().startsWith('+1') || !!normalized && smsLoginAllowed(normalized);
+  const delivery = smsAllowed ? channel : 'whatsapp';
+  const resendAt = Math.max(retryAt, pending ? Date.parse(pending.sentAt) + 60_000 : 0);
+  const remaining = Math.max(0, Math.ceil((resendAt - now) / 1000));
+  const masked = pending?.phone.replace(/\d(?=\d{4})/g, '•') ?? '';
+  const title = step === 'saved' ? copy.saved : step === 'code' ? copy.codeTitle : copy.title;
+  const explanation = step === 'saved' ? copy.savedWhy
+    : step === 'code' ? copy.codeWhy.replace('{{phone}}', masked) : copy.why;
+
+  function focus(element: HTMLElement | null) {element?.focus({preventScroll: true}); revealWithin(scroll.current, element, 10);}
+  useEffect(() => {
+    if (!open) return;
+    if (!phone && initialPhone) setPhone(initialPhone);
+    const node = panel.current, root = node?.getRootNode() as Document | ShadowRoot | undefined;
+    const active = root?.activeElement ?? node?.ownerDocument.activeElement;
+    previous.current = active instanceof HTMLElement ? active : null;
+    setError(''); setNow(Date.now()); heading.current?.focus({preventScroll: true});
+    return () => {if (previous.current?.isConnected) previous.current.focus({preventScroll: true});};
+    // Preserve an unfinished entry while the server updates the challenge.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+  useEffect(() => {
+    if (!open || step !== 'code') return;
+    focus(codeField.current);
+  }, [open, step, pending?.sentAt]);
+  useEffect(() => {
+    if (!open) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 500); return () => clearInterval(timer);
+  }, [open]);
+  useEffect(() => {if (!open || step !== 'phone') {setPickerOpen(false); setCalendarOpen(false);}}, [open, step]);
+  useEffect(() => {if (open && step === 'saved') heading.current?.focus({preventScroll: true});}, [open, step]);
+
+  async function send(resend = false) {
+    if (busy || remaining) return;
+    const value = resend ? pending?.phone : guestPhoneNumber(phone);
+    let profile: GuestSignup | undefined;
+    if (isProfile) {
+      try {profile = normalizeGuestSignup(signup, country); setInvalidSignup(undefined);}
+      catch (error) {
+        if (!(error instanceof GuestSignupError)) throw error;
+        setInvalidSignup(error.field);
+        const text = signupCopy(locale);
+        setError(error.field === 'zipCode' || error.field === 'email' ? '' : error.field === 'birthdate' ? text.invalidDate : text.invalid);
+        focus(panel.current?.querySelector<HTMLElement>('[name="' + error.field + '"]') ?? null);
+        return;
+      }
+    }
+    if (isProfile && !healthConsent) {setError(consents.required); focus(panel.current?.querySelector<HTMLInputElement>('[data-health-consent]') ?? null); return;}
+    if (!value) {setError(copy.invalidPhone); focus(phoneField.current); return;}
+    setError('');
+    const result = await onRequest('sendHistoryCode', {phone: value, verificationChannel: resend ? pending?.channel : delivery, consent: true, ...(profile ? {signup: profile} : {}), ...(isProfile ? {healthConsent, messagingConsent} : {})});
+    setNow(Date.now());
+    if (result.ok) {setPhone(value); setCode(''); setEditing(false); setSignupSent(true);}
+    else {
+      if (result.retryAfterSeconds) setRetryAt(Date.now() + result.retryAfterSeconds * 1000);
+      setError(result.error === 'invalid_phone' ? copy.invalidPhone : result.error === 'verification_delivery_failed' ? copy.delivery
+        : result.error === 'rate_limited' ? copy.limited : copy.failed);
+    }
+  }
+  async function verify() {
+    if (busy || code.length !== 6) return;
+    setError('');
+    const result = await onRequest('verifyHistoryCode', {code});
+    if (!result.ok && result.error === 'email_already_associated' && isProfile) {setInvalidSignup('email'); setEditing(true); setError(signupCopy(locale).emailTaken); return;}
+    if (!result.ok) {setError(result.error === 'account_clinic_mismatch' ? copy.clinicMismatch : result.error === 'code_expired' ? copy.expiredCode : /code|verification/.test(result.error) ? copy.invalidCode : copy.failed); focus(codeField.current);}
+  }
+
+  if (!open) return null;
+  const blocked = pickerOpen || calendarOpen;
+  const symbol = step === 'saved'
+    ? <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="m5 12 4 4L19 6"/></svg>
+    : purpose !== 'history' ? <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg>
+    : <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M6 3h12v18l-6-4-6 4V3Z"/></svg>;
+  return <GuestDialog id={id} purpose={isProfile ? 'signup' : purpose} step={step} title={title} why={explanation} fitWhy={purpose === 'signup' && step === 'phone'} closeLabel={copy.close} onClose={onClose}
+    panel={panel} scroll={scroll} heading={heading} blocked={blocked} symbol={symbol}
+    footer={isProfile && step === 'phone' && <div className="guest-signup-footer" inert={blocked} aria-hidden={blocked || undefined}>
+      <button type="submit" form={id + '-form'} className="guest-history-primary" disabled={busy || remaining > 0}>{copy.send}{remaining > 0 && ' (' + remaining + 's)'}</button>
+    </div>}>
+    {step === 'phone' && <form id={id + '-form'} noValidate onSubmit={event => {event.preventDefault(); void send();}}>
+      {isProfile && <SignupFields id={id} values={signup} onChange={(field, value) => {setSignup(previous => ({...previous, [field]: value})); setInvalidSignup(undefined); setError('');}} country={country} locale={locale} invalid={invalidSignup} busy={busy}
+        container={() => panel.current} onCalendarOpen={setCalendarOpen} emailError={invalidSignup === 'email' && error ? error : undefined}/>}
+      <label htmlFor={id + '-phone'}>{copy.phone}<RequiredMark/></label>
+      <div className={isProfile ? 'guest-phone-delivery' : undefined}>
+        <GuestPhoneInput ref={phoneField} id={id + '-phone'} value={phone} locale={locale} disabled={busy} readOnly={phoneLocked} invalid={!!error && !invalidSignup && !normalized} describedBy={error && !invalidSignup && !normalized ? id + '-error' : undefined}
+          onChange={value => {setPhone(value); setError('');}} pickerOpen={pickerOpen} onPickerOpen={setPickerOpen} container={() => panel.current}/>
+        <div className={isProfile ? 'guest-delivery-inline' : 'guest-delivery-full'}>
+          <GuestSingleSelect compact={isProfile} className="guest-delivery-select" aria-label={copy.send} value={delivery} disabled={busy || !smsAllowed} onChange={event => setChannel(event.target.value as 'sms' | 'whatsapp')}>
+            <option value="whatsapp">{copy.whatsapp}</option>{smsAllowed && <option value="sms">{copy.sms}</option>}
+          </GuestSingleSelect>
+        </div>
+      </div>
+      {isProfile && <div className="guest-profile-consents">
+        <label className="guest-check"><input data-health-consent type="checkbox" disabled={busy} required aria-invalid={!healthConsent && error === consents.required || undefined} aria-describedby={!healthConsent && error === consents.required ? id + '-error' : undefined} checked={healthConsent} onChange={event => setHealthConsent(event.target.checked)}/><span>{brand(consents.health)}<RequiredMark/></span></label>
+        <label className="guest-check"><input data-messaging-consent type="checkbox" disabled={busy} checked={messagingConsent} onChange={event => setMessagingConsent(event.target.checked)}/><span>{brand(consents.messaging)}</span></label>
+        {(privacyUrl || termsUrl) && <p className="guest-hint guest-profile-links">{privacyUrl && <a href={privacyUrl} target="_blank" rel="noopener noreferrer">{consents.privacy}</a>}{privacyUrl && termsUrl && ' · '}{termsUrl && <a href={termsUrl} target="_blank" rel="noopener noreferrer">{consents.terms}</a>}</p>}
+      </div>}
+      {error && invalidSignup !== 'email' && <p className="guest-history-error" id={id + '-error'} role="alert">{error}</p>}
+      {!isProfile && <button type="submit" className="guest-history-primary" disabled={busy || remaining > 0}>{copy.send}{remaining > 0 && ' (' + remaining + 's)'}</button>}
+    </form>}
+    {step === 'code' && <form noValidate onSubmit={event => {event.preventDefault(); void verify();}}>
+      <label htmlFor={id + '-code'}>{copy.code}<RequiredMark/></label>
+      <input ref={codeField} id={id + '-code'} aria-label={copy.code} className="guest-history-code" type="text" inputMode="numeric" autoComplete="one-time-code" required maxLength={6} pattern="[0-9]{6}" value={code} disabled={busy} aria-invalid={!!error || undefined} aria-describedby={error ? id + '-error' : undefined}
+        onChange={event => {setCode(event.target.value.replace(/\D/g, '')); setError('');}}/>
+      {error && <p className="guest-history-error" id={id + '-error'} role="alert">{error}</p>}
+      <button type="submit" className="guest-history-primary" disabled={busy || code.length !== 6}>{copy.verify}</button>
+      <div className="guest-history-code-actions"><button type="button" disabled={busy || remaining > 0} onClick={() => void send(true)}>{remaining ? copy.resendIn.replace('{{seconds}}', String(remaining)) : copy.resend}</button>
+        <button type="button" disabled={busy} onClick={() => {setPhone(pending?.phone ?? phone); setEditing(true); setCode(''); setError(''); requestAnimationFrame(() => focus(phoneField.current));}}>{copy.change}</button></div>
+    </form>}
+    {step === 'saved' ? <button type="button" className="guest-history-primary" onClick={onClose}>{copy.continue}</button>
+      : !isProfile && <button type="button" className="guest-history-later" onClick={onClose}>{copy.notNow}</button>}
+  </GuestDialog>;
+}

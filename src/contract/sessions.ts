@@ -411,11 +411,11 @@ export const PATIENT_SESSION_OPERATIONS = {
  * mirroring shared/patient-profile.ts `PROFILE_COMPLETION_FIELDS` (a test
  * holds them equal).
  */
-export const PATIENT_PROFILE_FIELDS = ['givenName', 'familyName', 'email', 'birthdate', 'sex', 'state', 'country'] as const;
+export const PATIENT_PROFILE_FIELDS = ['givenName', 'familyName', 'email', 'birthdate', 'sexAssignedAtBirth', 'state', 'country'] as const;
 /** A completable profile field. */
 export type PatientProfileField = (typeof PATIENT_PROFILE_FIELDS)[number];
 /** The fields a Natzar-billed Start needs (`profile_incomplete` lists the missing ones). */
-export const START_REQUIRED_PROFILE_FIELDS = ['givenName', 'familyName', 'birthdate', 'sex'] as const satisfies readonly PatientProfileField[];
+export const START_REQUIRED_PROFILE_FIELDS = ['givenName', 'familyName', 'birthdate', 'sexAssignedAtBirth'] as const satisfies readonly PatientProfileField[];
 
 /** Whether a live call should hand over to a successor now (T−5 min before the absolute limit). */
 export function handoverDue(args: {absoluteExpiresAtMs: number; nowMs: number}): boolean {
@@ -1293,10 +1293,7 @@ export function providerDomEventName(name: ProviderEventName): `natzar:provider:
 }
 
 /** Async closed reasons, runtime list of `AsyncClosedReason` (a type test holds them equal). */
-export const ASYNC_CLOSED_REASONS = [
-  'accept_timeout', 'inactivity', 'consent_timeout', 'no_capacity', 'opted_out', 'cancelled', 'escalated', 'declined',
-  'patient_closed', 'fulfilled',
-] as const;
+export {ASYNC_CLOSED_REASONS} from './model-values';
 /** Message authors, runtime list of `MessageAuthor` (a type test holds them equal). */
 export const MESSAGE_AUTHORS = ['patient', 'agent', 'physician', 'system'] as const;
 

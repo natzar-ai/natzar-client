@@ -220,8 +220,8 @@ const limitSchema = z.coerce.number().int().min(1).max(100);
 /** Patient locale. Mirrors the `Languages` data-model enum. */
 const langSchema = z.enum(['en_US', 'es_US', 'de_CH', 'fr_CH', 'it_CH']);
 
-/** Biological sex, as required by the patient record. */
-const sexSchema = z.enum(['male', 'female']);
+/** Sex assigned at birth, as required by the patient record. */
+const sexSchema = z.enum(['male', 'female', 'intersex']);
 
 /**
  * An IANA time zone id (`Europe/Zurich`, `America/Los_Angeles`) — the shape
@@ -332,8 +332,8 @@ export const upsertPatientSchema = z
     familyName: z.string().min(1).max(100),
     /** Date of birth, `YYYY-MM-DD`. */
     birthdate: isoDateSchema,
-    /** Biological sex. */
-    sex: sexSchema,
+    /** Sex assigned at birth. */
+    sexAssignedAtBirth: sexSchema,
     /** Locale for system messages/embeds. Default `en_US`. */
     lang: langSchema.optional(),
     /**
@@ -380,8 +380,8 @@ export const updatePatientSchema = z
     familyName: z.string().min(1).max(100).optional(),
     /** Date of birth, `YYYY-MM-DD`. */
     birthdate: isoDateSchema.optional(),
-    /** Biological sex. */
-    sex: sexSchema.optional(),
+    /** Sex assigned at birth. */
+    sexAssignedAtBirth: sexSchema.optional(),
     /** Locale for system messages/embeds. */
     lang: langSchema.optional(),
   })
