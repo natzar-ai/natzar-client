@@ -1437,6 +1437,17 @@ describe('connectPatient — accept & pay', () => {
     assert.equal(calls.filter((c) => c.name === 'embedAgentConsent').length, 1, 'no retry on an unpaid payment');
   });
 
+  it('stops acceptAndPay while a refund is pending even if an inconsistent response claims paid', async () => {
+    const {calls, fetchLike} = stub({embedAgentConsent: refusal(embeddedCheckout), embedPaymentStatus: {ok: true, status: 'refund_pending', paid: true}});
+    const care = await connect({fetch: fetchLike});
+    assert.deepEqual(await care.payments.status('pay_1'), {paymentId: 'pay_1', status: 'refund_pending', paid: false});
+    await assert.rejects(() => care.acceptAndPay(inviteEntry, {mount: async () => {}, pollIntervalMs: 1}), (e: {code?: string; details?: unknown}) => {
+      assert.equal(e.code, 'payment_not_completed'); assert.deepEqual(e.details, {paymentId: 'pay_1', status: 'refund_pending'}); return true;
+    });
+    assert.equal(calls.filter(c => c.name === 'embedAgentConsent').length, 1, 'refunds never admit care or create another checkout');
+    assert.equal(calls.filter(c => c.name === 'embedPaymentStatus').length, 2, 'one explicit status read and one bounded checkout read');
+  });
+
   it('acceptAndPay passes a backed-out mount through and never polls', async () => {
     const {calls, fetchLike} = stub({embedAgentConsent: refusal(embeddedCheckout)});
     const care = await connect({fetch: fetchLike});

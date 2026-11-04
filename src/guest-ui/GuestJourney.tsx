@@ -172,8 +172,8 @@ export function GuestJourney({client, locale = 'en', clinicName, getAccountToken
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client]);
   useEffect(() => {
-    setOverlayOpen(phase === 'account' || (!!phase && view?.guestEnabled !== false && !['refunded', 'refund_pending'].includes(view?.payment?.status ?? '') && ['identity', 'verification', 'offer', 'intake'].includes(phase)));
-    setPaymentOpen(phase === 'payment' && view?.payment?.status !== 'failed');
+    setOverlayOpen(phase === 'account' || (!!phase && view?.guestEnabled !== false && !['refunded', 'refund_pending', 'refund_failed'].includes(view?.payment?.status ?? '') && ['identity', 'verification', 'offer', 'intake'].includes(phase)));
+    setPaymentOpen(phase === 'payment' && !['failed', 'refunded', 'refund_pending', 'refund_failed'].includes(view?.payment?.status ?? ''));
   }, [phase, view?.guestEnabled, view?.payment?.status]);
   useEffect(() => {
     if (!retryAt) return;
@@ -202,7 +202,8 @@ export function GuestJourney({client, locale = 'en', clinicName, getAccountToken
   const guestActive = view?.guestEnabled !== false;
   const refunded = view?.payment?.status === 'refunded';
   const refundPending = view?.payment?.status === 'refund_pending';
-  const formPhase = phase === 'account' || (!!phase && ['identity', 'verification', 'offer', 'intake'].includes(phase) && !refunded && !refundPending);
+  const refundFailed = view?.payment?.status === 'refund_failed';
+  const formPhase = phase === 'account' || (!!phase && ['identity', 'verification', 'offer', 'intake'].includes(phase) && !refunded && !refundPending && !refundFailed);
   const formVisible = phase !== 'identity' && (guestActive || phase === 'account') && formPhase && overlayOpen;
   useEffect(() => {
     if (!formVisible) thread.current?.scrollTo({top: thread.current.scrollHeight, behavior: 'auto'});
@@ -331,16 +332,16 @@ export function GuestJourney({client, locale = 'en', clinicName, getAccountToken
               {phase === 'intake' && <p className="guest-hint">{copy.requiredBeforeCare}</p>}
               <button ref={pendingAction} className="guest-step-action" disabled={busy} onClick={() => setOverlayOpen(true)}>{titles[view.phase]}<span aria-hidden="true">↗</span></button>
             </aside>}
-            {phase === 'payment' && <aside className="guest-pending-step">
+            {phase === 'payment' && !refunded && !refundPending && !refundFailed && <aside className="guest-pending-step">
               <p className="guest-hint">{view.payment?.status === 'failed' ? copy.paymentFailed : copy.paymentPending}</p>
               {guestActive && (view.payment?.status === 'failed'
                 ? <button ref={pendingAction} className="guest-step-action" disabled={busy} onClick={() => void request('checkout', {consent: true})}>{copy.paymentRetry}<span aria-hidden="true">↗</span></button>
                 : <button ref={pendingAction} className="guest-step-action" disabled={busy} onClick={() => setPaymentOpen(true)}>{copy.openCheckout}<span aria-hidden="true">↗</span></button>)}
               <button className="guest-link" disabled={busy} onClick={() => void request('paymentStatus')}>{copy.checkPayment}</button>
             </aside>}
-            {(refunded || refundPending) && <aside className="guest-pending-step">
-              <p className="guest-notice" role="status">{refunded ? copy.refunded : copy.refundPending}</p>
-              {refundPending && <button className="guest-link" disabled={busy} onClick={() => void request('paymentStatus')}>{copy.refundCheck}</button>}
+            {(refunded || refundPending || refundFailed) && <aside className="guest-pending-step">
+              <p className="guest-notice" role="status">{refunded ? copy.refunded : refundFailed ? copy.refundFailed : copy.refundPending}</p>
+              {(refundPending || refundFailed) && <button className="guest-link" disabled={busy} onClick={() => void request('paymentStatus')}>{copy.refundCheck}</button>}
             </aside>}
             {phase === 'ready' && <aside className="guest-pending-step"><p className="guest-description">{copy.readyBody}</p>
               {care ? <a className="guest-primary" href={care}>{copy.openCare}</a> : <button className="guest-primary" disabled={busy} onClick={() => void request('complete')}>{busy ? copy.busy : copy.complete}</button>}

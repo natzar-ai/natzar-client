@@ -41,17 +41,30 @@ describe('watch', () => {
   it('calls back again as soon as the value really changes', async () => {
     let n = 0;
     const values: unknown[] = [];
+    let changed!: () => void;
+    const threeChanges = new Promise<void>((resolve) => { changed = resolve; });
+    let timeout: ReturnType<typeof setTimeout>;
+    const deadline = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => reject(new Error(`expected three changes, got ${values.length}`)), 2_000);
+    });
     const stop = watch(
       {read: async () => ({v: n++}), same: (a, b) => a.v === b.v},
       (v, s) => {
-        if (s.phase === 'live') values.push(v);
+        if (s.phase === 'live') {
+          values.push(v);
+          if (values.length === 3) changed();
+        }
       },
       {pauseWhenHidden: false},
       FAST,
     );
-    await tick(40);
-    stop();
-    assert.ok(values.length >= 3, `expected several changes, got ${values.length}`);
+    try {
+      await Promise.race([threeChanges, deadline]);
+    } finally {
+      clearTimeout(timeout!);
+      stop();
+    }
+    assert.deepEqual(values, [{v: 0}, {v: 1}, {v: 2}]);
   });
 
   // A failing read must back off, and must NOT blank the caller's data — a

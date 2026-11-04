@@ -316,7 +316,7 @@ export interface JoinOptions extends PaymentOptions {
 /** One payment's state, as the platform sees it. Only `paid` entitles a visit. */
 export interface PaymentState {
   paymentId: string;
-  status: 'pending' | 'paid' | 'failed' | 'expired' | 'refunded' | 'unknown';
+  status: 'pending' | 'paid' | 'failed' | 'expired' | 'refunded' | 'refund_pending' | 'unknown';
   /** The platform's verdict, from Stripe's signed webhook — never from the browser. */
   paid: boolean;
 }
@@ -1259,7 +1259,7 @@ export async function connectPatient(source: ConnectPatientSource = {}, options:
   };
 
   // Poll until the platform confirms the payment. Rejects on a status that
-  // can no longer become `paid`, and on timeout — both as
+  // cannot currently fund this care (including a refund), and on timeout — both as
   // `payment_not_completed` carrying the id, so the caller can resume: the
   // row stays bound to the invite and the next press adopts it once paid.
   const untilPaid = async (paymentId: string, opts: AcceptAndPayOptions): Promise<void> => {
@@ -1268,7 +1268,7 @@ export async function connectPatient(source: ConnectPatientSource = {}, options:
     for (;;) {
       const state = await paymentStatus(paymentId, opts.signal);
       if (state.paid) return;
-      const dead = state.status === 'failed' || state.status === 'expired' || state.status === 'refunded';
+      const dead = state.status === 'failed' || state.status === 'expired' || state.status === 'refunded' || state.status === 'refund_pending';
       if (dead || Date.now() >= deadline) {
         throw new NatzarApiError({
           code: 'payment_not_completed',
@@ -1812,7 +1812,7 @@ export function patientPullFromAppointmentBeat(
 }
 
 
-const PAYMENT_STATUSES = new Set<PaymentState['status']>(['pending', 'paid', 'failed', 'expired', 'refunded']);
+const PAYMENT_STATUSES = new Set<PaymentState['status']>(['pending', 'paid', 'failed', 'expired', 'refunded', 'refund_pending']);
 
 // A price off the wire: a positive whole amount and a currency, or nothing —
 // a malformed price is not shown, the same "absent is not free" rule the

@@ -32,7 +32,7 @@ export type GuestUpload = {url: string; attachment: GuestAttachment};
 export type GuestMessage = {id: string; role: 'user' | 'assistant'; text: string; sentAt: string; channel?: GuestChannel; attachments?: GuestAttachment[]};
 export type GuestOffer = GuestCare & {label: string; amountCents: number; currency: string};
 export type GuestPayment = {
-  id: string | null; status: 'free' | 'pending' | 'paid' | 'failed' | 'refunded' | 'refund_pending'; amountCents: number; currency: string;
+  id: string | null; status: 'free' | 'pending' | 'paid' | 'failed' | 'refunded' | 'refund_pending' | 'refund_failed'; amountCents: number; currency: string;
   checkoutUrl?: string; clientSecret?: string; publishableKey?: string;
 };
 export type GuestView = {
