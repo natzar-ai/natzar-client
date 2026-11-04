@@ -1,4 +1,4 @@
-import {describe, it} from 'node:test';
+import {describe, it, type TestContext} from 'node:test';
 import assert from 'node:assert/strict';
 import {createGuestClient, validateGuestUrl} from '../dist/esm/guest/index.js';
 import type {GuestView} from '../dist/esm/guest/index.js';
@@ -112,4 +112,122 @@ it('a blocked cookie adapter never turns a committed operation into an apparent 
   const f = fixture(); const blocked = () => {throw new Error('blocked');};
   const client = createGuestClient({...f.options, cookieStorage: {getItem: blocked, setItem: blocked, removeItem: blocked, setExpiry: blocked}});
   assert.equal((await client.request('begin')).ok, true); assert.equal(client.hasSavedJourney(), true);
+});
+
+const CHECKOUT_VIEW: GuestView = {...VIEW, id: CREDENTIAL.split('.')[1], country: 'CA', phase: 'offer', phoneVerified: true,
+  choice: {modality: 'async', mode: 'live'}, messages: [{id: 'initial-question', role: 'assistant', text: 'Please review the clinic offer.', sentAt: '2026-11-04T10:00:00Z'}]};
+const CHECKOUT_READY: GuestView = {...CHECKOUT_VIEW, phase: 'payment', payment: {id: 'payment-one', status: 'pending', amountCents: 3900, currency: 'cad', clientSecret: 'synthetic-checkout-client-secret'}};
+const reply = (result: unknown) => ({ok: true, status: 200, json: async () => ({data: {guestJourney: result}})}) as Response;
+async function settle() {for (let i = 0; i < 24; i++) await Promise.resolve();}
+async function advance(t: TestContext, pending: Promise<unknown>, maxTicks = 48) {
+  let done = false; void pending.finally(() => {done = true;});
+  for (let i = 0; i < maxTicks && !done; i++) {await settle(); if (!done) t.mock.timers.tick(250);}
+  await settle(); assert(done, 'recovery must finish within its bounded observation window');
+}
+function recoveryFixture(states: Array<unknown | (() => Promise<Response>)>, original: unknown = {ok: false, error: 'service_unavailable'}) {
+  const calls: Array<{action: string; input: Record<string, unknown>; signal: AbortSignal | null | undefined}> = [];
+  const saved = new Map<string, string>();
+  let stateIndex = 0, begins = 0;
+  const nextCredential = 'ng1.22222222-2222-2222-2222-222222222222.BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
+  const client = createGuestClient({clinicId: CHECKOUT_VIEW.clinicId, graphqlUrl: 'https://clinic.example/graphql', apiKey: 'public-api-key', cookieStorage: null,
+    storage: {getItem: key => saved.get(key) ?? null, setItem: (key, value) => {saved.set(key, value);}, removeItem: key => {saved.delete(key);}},
+    fetch: (async (_url, init) => {
+      const body = JSON.parse(String(init?.body)), action = body.variables.action, input = JSON.parse(body.variables.input);
+      calls.push({action, input, signal: init?.signal});
+      if (action === 'begin') {begins++; return reply({ok: true, journey: begins === 1 ? CHECKOUT_VIEW : {...CHECKOUT_VIEW, id: nextCredential.split('.')[1], phase: 'chat'}, credential: begins === 1 ? CREDENTIAL : nextCredential});}
+      if (action !== 'state') {if (original instanceof Error) throw original; return typeof original === 'function' ? original(init?.signal) : reply(original);}
+      const state = states[Math.min(stateIndex++, states.length - 1)];
+      return typeof state === 'function' ? state() : reply(state);
+    }) as typeof fetch});
+  return {client, calls, saved, nextCredential};
+}
+
+describe('ambiguous checkout response reconciliation', () => {
+  it('recovers a late committed pending payment with the same request/credential and no checkout replay', async t => {
+    const f = recoveryFixture([{ok: false, error: 'journey_busy'}, {ok: true, journey: CHECKOUT_READY}], new Error('response lost'));
+    await f.client.request('begin'); t.mock.timers.enable({apis: ['setTimeout', 'Date']});
+    const pending = f.client.request('checkout', {consent: true, requestId: 'same-checkout-attempt'});
+    await advance(t, pending); const result = await pending;
+    assert(result.ok); assert.equal(result.journey.phase, 'payment'); assert.equal(result.journey.payment?.id, 'payment-one');
+    assert.equal(f.calls.filter(c => c.action === 'checkout').length, 1);
+    for (const call of f.calls.filter(c => c.action === 'state')) {assert.equal(call.input.requestId, 'same-checkout-attempt'); assert.equal(call.input.credential, CREDENTIAL); assert.equal(call.input.consent, undefined);}
+  });
+
+  it('shows a newly committed clinical follow-up as an offer, without claiming payment or clearance', async t => {
+    const followup: GuestView = {...CHECKOUT_VIEW, messages: [...CHECKOUT_VIEW.messages, {id: 'clinic-followup', role: 'assistant', text: 'Do you have a fever?', sentAt: '2026-11-04T10:00:01Z'}]};
+    const f = recoveryFixture([{ok: true, journey: followup}]); await f.client.request('begin'); t.mock.timers.enable({apis: ['setTimeout', 'Date']});
+    const pending = f.client.request('checkout', {consent: true}); await advance(t, pending); const result = await pending;
+    assert(result.ok); assert.equal(result.journey.phase, 'offer'); assert.equal(result.journey.payment, undefined); assert.equal(result.journey.messages.at(-1)?.text, 'Do you have a fever?');
+    assert.equal(f.calls.filter(c => c.action === 'checkout').length, 1);
+  });
+
+  it('accepts only a server-confirmed free intake transition', async t => {
+    const f = recoveryFixture([{ok: true, journey: {...CHECKOUT_VIEW, phase: 'intake', payment: {id: null, status: 'free', amountCents: 0, currency: 'cad'}}}]);
+    await f.client.request('begin'); t.mock.timers.enable({apis: ['setTimeout', 'Date']});
+    const pending = f.client.request('checkout', {consent: true}); await advance(t, pending); const result = await pending;
+    assert(result.ok); assert.equal(result.journey.phase, 'intake'); assert.equal(result.journey.payment?.status, 'free');
+  });
+
+  it('retains the original error for unchanged, busy, disabled or non-actionable state', async t => {
+    t.mock.timers.enable({apis: ['setTimeout', 'Date']});
+    for (const state of [{ok: true, journey: CHECKOUT_VIEW}, {ok: false, error: 'journey_busy'}, {ok: true, journey: {...CHECKOUT_READY, guestEnabled: false}}, {ok: true, journey: {...CHECKOUT_READY, payment: {...CHECKOUT_READY.payment!, clientSecret: undefined, checkoutUrl: undefined}}}, {ok: false, error: 'session_expired'}]) {
+      const f = recoveryFixture([state], {ok: false, error: 'demo_unavailable'}); await f.client.request('begin');
+      const pending = f.client.request('checkout', {consent: true}); await advance(t, pending);
+      assert.deepEqual(await pending, {ok: false, error: 'demo_unavailable'}); assert.equal(f.calls.filter(c => c.action === 'checkout').length, 1);
+      assert(f.calls.filter(c => c.action === 'state').length <= 4);
+    }
+  });
+
+  it('does not poll after a clinical/business refusal or for unrelated actions', async () => {
+    for (const [action, original] of [['checkout', {ok: false, error: 'care_unavailable'}], ['complete', {ok: false, error: 'service_unavailable'}], ['message', {ok: false, error: 'service_unavailable'}]] as const) {
+      const f = recoveryFixture([{ok: true, journey: CHECKOUT_READY}], original); await f.client.request('begin');
+      assert.deepEqual(await f.client.request(action), original); assert.equal(f.calls.filter(c => c.action === 'state').length, 0);
+    }
+  });
+
+  it('rejects foreign journey/clinic/credential observations without persisting their bearer', async t => {
+    t.mock.timers.enable({apis: ['setTimeout', 'Date']});
+    for (const result of [{ok: true, journey: {...CHECKOUT_READY, id: 'foreign-journey'}}, {ok: true, journey: {...CHECKOUT_READY, clinicId: 'foreign-clinic'}}, {ok: true, journey: CHECKOUT_READY, credential: 'foreign-bearer'}]) {
+      const f = recoveryFixture([result]); await f.client.request('begin');
+      const pending = f.client.request('checkout', {consent: true}); await advance(t, pending);
+      assert.deepEqual(await pending, {ok: false, error: 'service_unavailable'}); assert.deepEqual([...f.saved.values()], [CREDENTIAL]);
+    }
+  });
+
+  it('bounds state polls even when a transport ignores abort and never resolves', async t => {
+    const signals: AbortSignal[] = [];
+    const f = recoveryFixture([() => new Promise<Response>(() => {})]); await f.client.request('begin'); t.mock.timers.enable({apis: ['setTimeout', 'Date']});
+    const pending = f.client.request('checkout', {consent: true}); await advance(t, pending, 44);
+    assert.deepEqual(await pending, {ok: false, error: 'service_unavailable'});
+    assert.equal(f.calls.filter(c => c.action === 'state').length, 4);
+    signals.push(...f.calls.filter(c => c.action === 'state').map(c => c.signal!)); assert(signals.every(s => s.aborted));
+  });
+
+  it('never lets a late observation overwrite a forgotten or newer journey', async t => {
+    let resolveLate!: (value: Response) => void;
+    const f = recoveryFixture([() => new Promise<Response>(resolve => {resolveLate = resolve;})]); await f.client.request('begin'); t.mock.timers.enable({apis: ['setTimeout', 'Date']});
+    const pending = f.client.request('checkout', {consent: true}); await settle(); t.mock.timers.tick(500); await settle(); assert(resolveLate);
+    f.client.forget(); await f.client.request('begin');
+    resolveLate(reply({ok: true, journey: CHECKOUT_READY, credential: CREDENTIAL})); await advance(t, pending);
+    assert.deepEqual(await pending, {ok: false, error: 'service_unavailable'}); assert.deepEqual([...f.saved.values()], [f.nextCredential]);
+    assert.equal(new URL(f.client.handoffUrl('https://clinic.example/guest')).hash.includes(encodeURIComponent(f.nextCredential)), true);
+  });
+
+  it('does not extend recovery when a backgrounded page resumes after the overall deadline', async t => {
+    let resolveLate!: (value: Response) => void;
+    const f = recoveryFixture([() => new Promise<Response>(resolve => {resolveLate = resolve;})]); await f.client.request('begin'); t.mock.timers.enable({apis: ['setTimeout', 'Date']});
+    const pending = f.client.request('checkout', {consent: true}); await settle(); t.mock.timers.tick(500); await settle(); assert(resolveLate);
+    t.mock.timers.tick(10_001); await settle();
+    assert.deepEqual(await pending, {ok: false, error: 'service_unavailable'});
+    resolveLate(reply({ok: true, journey: CHECKOUT_READY, credential: CREDENTIAL})); await settle();
+    assert.equal(f.calls.filter(c => c.action === 'state').length, 1); assert.equal(f.calls.filter(c => c.action === 'checkout').length, 1);
+  });
+
+  it('keeps the original transport timeout at 25 seconds before short state observations', async t => {
+    let signal!: AbortSignal;
+    const f = recoveryFixture([{ok: true, journey: CHECKOUT_READY}], (value: AbortSignal) => {signal = value; return new Promise<Response>((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('aborted')), {once: true}));});
+    await f.client.request('begin'); t.mock.timers.enable({apis: ['setTimeout', 'Date']}); const pending = f.client.request('checkout', {consent: true}); await settle();
+    t.mock.timers.tick(24_999); assert.equal(signal.aborted, false); t.mock.timers.tick(1); assert.equal(signal.aborted, true);
+    await advance(t, pending); assert((await pending).ok); assert.equal(f.calls.filter(c => c.action === 'checkout').length, 1);
+  });
 });
