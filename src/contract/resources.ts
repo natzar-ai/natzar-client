@@ -126,7 +126,7 @@ export type PatientSex = (typeof PATIENT_SEX_VALUES)[number];
 /**
  * Patient locale — drives the language of every system-generated message on
  * the consult transcript and of the embedded widgets. Mirrors the
- * `Languages` enum in `amplify/data/resource.ts`. Defaults to `en_US`.
+ * `Languages` enum in `amplify/data/resource.ts`. Defaults to `en`.
  */
 
 export type PatientLang = (typeof PATIENT_LANGUAGES)[number];
@@ -288,7 +288,7 @@ export interface PatientResource {
     missing: Array<'givenName' | 'familyName' | 'email' | 'birthdate' | 'sexAssignedAtBirth' | 'state' | 'country'>;
     patientReported: Array<'givenName' | 'familyName' | 'email' | 'birthdate' | 'sexAssignedAtBirth' | 'state' | 'country'>;
   };
-  /** Locale for system messages and embeds; defaults to `en_US`. */
+  /** Locale for system messages and embeds; defaults to `en`. */
   lang: PatientLang;
   /**
    * Always `'partner'` for API-provisioned patients: delivery happens via
@@ -475,7 +475,7 @@ export interface PhysicianResource {
   licensedStates?: string[];
   /**
    * The languages this clinician consults in, as base codes (`fr`, never
-   * `fr_CH`), in the order they were declared. A RANKED PREFERENCE, never a
+   * `fr`), in the order they were declared. A RANKED PREFERENCE, never a
    * filter: among the physicians a consult may go to, one who speaks the
    * patient's language is offered it first, then one who speaks English,
    * then anyone — so no value here can ever exclude a physician from a

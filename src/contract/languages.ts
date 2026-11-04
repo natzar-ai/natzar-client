@@ -8,12 +8,12 @@
  * language picker needs
  *
  * A patient has ONE language (`Patient.lang`, a regional code such as
- * `fr_CH` or `en_US`) and a physician may consult in several
+ * `fr` or `en`) and a physician may consult in several
  * (`PhysicianResource.languages`, base codes such as `fr`). Routing compares
- * the two on the BASE code only — `fr_CH`, `fr_CA` and `fr` are all French —
+ * the two on the BASE code only — `fr`, `fr_CA` and `fr` are all French —
  * because the region says where the patient is, not what they speak, and a
  * Québec patient must land on a French-speaking physician even though the
- * platform stores their language as `fr_CH`.
+ * platform stores their language as `fr`.
  *
  * The comparison is a RANKED PREFERENCE, never a filter. Every assigner
  * (the live queue, booking, async) first applies the two hard rules —
@@ -42,8 +42,8 @@
 /**
  * The languages a physician may declare, as ISO 639-1 base codes, in the
  * order a picker should offer them. Exactly the base codes of the patient
- * languages the platform supports (`en_US`, `es_US`, `de_CH`, `fr_CH`,
- * `it_CH`): a physician code outside this set could never match a patient,
+ * languages the platform supports (`en`, `es`, `de`, `fr`,
+ * `it`): a physician code outside this set could never match a patient,
  * so it is refused rather than stored.
  */
 export const PHYSICIAN_LANGUAGES = ['en', 'es', 'de', 'fr', 'it'] as const;
@@ -75,7 +75,7 @@ export const LANGUAGE_NAMES: Readonly<Record<PhysicianLanguage, {name: string; n
 
 /**
  * A human label for a language code — the autonym by default, the English
- * name with `{native: false}`. Accepts a regional code (`fr_CH`) as well as
+ * name with `{native: false}`. Accepts a regional code (`fr`) as well as
  * a base one. Falls back to the raw input for a code the catalogue does not
  * know, so a label is never blank.
  */
@@ -87,7 +87,7 @@ export function languageName(code: string | null | undefined, opts: {native?: bo
 }
 
 /**
- * Collapse any language code the platform might hold — `fr`, `fr_CH`,
+ * Collapse any language code the platform might hold — `fr`, `fr`,
  * `FR-ca`, ` fr ` — to its supported base code, or `null` when it is not one
  * of the five.
  *

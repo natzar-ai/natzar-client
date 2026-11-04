@@ -1525,7 +1525,7 @@ export interface Endpoints {
   };
   /**
    * Replace the languages a physician consults in (base codes from
-   * `./languages`; a full locale such as `fr_CH` is `400 invalid_request`).
+   * `./languages`; a full locale such as `fr` is `400 invalid_request`).
    * A ranked routing preference, never a filter — a physician with none
    * recorded still receives consults, last. Self-only with a physician
    * credential. Physician session.

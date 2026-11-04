@@ -4,6 +4,10 @@ import {FILL_MEDIA} from './frame-fill';
 // Match the registered frame's palette, header, Thread and Composer geometry.
 // The sizing tracker is shared verbatim with the registered patient loader.
 export const guestStyles = `
+.natzar-guest .guest-loading{display:grid;place-items:center;flex:1;min-height:0}
+.natzar-guest .guest-loading-spinner{width:32px;height:32px;border:3px solid var(--guest-line);border-top-color:var(--guest-accent);border-radius:50%;animation:guest-loading-spin .8s linear infinite}
+@keyframes guest-loading-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.natzar-guest .guest-loading-spinner{animation-duration:2s}}
 .natzar-guest .guest-welcome-transition{animation:guest-welcome-enter .3s cubic-bezier(.2,.7,.3,1)}
 .natzar-guest .guest-entry-welcome{max-width:420px;margin:24px auto;text-align:center}.natzar-guest .guest-entry-welcome .guest-offers{text-align:left}.natzar-guest .guest-text-agent{margin-top:16px;width:100%}
 .natzar-guest .guest-typing{display:flex;gap:4px;align-self:flex-start;padding:14px 16px;border-radius:var(--guest-radius);background:var(--guest-incoming);margin-top:8px}

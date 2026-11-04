@@ -316,7 +316,7 @@ export interface PhysicianClient {
      * {@link issueReferrals}. An explicit empty `drafts` (the physician
      * unchecked every card) signs NOTHING: it is refused, never read as
      * "use the suggestions". Signing the suggestions without a `lang` prints
-     * them in the patient's language (`consult.patientLang`, e.g. `fr_CH` →
+     * them in the patient's language (`consult.patientLang`, e.g. `fr` →
      * `fr`) — the language the partner wrote their text in — rather than the
      * platform default; pass `lang` to choose. A consult still `queued` is
      * claimed first: the physician asked to answer it. Throws a
@@ -365,7 +365,7 @@ export interface PhysicianClient {
   languages: {
     /**
      * REPLACE the languages the physician consults in — base codes from
-     * `PHYSICIAN_LANGUAGES` in the contract (`fr`, never `fr_CH`; a locale is
+     * `PHYSICIAN_LANGUAGES` in the contract (`fr`, never `fr`; a locale is
      * refused with `400 invalid_request`). A ranked routing PREFERENCE, never
      * a filter: a patient is offered first to a physician who speaks their
      * language, then to one who speaks English, then to anyone — so the list

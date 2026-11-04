@@ -63,7 +63,7 @@ describe('public guest SDK isolation and handoff', () => {
   });
   it('normalizes browser and short locales to the platform locale keys', async () => {
     const f = fixture(); const client = createGuestClient({...f.options, locale: 'fr-CA'}); await client.request('begin');
-    assert.equal(JSON.parse(f.calls[0].body.variables.input).locale, 'fr_CH');
+    assert.equal(JSON.parse(f.calls[0].body.variables.input).locale, 'fr');
   });
   it('refuses partner/server and payment keys and insecure configured endpoints', () => {
     const f = fixture(); assert.throws(() => createGuestClient({...f.options, apiKey: 'pp_live_secret'}));

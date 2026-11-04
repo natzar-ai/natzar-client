@@ -1,7 +1,7 @@
 // GENERATED FILE — edit frontend/guest or shared/jurisdictions.ts, then run sync-contract.
 import type {GuestCare, GuestOffer} from '../contract/guest';
 
-/** The same enabled-care buttons on the welcome screen and in a conversation. */
+/** Direct care options shown on the guest welcome screen. */
 export function GuestCareOptions({offers, choice, busy, freeLabel, messageClinicianLabel, videoNowLabel, formatPrice, onChoose}: {
   offers: GuestOffer[];
   choice?: GuestCare;

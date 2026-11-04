@@ -89,7 +89,7 @@ export function createGuestClient(options: GuestClientOptions): GuestClient {
   const endpoint = validateGuestUrl(options.graphqlUrl);
   if (endpoint.search) throw new TypeError('The GraphQL endpoint cannot contain a query');
   const send = options.fetch ?? globalThis.fetch;
-  const locale = ({en: 'en_US', es: 'es_US', fr: 'fr_CH', de: 'de_CH', it: 'it_CH'} as Record<string, string>)[(options.locale ?? 'en').slice(0, 2).toLowerCase()] ?? 'en_US';
+  const locale = ({en: 'en', es: 'es', fr: 'fr', de: 'de', it: 'it'} as Record<string, string>)[(options.locale ?? 'en').slice(0, 2).toLowerCase()] ?? 'en';
   const key = `natzar.guest.v1:${endpoint.origin}:${options.clinicId}`;
   let accountStore: GuestStorage | null = null;
   try {accountStore = typeof sessionStorage === 'undefined' ? null : sessionStorage;} catch { /* Memory-only login. */ }

@@ -121,8 +121,8 @@ export interface IdentifyAsk {
  *
  * Typed as plain strings so your own user type fits as it is; the values are
  * validated before anything is sent (`phone` E.164, `birthdate`
- * `YYYY-MM-DD`, `sexAssignedAtBirth` `male`/`female`/`intersex`, `lang` `en_US`/`es_US`/`de_CH`/
- * `fr_CH`/`it_CH`). A value that fails is logged by FIELD name
+ * `YYYY-MM-DD`, `sexAssignedAtBirth` `male`/`female`/`intersex`, `lang` `en`/`es`/`de`/
+ * `fr`/`it`). A value that fails is logged by FIELD name
  * (`identify_result_invalid:patient.sexAssignedAtBirth`) and answered `unavailable`.
  */
 export interface PatientIdentity {

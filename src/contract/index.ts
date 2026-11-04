@@ -81,7 +81,7 @@
  *   ahead" in five languages). Pure; the platform's own pickers use them.
  * - `./languages` — the physician-language preference: the five codes a
  *   physician may declare, their names, the base-code normalizer
- *   (`fr_CH` → `fr`) and the tier ranking every assigner applies (the
+ *   (`fr` → `fr`) and the tier ranking every assigner applies (the
  *   patient's language, then English, then anyone). Pure; the platform
  *   routes with it.
  * - `./prescriptions` — the patient-side pharmacy choice of a prescription a

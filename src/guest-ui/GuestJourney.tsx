@@ -301,13 +301,15 @@ export function GuestJourney({client, locale = 'en', clinicName, getAccountToken
       {phase === 'ready' && care && <aside className="guest-account-care"><a className="guest-step-action" href={care}>{copy.openCare}<span aria-hidden="true">↗</span></a></aside>}
       <GuestAccountFrame client={client} frameUrl={account!.frameUrl} locale={locale} onExpired={accountExpired} draft={text} onDraftChange={setText}/></>}
     <div className="guest-chat-surface" hidden={formVisible || signedInSurface} inert={formVisible || historyOpen || loginOpen || phase === 'identity' && overlayOpen} aria-hidden={formVisible || historyOpen || loginOpen || phase === 'identity' && overlayOpen || undefined}>
-      <header className="guest-header guest-header-login" data-history={!!view?.history && (view.history.saved || view.history.canSave && userMessageCount > 0)}><span className="guest-brand">{greeting}</span><span className="guest-status">{copy.guest}</span>
+      <header className="guest-header guest-header-login" hidden={!view && !error} data-history={!!view?.history && (view.history.saved || view.history.canSave && userMessageCount > 0)}><span className="guest-brand">{greeting}</span><span className="guest-status">{copy.guest}</span>
         {!account && <button type="button" className="guest-signup-button" disabled={busy} onClick={() => void openLogin('signup')}>{signupCopy(locale).action}</button>}
         <button type="button" className="guest-login-button" disabled={busy} onClick={() => {if (account) void signOut(); else void openLogin();}}>{account ? loginLabels.signOut : loginLabels.action}</button>
       </header>
       <main className="guest-main">
-        {!view ? <div className="guest-recovery" aria-live="polite"><p role={error ? 'alert' : 'status'}>{error || copy.busy}</p>
-          {error && <button className="guest-secondary" disabled={busy || remaining > 0} onClick={() => void request(saved ? 'state' : 'begin')}>{copy.resume}</button>}
+        {!view ? error ? <div className="guest-recovery" aria-live="polite"><p role="alert">{error}</p>
+          <button className="guest-secondary" disabled={busy || remaining > 0} onClick={() => void request(saved ? 'state' : 'begin')}>{copy.resume}</button>
+        </div> : <div className="guest-loading" role="status" aria-live="polite" aria-busy="true" aria-label={copy.busy}>
+          <span className="guest-loading-spinner" aria-hidden="true"/>
         </div> : <>
           <h1 className="guest-chat-title">{copy.assistant}</h1>
           <AgentThread className={guestActive ? 'guest-thread' : 'guest-recovery'} ref={thread} role={guestActive ? 'log' : undefined} aria-live="polite" aria-label={copy.guest} emergencyMessage={chatLabels.agent.urgent}>
@@ -346,12 +348,11 @@ export function GuestJourney({client, locale = 'en', clinicName, getAccountToken
             {phase === 'ready' && <aside className="guest-pending-step"><p className="guest-description">{copy.readyBody}</p>
               {care ? <a className="guest-primary" href={care}>{copy.openCare}</a> : <button className="guest-primary" disabled={busy} onClick={() => void request('complete')}>{busy ? copy.busy : copy.complete}</button>}
             </aside>}
-            {!showWelcome && careOptions}
           </AgentThread>
           {guestActive && <ChatComposer draft={text} onDraft={setText} file={file} onFile={setFile} busy={busy || sending}
             labels={chatLabels.chat} inputRef={composer} maxLength={2000} placeholder={chatLabels.agent.placeholder}
             onFocus={() => setComposing(true)} onBlur={() => setComposing(false)} onSend={() => void sendMessage()}
-            extra={view.history?.canSave && userMessageCount > 0 && <button type="button" className="guest-save-button" aria-label={historyLabels.action} title={historyLabels.action} disabled={busy || sending} onClick={() => {historyAttempted.current = view.id; setHistoryOpen(true); void historyRequest('offerHistory', {consent: true});}}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="M6 3h12v18l-6-4-6 4V3Z"/></svg></button>}/>}
+            extra={!!account && view.history?.canSave && userMessageCount > 0 && <button type="button" className="guest-save-button" aria-label={historyLabels.action} title={historyLabels.action} disabled={busy || sending} onClick={() => {historyAttempted.current = view.id; setHistoryOpen(true); void historyRequest('offerHistory', {consent: true});}}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="M6 3h12v18l-6-4-6 4V3Z"/></svg></button>}/>}
 
         </>}
       </main>

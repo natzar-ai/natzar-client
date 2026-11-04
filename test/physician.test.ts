@@ -603,9 +603,9 @@ describe('connectPhysician — suggested referrals (0.13.0)', () => {
     );
   });
 
-  it('signs the suggestions in the patient\'s language when no lang is given — fr_CH → fr, unknown → the platform default', async () => {
+  it('signs the suggestions in the patient\'s language when no lang is given — fr → fr, unknown → the platform default', async () => {
     const {calls, fetchLike} = stubApi({
-      'GET /async-consults/t_1': request({patientLang: 'fr_CH'}),
+      'GET /async-consults/t_1': request({patientLang: 'fr'}),
       'GET /async-consults/t_2': {consult: {...request().consult, id: 't_2', patientLang: 'xx_YY'}},
       'POST /async-consults/t_1/referrals': {referral},
       'POST /async-consults/t_2/referrals': {referral},
@@ -620,7 +620,7 @@ describe('connectPhysician — suggested referrals (0.13.0)', () => {
 
   it("an explicit lang wins over the patient's, and edited drafts keep the platform's default", async () => {
     const {calls, fetchLike} = stubApi({
-      'GET /async-consults/t_1': request({patientLang: 'fr_CH'}),
+      'GET /async-consults/t_1': request({patientLang: 'fr'}),
       'POST /async-consults/t_1/referrals': {referral},
     });
     const desk = await connect({fetch: fetchLike});

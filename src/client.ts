@@ -613,7 +613,7 @@ export class NatzarClient {
 
     /**
      * REPLACE the languages a physician consults in — base codes from
-     * `PHYSICIAN_LANGUAGES` (`fr`, never `fr_CH`; a locale is `400
+     * `PHYSICIAN_LANGUAGES` (`fr`, never `fr`; a locale is `400
      * invalid_request`). A RANKED PREFERENCE, not a filter: among the
      * physicians a consult may go to, one who speaks the patient's language
      * is offered it first, then an English speaker, then anyone — so no list

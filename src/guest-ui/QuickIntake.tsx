@@ -9,7 +9,7 @@ import {IntakeSelect} from './IntakeSelect';
 import {intakeLabel, intakeText} from './intake-copy';
 import {focusFormField} from './form-focus';
 
-export function QuickIntake({initial, identity = {}, locale = 'en_US', copy, busy, submitLabel, onSubmit}: {initial?: GuestIntake; identity?: Partial<GuestIdentity>; locale?: string; copy: GuestCopy; busy: boolean; submitLabel?: string; onSubmit(value: GuestIntake): void}) {
+export function QuickIntake({initial, identity = {}, locale = 'en', copy, busy, submitLabel, onSubmit}: {initial?: GuestIntake; identity?: Partial<GuestIdentity>; locale?: string; copy: GuestCopy; busy: boolean; submitLabel?: string; onSubmit(value: GuestIntake): void}) {
   const form = useRef<HTMLFormElement>(null), [draft] = useState(() => guestIntakeDraft(initial, identity));
   const variant = identity.country === 'CA' ? 'ca' : 'us';
   const medicationQuestions = (conditions: string[]) => signupMedicationQuestions({signupSex: identity.sexAssignedAtBirth ? [identity.sexAssignedAtBirth] : [], birthdate: identity.birthdate, signupConditions: conditions}, variant);

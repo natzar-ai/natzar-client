@@ -218,7 +218,7 @@ const cursorSchema = z.string().min(1).max(4096);
 const limitSchema = z.coerce.number().int().min(1).max(100);
 
 /** Patient locale. Mirrors the `Languages` data-model enum. */
-const langSchema = z.enum(['en_US', 'es_US', 'de_CH', 'fr_CH', 'it_CH']);
+const langSchema = z.enum(['en', 'es', 'de', 'fr', 'it']);
 
 /** Sex assigned at birth, as required by the patient record. */
 const sexSchema = z.enum(['male', 'female', 'intersex']);
@@ -253,7 +253,7 @@ export const specialtySlugSchema = z
 /**
  * One language a physician may declare: exactly a base code from
  * `PHYSICIAN_LANGUAGES` (`en`, `es`, `de`, `fr`, `it`). A full locale such
- * as `fr_CH` is REFUSED (`400 invalid_request`), not collapsed — the region
+ * as `fr` is REFUSED (`400 invalid_request`), not collapsed — the region
  * half says where a patient is, never what a clinician speaks, and a caller
  * that sends one has confused the patient's `lang` with the physician's
  * list. Same placement rule as {@link specialtySlugSchema}: declared with
@@ -334,7 +334,7 @@ export const upsertPatientSchema = z
     birthdate: isoDateSchema,
     /** Sex assigned at birth. */
     sexAssignedAtBirth: sexSchema,
-    /** Locale for system messages/embeds. Default `en_US`. */
+    /** Locale for system messages/embeds. Default `en`. */
     lang: langSchema.optional(),
     /**
      * Where the patient is, for STATE LICENSURE (docs/SCHEDULED-CONSULTS.md).
@@ -420,7 +420,7 @@ export const createPhysicianSchema = z
     familyName: z.string().min(1).max(100).optional(),
     /**
      * The languages the physician consults in, as base codes (`fr`, not
-     * `fr_CH`). A ranked routing preference, never a filter — see
+     * `fr`). A ranked routing preference, never a filter — see
      * {@link setPhysicianLanguagesSchema}, which replaces the list later.
      * Omit to record nothing (ranks last, never assumed English).
      */
@@ -562,7 +562,7 @@ export const setPhysicianSpecialtiesSchema = z
  * Body of `PUT /v1/physicians/{id}/languages` — the languages this physician
  * consults in. A whole-list replace, like the specialties.
  *
- * Base codes only (`fr`, `en`); a full locale such as `fr_CH` is refused
+ * Base codes only (`fr`, `en`); a full locale such as `fr` is refused
  * with `400 invalid_request` rather than collapsed, because the region is a
  * fact about a patient and a caller sending one has the two lists confused.
  * Order is kept as sent (the physician's own preference), duplicates are
