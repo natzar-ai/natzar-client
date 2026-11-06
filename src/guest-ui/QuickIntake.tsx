@@ -51,7 +51,7 @@ export function QuickIntake({initial, identity = {}, locale = 'en', copy, busy, 
         ...(value === 'A99' || isOtherEntry(value) ? {name: value === 'A99' ? otherAllergy.trim() : otherEntryText(value)} : {}), ...(reactions[value].code === 'R06' ? {reaction: reactions[value].other} : {})}))};
     try {onSubmit(normalizeGuestIntake({chronicConditions: [], medications: [], allergies: [], confirmed: true, selections}, identity));} catch {setError(true);}
   }
-  return <form ref={form} className="guest-form" onSubmit={submit}>
+  return <div className="guest-form-panel"><form ref={form} className="guest-form" onSubmit={submit}>
     <p className="guest-description">{copy.intakeBody}</p>
     <fieldset disabled={busy}>
       <div className="guest-intake-section"><IntakeSelect name="conditions" label={copy.conditions} options={translated('conditions')} values={conditions} exclusive={['C00']} invalid={error && !conditions.length} allowOther locale={locale} copy={copy} onChange={value => update(() => {
@@ -81,5 +81,5 @@ export function QuickIntake({initial, identity = {}, locale = 'en', copy, busy, 
     {error && <p className="guest-error" role="alert">{copy.selectAll}</p>}
     {reactionError && <p className="guest-error" role="alert">{copy.reactionRequired}</p>}
     <button className="guest-primary" disabled={busy}>{busy ? copy.busy : submitLabel ?? copy.saveIntake}</button>
-  </form>;
+  </form></div>;
 }

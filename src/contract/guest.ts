@@ -6,9 +6,10 @@
 /** Public guest journey contract. Guest credentials never authorize patient chart access. */
 export type GuestChannel = 'web' | 'whatsapp' | 'sms';
 export type GuestPhase = 'chat' | 'identity' | 'verification' | 'account' | 'offer' | 'payment' | 'intake' | 'ready';
-export type GuestAction = 'begin' | 'resume' | 'state' | 'uploadAttachment' | 'message' | 'offerHistory' | 'sendHistoryCode' | 'verifyHistoryCode' | 'sendLoginCode' | 'verifyLoginCode' | 'chooseCare' | 'identity' | 'sendCode' | 'verify' | 'checkout' | 'paymentStatus' | 'intake' | 'complete' | 'linkAccount' | 'logout';
+export type GuestAction = 'begin' | 'resume' | 'state' | 'uploadAttachment' | 'message' | 'offerHistory' | 'sendHistoryCode' | 'verifyHistoryCode' | 'appendHistory' | 'deleteHistory' | 'declineHistory' | 'sendLoginCode' | 'verifyLoginCode' | 'profileIntake' | 'chooseCare' | 'identity' | 'sendCode' | 'verify' | 'checkout' | 'paymentStatus' | 'intake' | 'complete' | 'linkAccount' | 'logout';
 /** Separately authenticated chat session. Never stored in the anonymous guest cookie. */
-export type GuestAccount = {credential: string; firstName?: string; frameUrl: string; expiresAt: string};
+export type GuestAccount = {credential: string; firstName?: string; frameUrl: string; expiresAt: string;
+  profileIntake?: Pick<GuestIdentity, 'birthdate' | 'sexAssignedAtBirth' | 'country'>};
 export type GuestCare = {modality: 'async' | 'telehealth' | 'inPerson'; mode: 'live' | 'book'};
 export type GuestIdentity = {
   phone: string; email: string; givenName: string; familyName: string; birthdate: string;
@@ -38,6 +39,8 @@ export type GuestPayment = {
 export type GuestView = {
   id: string; clinicId: string; clinicName: string; channel: GuestChannel; phase: GuestPhase;
   messages: GuestMessage[]; offers: GuestOffer[]; choice?: GuestCare;
+  /** The assessed route for this conversation. Selection still requires verified eligibility. */
+  recommendedCare?: GuestCare;
   identity?: Partial<GuestIdentity>; phoneVerified: boolean; intake?: GuestIntake;
   payment?: GuestPayment; care?: {modality: GuestCare['modality']; id: string; url: string};
   /** Deployment clinical country, or the trusted demo country. Never selected by the patient. */
@@ -50,9 +53,10 @@ export type GuestView = {
   /** Public draft-saving status. Signed-in account authority is returned separately. */
   history?: {
     saved: boolean; offered: boolean; canOffer: boolean; canSave: boolean;
+    appendConfirmation?: boolean;
     verification?: {phone: string; channel: 'sms' | 'whatsapp'; sentAt: string};
   };
-  login?: {verification?: {phone: string; channel: 'sms' | 'whatsapp'; sentAt: string}};
+  login?: {appendConfirmation?: boolean; verification?: {phone: string; channel: 'sms' | 'whatsapp'; sentAt: string}};
 };
 export type GuestRequest = {
   action: GuestAction; credential?: string; clinicId?: string; locale?: string;

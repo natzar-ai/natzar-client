@@ -43,17 +43,18 @@ import {NatzarGuest} from '@natzar/client/guest/react';
 ```
 
 Use the deployment's **public AppSync API key**, never a partner server key.
-Guests can ask questions before registering. Choosing care starts identity and
-phone verification, eligibility, payment agreement, payment, and a quick health
-history before clinician care. The same form opens from WhatsApp/SMS links.
+Guests can ask questions before registering. Choosing a care route
+starts identity and phone verification, eligibility, payment agreement, payment,
+and a quick health history before clinician care. The same form opens from
+WhatsApp/SMS links.
 Existing patient records require normal account sign-in.
 
-With no on-demand services enabled, guests see the same welcome message,
-background, and composer as signed-in patients. With on-demand services enabled,
-only those services appear alongside “Text our agent about your symptoms”. The
-button focuses the composer; leaving it before sending restores the options with
-a short animation. Guests can attach files up to 20 MB, including file-only
-messages. Uploaded files accompany the conversation when its history is saved.
+The opening welcome screen shows the clinic's available on-demand options.
+Booking cards disappear when the conversation starts. When the server recommends
+care, the clinic name opens a separate welcome screen with one action for that
+route. Guests can attach files up to 20 MB,
+including file-only messages. Uploaded files accompany the conversation when
+its history is saved.
 
 Questionnaires use the same in-frame Back-to-conversation layout as pharmacy
 selection and live video. Optional steps reopen without losing their draft.

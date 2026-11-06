@@ -5,10 +5,9 @@ import {loginCopy} from './login-copy';
 import {createPatientFrameShell} from './payment-dialog';
 
 /** The existing patient surface stays isolated in its own document. Only RPC crosses the frame. */
-export function GuestAccountFrame({client, frameUrl, locale, onExpired, draft = '', onDraftChange}: {client: GuestClient; frameUrl: string; locale: string; onExpired(): void; draft?: string; onDraftChange?(value: string): void}) {
+export function GuestAccountFrame({client, frameUrl, locale, onExpired, draft = '', onDraftChange, inert}: {client: GuestClient; frameUrl: string; locale: string; onExpired(): void; draft?: string; onDraftChange?(value: string): void; inert?: boolean}) {
   const iframe = useRef<HTMLIFrameElement>(null), host = useRef<HTMLDivElement>(null);
   const overlay = useRef<HTMLDivElement>(null), panel = useRef<HTMLDivElement>(null);
-  const bridge = useRef<MessagePort | null>(null);
   const initialDraft = useRef(draft).current;
   const [attempt, setAttempt] = useState(0), [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const copy = loginCopy(locale);
@@ -21,7 +20,7 @@ export function GuestAccountFrame({client, frameUrl, locale, onExpired, draft = 
     const timer = setTimeout(() => setStatus('error'), 20_000);
     const ready = (event: MessageEvent) => {
       if (event.source !== iframe.current?.contentWindow || event.origin !== new URL(frameUrl).origin || event.data?.type !== 'natzar:account-ready' || event.data?.nonce !== nonce || port) return;
-      const channel = new MessageChannel(); port = channel.port1; bridge.current = port;
+      const channel = new MessageChannel(); port = channel.port1;
       port.onmessage = async message => {
         const request = message.data as {id?: string; operation?: string; input?: Record<string, unknown>; type?: string; name?: string; detail?: {phase?: string}; draft?: string};
         if (request.type === 'draft' && typeof request.draft === 'string') {onDraftChange?.(request.draft.slice(0, 2000)); return;}
@@ -41,10 +40,9 @@ export function GuestAccountFrame({client, frameUrl, locale, onExpired, draft = 
       iframe.current?.contentWindow?.postMessage({type: 'natzar:account-connect', nonce, presentation, draft: initialDraft}, new URL(frameUrl).origin, [channel.port2]);
     };
     window.addEventListener('message', ready);
-    return () => {active = false; clearTimeout(timer); shell.dismiss(); port?.close(); bridge.current = null; window.removeEventListener('message', ready);};
+    return () => {active = false; clearTimeout(timer); shell.dismiss(); port?.close(); window.removeEventListener('message', ready);};
   }, [attempt, client, frameUrl, locale, nonce, onExpired, initialDraft, onDraftChange]);
-  return <div ref={host} className="guest-account-frame">
-    {status === 'ready' && <button type="button" className="guest-account-history" aria-label={copy.history} title={copy.history} onClick={() => bridge.current?.postMessage({type: 'history'})}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="M3 11a9 9 0 1 1 3 8M3 4v7h7M12 7v5l3 2"/></svg></button>}
+  return <div ref={host} className="guest-account-frame" inert={inert}>
     <div ref={overlay}><div ref={panel}><iframe key={attempt} ref={iframe} title={copy.history} src={url.href} allow="camera; microphone; autoplay; fullscreen; clipboard-write" referrerPolicy="no-referrer"/></div></div>
     {status !== 'ready' && <div className="guest-account-loading" role="status"><p>{status === 'loading' ? copy.loading : copy.failed}</p>{status === 'error' && <button className="guest-secondary" onClick={() => setAttempt(value => value + 1)}>{copy.retry}</button>}</div>}
   </div>;

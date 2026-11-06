@@ -16,12 +16,14 @@ import {SignupFields} from './SignupFields';
 import {signupCopy} from './signup-copy';
 import {GuestSignupError, normalizeGuestSignup} from './guest-signup';
 
-export type HistoryAction = Extract<GuestAction, 'sendHistoryCode' | 'verifyHistoryCode'>;
+export type HistoryAction = Extract<GuestAction, 'sendHistoryCode' | 'verifyHistoryCode' | 'appendHistory' | 'deleteHistory' | 'declineHistory'>;
+export const isHistoryConfirmation = (action: HistoryAction | 'offerHistory') => action === 'appendHistory' || action === 'deleteHistory';
 
 /** An optional, contained dialog. The website outside the chat remains usable. */
-export function HistoryDialog({open, history, locale, busy, onRequest, onClose, purpose = 'history', initialPhone, phoneLocked = false, country = 'US', initialProfile, clinicName = '', privacyUrl, termsUrl}: {
+export function HistoryDialog({open, history, locale, busy, onRequest, onClose, onSwitchToLogin, purpose = 'history', initialPhone, phoneLocked = false, country = 'US', initialProfile, clinicName = '', privacyUrl, termsUrl}: {
   open: boolean; history: NonNullable<GuestView['history']>; locale: string; busy: boolean;
   onRequest(action: HistoryAction, input: Omit<GuestRequest, 'action' | 'credential'>): Promise<GuestResult>; onClose(): void;
+  onSwitchToLogin?(): void;
   purpose?: 'history' | 'login' | 'signup' | 'care';
   initialProfile?: Partial<GuestSignup>; clinicName?: string; privacyUrl?: string; termsUrl?: string; country?: 'US' | 'CA';
   initialPhone?: string;
@@ -43,15 +45,16 @@ export function HistoryDialog({open, history, locale, busy, onRequest, onClose, 
   const [editing, setEditing] = useState(false), [channel, setChannel] = useState<'sms' | 'whatsapp'>(history.verification?.channel ?? 'whatsapp');
   const [now, setNow] = useState(Date.now()), [retryAt, setRetryAt] = useState(0);
   const pending = history.verification;
-  const step = history.saved ? 'saved' : pending && !editing && (purpose !== 'signup' || signupSent) ? 'code' : 'phone';
+  const appendCopy = historyCopy(locale);
+  const step = history.saved ? 'saved' : history.appendConfirmation ? 'append' : pending && !editing && (purpose !== 'signup' || signupSent) ? 'code' : 'phone';
   const normalized = guestPhoneNumber(phone);
   const smsAllowed = !phone.trim() || !normalized && phone.trim().startsWith('+1') || !!normalized && smsLoginAllowed(normalized);
   const delivery = smsAllowed ? channel : 'whatsapp';
   const resendAt = Math.max(retryAt, pending ? Date.parse(pending.sentAt) + 60_000 : 0);
   const remaining = Math.max(0, Math.ceil((resendAt - now) / 1000));
   const masked = pending?.phone.replace(/\d(?=\d{4})/g, '•') ?? '';
-  const title = step === 'saved' ? copy.saved : step === 'code' ? copy.codeTitle : copy.title;
-  const explanation = step === 'saved' ? copy.savedWhy
+  const title = step === 'saved' ? copy.saved : step === 'append' ? appendCopy.appendTitle : step === 'code' ? copy.codeTitle : copy.title;
+  const explanation = step === 'saved' ? copy.savedWhy : step === 'append' ? appendCopy.appendWhy
     : step === 'code' ? copy.codeWhy.replace('{{phone}}', masked) : copy.why;
 
   function focus(element: HTMLElement | null) {element?.focus({preventScroll: true}); revealWithin(scroll.current, element, 10);}
@@ -76,7 +79,7 @@ export function HistoryDialog({open, history, locale, busy, onRequest, onClose, 
     const timer = setInterval(() => setNow(Date.now()), 500); return () => clearInterval(timer);
   }, [open]);
   useEffect(() => {if (!open || step !== 'phone') {setPickerOpen(false); setCalendarOpen(false);}}, [open, step]);
-  useEffect(() => {if (open && step === 'saved') heading.current?.focus({preventScroll: true});}, [open, step]);
+  useEffect(() => {if (open && (step === 'saved' || step === 'append')) heading.current?.focus({preventScroll: true});}, [open, step]);
 
   async function send(resend = false) {
     if (busy || remaining) return;
@@ -113,17 +116,26 @@ export function HistoryDialog({open, history, locale, busy, onRequest, onClose, 
     if (!result.ok) {setError(result.error === 'account_clinic_mismatch' ? copy.clinicMismatch : result.error === 'code_expired' ? copy.expiredCode : /code|verification/.test(result.error) ? copy.invalidCode : copy.failed); focus(codeField.current);}
   }
 
+  async function resolveHistory(action: 'appendHistory' | 'deleteHistory' | 'declineHistory') {
+    if (busy) return;
+    setError('');
+    const result = await onRequest(action, {});
+    if (!result.ok && result.error === 'email_already_associated' && isProfile) {setInvalidSignup('email'); setEditing(true); setError(signupCopy(locale).emailTaken); return;}
+    if (!result.ok) setError(result.error === 'code_expired' ? copy.expiredCode : copy.failed);
+  }
+
   if (!open) return null;
   const blocked = pickerOpen || calendarOpen;
   const symbol = step === 'saved'
     ? <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="m5 12 4 4L19 6"/></svg>
     : purpose !== 'history' ? <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg>
     : <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M6 3h12v18l-6-4-6 4V3Z"/></svg>;
-  return <GuestDialog id={id} purpose={isProfile ? 'signup' : purpose} step={step} title={title} why={explanation} fitWhy={purpose === 'signup' && step === 'phone'} closeLabel={copy.close} onClose={onClose}
+  return <GuestDialog id={id} purpose={isProfile ? 'signup' : purpose} step={step} title={title} why={explanation} fitWhy={purpose === 'signup' && step === 'phone'} closeLabel={copy.close} onClose={step === 'append' ? () => void resolveHistory('declineHistory') : onClose}
     panel={panel} scroll={scroll} heading={heading} blocked={blocked} symbol={symbol}
     footer={isProfile && step === 'phone' && <div className="guest-signup-footer" inert={blocked} aria-hidden={blocked || undefined}>
       <button type="submit" form={id + '-form'} className="guest-history-primary" disabled={busy || remaining > 0}>{copy.send}{remaining > 0 && ' (' + remaining + 's)'}</button>
     </div>}>
+    {step === 'phone' && onSwitchToLogin && <button type="button" className="guest-link guest-signup-login" disabled={busy} onClick={onSwitchToLogin}>{signupCopy(locale).existingAccount}</button>}
     {step === 'phone' && <form id={id + '-form'} noValidate onSubmit={event => {event.preventDefault(); void send();}}>
       {isProfile && <SignupFields id={id} values={signup} onChange={(field, value) => {setSignup(previous => ({...previous, [field]: value})); setInvalidSignup(undefined); setError('');}} country={country} locale={locale} invalid={invalidSignup} busy={busy}
         container={() => panel.current} onCalendarOpen={setCalendarOpen} emailError={invalidSignup === 'email' && error ? error : undefined}/>}
@@ -154,7 +166,13 @@ export function HistoryDialog({open, history, locale, busy, onRequest, onClose, 
       <div className="guest-history-code-actions"><button type="button" disabled={busy || remaining > 0} onClick={() => void send(true)}>{remaining ? copy.resendIn.replace('{{seconds}}', String(remaining)) : copy.resend}</button>
         <button type="button" disabled={busy} onClick={() => {setPhone(pending?.phone ?? phone); setEditing(true); setCode(''); setError(''); requestAnimationFrame(() => focus(phoneField.current));}}>{copy.change}</button></div>
     </form>}
+    {step === 'append' && <>
+      {error && <p className="guest-history-error" role="alert">{error}</p>}
+      <button type="button" className="guest-history-primary" disabled={busy} onClick={() => void resolveHistory('appendHistory')}>{appendCopy.appendYes}</button>
+      <button type="button" className="guest-history-later" disabled={busy} onClick={() => void resolveHistory('deleteHistory')}>{appendCopy.appendDelete}</button>
+      <button type="button" className="guest-history-later" disabled={busy} onClick={() => void resolveHistory('declineHistory')}>{appendCopy.appendNo}</button>
+    </>}
     {step === 'saved' ? <button type="button" className="guest-history-primary" onClick={onClose}>{copy.continue}</button>
-      : !isProfile && <button type="button" className="guest-history-later" onClick={onClose}>{copy.notNow}</button>}
+      : step !== 'append' && !isProfile && <button type="button" className="guest-history-later" onClick={onClose}>{copy.notNow}</button>}
   </GuestDialog>;
 }

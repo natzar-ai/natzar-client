@@ -96,11 +96,15 @@ export function createGuestClient(options: GuestClientOptions): GuestClient {
   let account: GuestAccount | null = null, proposedAccount = '';
   let lastView: GuestView | null = null, requestGeneration = 0;
   const accountKey = key + ':account';
+  const historyProposalKey = key + ':history-proposal';
   try {const raw = accountStore?.getItem(accountKey); if (raw) account = JSON.parse(raw) as GuestAccount;} catch { /* Invalid/blocked session storage. */ }
   if (!validAccount(account)) account = null;
   function saveAccount(value: GuestAccount | null) {
     account = value;
-    try {if (value) accountStore?.setItem(accountKey, JSON.stringify(value)); else accountStore?.removeItem(accountKey);} catch { /* Continue in memory. */ }
+    try {
+      if (value) accountStore?.setItem(accountKey, JSON.stringify({...value, profileIntake: undefined}));
+      else accountStore?.removeItem(accountKey);
+    } catch { /* Continue in memory. */ }
   }
   function currentAccount() {if (account && Date.parse(account.expiresAt) <= Date.now()) saveAccount(null); return account;}
   let cookieStore = options.cookieStorage;
@@ -121,23 +125,45 @@ export function createGuestClient(options: GuestClientOptions): GuestClient {
     try {if (value && remembered && !cookieStore) options.rememberStorage?.setItem(key, value); else options.rememberStorage?.removeItem(key);} catch { /* Continue in the tab. */ }
   }
   if (options.credential) remember(options.credential);
+  function saveHistoryProposal(value: string) {
+    try {
+      if (value) accountStore?.setItem(historyProposalKey, JSON.stringify({value, expiresAt: Date.now() + 5 * 60_000}));
+      else accountStore?.removeItem(historyProposalKey);
+    } catch { /* The current tab can still verify in memory. */ }
+  }
+  function historyProposal(): string | undefined {
+    try {
+      const raw = accountStore?.getItem(historyProposalKey);
+      if (!raw) return;
+      const proposal = JSON.parse(raw) as {value?: string; expiresAt?: number};
+      if (proposal.value?.split('.')[1] === credential.split('.')[1] && (proposal.expiresAt ?? 0) > Date.now()) return proposal.value;
+      saveHistoryProposal('');
+    } catch { /* Invalid or unavailable session storage. */ }
+  }
   function rememberResult(result: Extract<GuestResult, {ok: true}>) {
     try {cookieStore?.setExpiry?.(result.journey.expiresAt);} catch { /* Persistence is optional. */ }
-    if (result.credential && result.credential.split('.')[1] !== credential.split('.')[1]) {saveAccount(null); proposedAccount = '';}
+    if (result.credential && result.credential.split('.')[1] !== credential.split('.')[1]) {saveAccount(null); proposedAccount = ''; saveHistoryProposal('');}
     remember(result.credential ?? credential);
-    if (result.account) {saveAccount(result.account); proposedAccount = '';}
+    if (result.account) {saveAccount(result.account); proposedAccount = ''; saveHistoryProposal('');}
     lastView = result.journey;
   }
   async function invoke(action: GuestAction, input: Omit<GuestRequest, 'action' | 'credential'> = {}, idToken?: string, observation?: AbortSignal): Promise<GuestResult> {
     const stateAccount = action === 'state' ? input.accountCredential ?? currentAccount()?.credential : undefined;
+    const confirmsHistory = action === 'appendHistory' || action === 'deleteHistory';
+    if (confirmsHistory || action === 'state' && !stateAccount) {
+      const proposal = historyProposal() ?? (confirmsHistory ? proposedAccount : '');
+      if (proposal && !input.newAccountCredential) input = {...input, newAccountCredential: proposal};
+    }
     if (['verifyLoginCode', 'verifyHistoryCode', 'verify', 'linkAccount'].includes(action) && !input.newAccountCredential) {
       const id = credential.split('.')[1];
+      if (action === 'verifyHistoryCode' || action === 'verifyLoginCode') proposedAccount ||= historyProposal() ?? '';
       if (!proposedAccount) {
         const secret = new Uint8Array(32); globalThis.crypto.getRandomValues(secret);
         proposedAccount = `nac1.${id}.${btoa(String.fromCharCode(...secret)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`;
       }
       input = {...input, newAccountCredential: proposedAccount};
     }
+    if ((action === 'verifyHistoryCode' || action === 'verifyLoginCode') && input.newAccountCredential) saveHistoryProposal(input.newAccountCredential);
     const field = idToken ? 'guestJourneyAccount' : 'guestJourney';
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 25_000);
@@ -167,6 +193,7 @@ export function createGuestClient(options: GuestClientOptions): GuestClient {
       // its generation. A late poll cannot restore a forgotten/newer session.
       if (observation) return result;
       if (result.ok) rememberResult(result);
+      if (result.ok && ['declineHistory', 'sendHistoryCode', 'sendLoginCode', 'logout'].includes(action)) {saveHistoryProposal(''); proposedAccount = '';}
       if (!result.ok && result.error === 'account_expired') {
         saveAccount(null);
         if (action === 'state' && stateAccount) {const retry = {...input}; delete retry.accountCredential; return invoke('state', retry, idToken);}
@@ -222,7 +249,7 @@ export function createGuestClient(options: GuestClientOptions): GuestClient {
       if (credential) url.hash = new URLSearchParams({credential}).toString();
       return url.href;
     },
-    forget: () => {requestGeneration++; lastView = null; remember(''); saveAccount(null); proposedAccount = ''; remembered = !!cookieStore && persistencePreference;},
+    forget: () => {requestGeneration++; lastView = null; remember(''); saveAccount(null); proposedAccount = ''; saveHistoryProposal(''); remembered = !!cookieStore && persistencePreference;},
     account: currentAccount,
     forgetAccount: () => {requestGeneration++; saveAccount(null);},
     accountOperation: async (operation, input = {}) => {
