@@ -1,6 +1,7 @@
 // GENERATED FILE — edit frontend/guest or shared/jurisdictions.ts, then run sync-contract.
 import {AgentThread, AgentWelcome} from './AgentWelcome';
 import {ChatComposer, MAX_UPLOAD_BYTES} from './ChatComposer';
+import {LinkPrimaryButton} from './LinkPrimaryButton';
 import {chatCopy} from './chat-copy';
 import {GuestSingleSelect} from './GuestSingleSelect';
 import {useCallback, useEffect, useRef, useState} from 'react';
@@ -23,6 +24,7 @@ import {GuestAccountFrame} from './GuestAccountFrame';
 import {signupCopy} from './signup-copy';
 
 const fillTrackers = new WeakMap<Window, ReturnType<typeof createFillTracker>>();
+const inPersonCare = {modality: 'inPerson', mode: 'book'} as const;
 
 export interface GuestJourneyProps {
   client: GuestClient; locale?: string; clinicName?: string;
@@ -71,6 +73,13 @@ export function GuestJourney({client, locale = 'en', clinicName, getAccountToken
   const live = useRef({id: '', phase: '' as string, text: '', open: false});
   const [retryAt, setRetryAt] = useState(0);
   const [now, setNow] = useState(Date.now());
+  const booking = view?.inPersonBooking;
+  const bookingDeadline = booking ? Date.parse(booking.expiresAt) : undefined;
+  useEffect(() => {
+    if (bookingDeadline === undefined) return;
+    const timer = setTimeout(() => setNow(Date.now()), Math.max(0, bookingDeadline - Date.now()));
+    return () => clearTimeout(timer);
+  }, [bookingDeadline]);
   const locked = useRef(false);
   const pendingMessage = useRef<{text: string; requestId: string} | null>(null);
   const pendingFile = useRef<File | null>(null);
@@ -222,7 +231,12 @@ export function GuestJourney({client, locale = 'en', clinicName, getAccountToken
   const quotedAmount = chosenOffer?.amountCents ?? view?.payment?.amountCents ?? 0;
   const quotedCurrency = chosenOffer?.currency ?? view?.payment?.currency ?? 'USD';
   const guestActive = view?.guestEnabled !== false;
-  const showWelcome = !guestActive || surface === 'welcome' || (surface === undefined && (userMessageCount === 0 || phase === 'ready' || !!view?.payment));
+  const inPersonSelected = view?.choice?.modality === inPersonCare.modality && view.choice.mode === inPersonCare.mode;
+  const resumeBookingPayment = inPersonSelected && phase === 'payment' && view?.payment?.status === 'pending';
+  const bookingExpired = bookingDeadline !== undefined && bookingDeadline <= now;
+  const bookingAvailable = guestActive && !!booking?.available && !bookingExpired;
+  const showWelcome = !guestActive || surface === 'welcome' || (surface === undefined &&
+    (userMessageCount === 0 || phase === 'ready' || !!view?.payment && !(bookingAvailable && resumeBookingPayment)));
   const refunded = view?.payment?.status === 'refunded';
   const refundPending = view?.payment?.status === 'refund_pending';
   const refundFailed = view?.payment?.status === 'refund_failed';
@@ -233,12 +247,21 @@ export function GuestJourney({client, locale = 'en', clinicName, getAccountToken
   }, [messageCount, outgoing, phase, formVisible, showWelcome]);
   const choiceUnlocked = guestActive && !!view && !view.care && ['chat', 'identity', 'verification', 'offer', 'payment'].includes(view.phase)
     && (!view.payment || ['failed', 'refunded'].includes(view.payment.status));
+  const resumeBookingForm = inPersonSelected && formPhase && phase !== 'intake';
+  const bookingActionable = bookingAvailable && (choiceUnlocked || resumeBookingForm || resumeBookingPayment);
+  function openInPersonBooking() {
+    if (locked.current || !bookingActionable || (bookingDeadline !== undefined && Date.now() >= bookingDeadline)) return;
+    if (resumeBookingPayment) setPaymentOpen(true);
+    else if (resumeBookingForm) setOverlayOpen(true);
+    else {setConsent(false); void request('chooseCare', {choice: inPersonCare});}
+  }
   useEffect(() => {
     const surfaceOpen = (formPhase && overlayOpen) || (phase === 'payment' && paymentOpen);
     const closed = surfaceWasOpen.current && !surfaceOpen;
     surfaceWasOpen.current = surfaceOpen;
     if (!closed) return;
     const animation = requestAnimationFrame(() => (pendingAction.current
+      ?? thread.current?.querySelector<HTMLButtonElement>('.guest-booking-action button:enabled')
       ?? frame.current?.querySelector<HTMLButtonElement>('.guest-offer[aria-pressed="true"]')
       ?? composer.current)?.focus({preventScroll: true}));
     return () => cancelAnimationFrame(animation);
@@ -322,7 +345,7 @@ export function GuestJourney({client, locale = 'en', clinicName, getAccountToken
   const signedInSurface = !!account && !loginOpen && (!view?.choice || phase === 'ready');
   const profileIntake = signedInSurface && guestActive && !view?.intake?.confirmed ? account?.profileIntake : undefined;
   const profileVisible = profileOpen && !!profileIntake;
-  const recommendation = view?.recommendedCare;
+  const recommendation = bookingExpired && view?.recommendedCare?.modality === 'inPerson' ? undefined : view?.recommendedCare;
   const recommendedOffer = choiceUnlocked && recommendation &&
     (recommendation.modality !== view.choice?.modality || recommendation.mode !== view.choice?.mode)
     ? view.offers.find(offer => offer.modality === recommendation.modality && offer.mode === recommendation.mode) : undefined;
@@ -365,7 +388,16 @@ export function GuestJourney({client, locale = 'en', clinicName, getAccountToken
               </div> : messages.map((message, index) => <div key={message.id} className="guest-message" data-role={message.role}
                 data-run-end={messages[index + 1]?.role !== message.role}>{renderEmphasis(message.text)}
                 {'attachments' in message && message.attachments?.map(attachment => <a className="guest-message-file" key={attachment.key} href={safeGuestNavigation(attachment.url) ?? undefined} target="_blank" rel="noreferrer">{attachment.fileName}</a>)}
-                {'fileName' in message && typeof message.fileName === 'string' && message.fileName && <span className="guest-message-file">{message.fileName}</span>}<time dateTime={message.sentAt}>{new Date(message.sentAt).toLocaleTimeString(locale.replace('_', '-'), {hour: '2-digit', minute: '2-digit'})}</time></div>)}
+                {'fileName' in message && typeof message.fileName === 'string' && message.fileName && <span className="guest-message-file">{message.fileName}</span>}
+                {booking?.messageId === message.id && <div className="guest-booking-action" style={{display: 'flex', marginTop: 12}}>
+                  <LinkPrimaryButton label={bookingExpired ? chatLabels.agent.linkExpired : bookingActionable ? chatLabels.agent.linkBook : chatLabels.agent.linkUnavailable}
+                    busy={false} disabled={!bookingActionable || busy} onClick={openInPersonBooking}/>
+                </div>}
+                <time dateTime={message.sentAt}>{new Date(message.sentAt).toLocaleTimeString(locale.replace('_', '-'), {hour: '2-digit', minute: '2-digit'})}</time>
+              </div>)}
+              {!showEntry && !sending && recommendedOffer && <GuestCareOptions offers={[recommendedOffer]}
+                busy={busy} freeLabel={copy.free} messageClinicianLabel={copy.messageClinician} videoNowLabel={copy.videoNow}
+                formatPrice={price} onChoose={choice => {setConsent(false); void request('chooseCare', {choice});}}/>}
               {!showEntry && !messages.length && phase !== 'ready' && <AgentWelcome message={chatLabels.agent.empty}/>}
               {sending && <div className="guest-typing" role="status" aria-label={copy.busy}><span/><span/><span/></div>}
             </>}

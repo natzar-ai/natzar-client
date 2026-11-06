@@ -41,6 +41,8 @@ export type GuestView = {
   messages: GuestMessage[]; offers: GuestOffer[]; choice?: GuestCare;
   /** The assessed route for this conversation. Selection still requires verified eligibility. */
   recommendedCare?: GuestCare;
+  /** In-chat appointment offer and its original validity window. */
+  inPersonBooking?: {messageId: string; expiresAt: string; available: boolean};
   identity?: Partial<GuestIdentity>; phoneVerified: boolean; intake?: GuestIntake;
   payment?: GuestPayment; care?: {modality: GuestCare['modality']; id: string; url: string};
   /** Deployment clinical country, or the trusted demo country. Never selected by the patient. */
