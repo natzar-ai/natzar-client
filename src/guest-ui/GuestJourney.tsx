@@ -18,7 +18,8 @@ import {smsLoginAllowed} from './login-policy';
 import {renderEmphasis} from './emphasis';
 import {createFillTracker} from './frame-fill';
 import {focusFormField} from './form-focus';
-import {HistoryDialog, isHistoryConfirmation, type HistoryAction} from './HistoryDialog';
+import {HistoryDialog} from './HistoryDialog';
+import {isHistoryConfirmation, type HistoryAction} from './history-actions';
 import {loginCopy} from './login-copy';
 import {GuestAccountFrame} from './GuestAccountFrame';
 import {signupCopy} from './signup-copy';
@@ -39,6 +40,9 @@ function safeGuestNavigation(value?: string): string | null {
 }
 
 export function GuestJourney({client, locale = 'en', clinicName, getAccountToken, onSignIn, onReady}: GuestJourneyProps) {
+  const clientOwner = useRef(client), mounted = useRef(true), restoredClient = useRef<GuestClient | null>(null);
+  clientOwner.current = client;
+  const isCurrentClient = useCallback(() => mounted.current && clientOwner.current === client, [client]);
   const copy = guestCopy(locale);
   const chatLabels = chatCopy(locale);
   const [view, setView] = useState<GuestView | null>(null);
@@ -65,10 +69,11 @@ export function GuestJourney({client, locale = 'en', clinicName, getAccountToken
   const accountExpired = useCallback(() => {
     client.forgetAccount?.(); setAccount(null); setProfileOpen(false); setAuthPurpose('login'); setLoginOpen(true);
     void client.request('state').then(result => {
+      if (!isCurrentClient()) return;
       if (result.ok) setView(result.journey);
       else if (result.error === 'session_expired') {client.forget(); setView(null); setSaved(false); setError(copy.expired);}
     }).catch(() => {});
-  }, [client, copy.expired]);
+  }, [client, copy.expired, isCurrentClient]);
   const historyAttempted = useRef<string | null>(null), restoreHistoryFocus = useRef(false), historyDismissals = useRef(0);
   const live = useRef({id: '', phase: '' as string, text: '', open: false});
   const [retryAt, setRetryAt] = useState(0);
@@ -94,14 +99,22 @@ export function GuestJourney({client, locale = 'en', clinicName, getAccountToken
   const loginDialogOpen = loginOpen || !!view?.login?.appendConfirmation;
   const historyDialogOpen = historyOpen || !!view?.history?.appendConfirmation;
   live.current = {id: view?.id ?? '', phase: phase ?? '', text, open: historyDialogOpen || loginDialogOpen};
+  const messagePending = !!view?.pendingMessage;
+  const pendingRetryAt = view?.pendingMessage ? Date.parse(view.pendingMessage.startedAt) + 120_000 : undefined;
+  useEffect(() => {
+    if (pendingRetryAt === undefined) return;
+    const timer = setTimeout(() => setNow(Date.now()), Math.max(0, pendingRetryAt - Date.now()));
+    return () => clearTimeout(timer);
+  }, [pendingRetryAt]);
   const userMessageCount = view?.messages.filter(message => message.role === 'user').length ?? 0;
   function closeHistory() {historyDismissals.current++; restoreHistoryFocus.current = true; setHistoryOpen(false);}
   async function historyRequest(action: HistoryAction | 'offerHistory', input: Omit<GuestRequest, 'action' | 'credential'> = {}): Promise<GuestResult> {
-    if (locked.current) return {ok: false, error: 'journey_busy'};
+    if (locked.current || messagePending) return {ok: false, error: 'journey_busy'};
     const id = view?.id, dismissal = historyDismissals.current;
     locked.current = true; setBusy(true);
     try {
       const result = await client.request(action, input);
+      if (!isCurrentClient()) return {ok: false, error: 'request_superseded'};
       if (result.ok) {
         if (action === 'offerHistory' && input.consent !== true && dismissal === historyDismissals.current && live.current.id === id && live.current.phase === 'chat' && !live.current.text.trim() && !live.current.open) showAuth('signup');
         accept(result);
@@ -114,10 +127,10 @@ export function GuestJourney({client, locale = 'en', clinicName, getAccountToken
       }
       return result;
     } catch {return {ok: false, error: 'service_unavailable'};}
-    finally {locked.current = false; setBusy(false);}
+    finally {if (isCurrentClient()) {locked.current = false; setBusy(false);}}
   }
   useEffect(() => {
-    if (historyOpen || loginOpen || account || busy || text.trim() || !view?.history?.canOffer || historyAttempted.current === view.id) return;
+    if (historyOpen || loginOpen || account || busy || messagePending || text.trim() || !view?.history?.canOffer || historyAttempted.current === view.id) return;
     const id = view.id;
     const timer = setTimeout(() => {
       if (locked.current || live.current.id !== id || live.current.text.trim() || live.current.phase !== 'chat' || live.current.open || document.visibilityState === 'hidden') return;
@@ -127,7 +140,7 @@ export function GuestJourney({client, locale = 'en', clinicName, getAccountToken
     return () => clearTimeout(timer);
     // The same client and current refs are used when the quiet period ends.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [busy, historyOpen, loginOpen, account, text, view?.id, view?.history?.canOffer]);
+  }, [busy, messagePending, historyOpen, loginOpen, account, text, view?.id, view?.history?.canOffer]);
   useEffect(() => {
     if (!historyOpen && !busy && restoreHistoryFocus.current) {
       restoreHistoryFocus.current = false; composer.current?.focus({preventScroll: true});
@@ -147,6 +160,7 @@ export function GuestJourney({client, locale = 'en', clinicName, getAccountToken
     return () => tracker?.remove(element);
   }, []);
   function accept(result: GuestResult) {
+    if (!isCurrentClient() || !result.ok && result.error === 'request_superseded') return false;
     if (result.ok) {
       setView(result.journey); setSaved(client.hasSavedJourney());
       setAccount(result.account ?? client.account?.() ?? null);
@@ -154,6 +168,8 @@ export function GuestJourney({client, locale = 'en', clinicName, getAccountToken
       return true;
     }
     const code = result.error;
+    if (code === 'guest_disabled' || code === 'clinic_disabled') setView(previous => previous && {...previous, guestEnabled: false,
+      pendingMessage: undefined, recommendedCare: undefined, offers: []});
     if (result.retryAfterSeconds) setRetryAt(Date.now() + result.retryAfterSeconds * 1000);
     setError(code === 'account_clinic_mismatch' ? copy.accountMismatch
       : /disabled|not_available|origin_not_allowed|clinic_unknown/.test(code) ? copy.unavailable
@@ -164,14 +180,16 @@ export function GuestJourney({client, locale = 'en', clinicName, getAccountToken
     return false;
   }
   async function request(action: GuestAction, input?: Omit<GuestRequest, 'action' | 'credential'>) {
-    if (locked.current) return false;
+    if (locked.current || messagePending && !['state', 'logout', 'begin'].includes(action)) return false;
     locked.current = true; setBusy(true); setError(''); setNotice('');
     try {
       let result = await client.request(action, input);
+      if (!isCurrentClient() || !result.ok && result.error === 'request_superseded') return false;
       if (action === 'profileIntake' && !result.ok && result.error === 'account_expired') {accountExpired(); return false;}
       if (action === 'state' && !result.ok && /^(session_expired|session_invalid|session_not_found)$/.test(result.error)) {client.forget(); setSaved(false); setAccount(null);}
       if ((action === 'chooseCare' || action === 'checkout') && !result.ok && ['care_route_required', 'care_not_available'].includes(result.error)) {
         const current = await client.request('state').catch(() => null);
+        if (!isCurrentClient()) return false;
         if (current?.ok) accept(current);
         else setView(previous => previous && {...previous, recommendedCare: undefined});
         if (!current?.ok || (userMessageCount > 0 && !current.journey.recommendedCare)) {
@@ -184,6 +202,7 @@ export function GuestJourney({client, locale = 'en', clinicName, getAccountToken
       // A return can carry a cached pending view after Stripe has already
       // completed. Refresh server proof before mounting that checkout again.
       if (action === 'state' && result.ok && result.journey.phase === 'payment') result = await client.request('paymentStatus');
+      if (!isCurrentClient()) return false;
       // A clinical follow-up belongs in the conversation. Keep the unfinished
       // form available without covering the question the patient needs to answer.
       if (result.ok && ((action === 'checkout' && result.journey.phase === 'offer') || (action === 'complete' && result.journey.phase === 'intake'))) {
@@ -194,18 +213,32 @@ export function GuestJourney({client, locale = 'en', clinicName, getAccountToken
       if (result.ok && action === 'complete' && result.journey.phase === 'ready') setSurface('welcome');
       return accept(result);
     }
-    catch {setError(copy.failed); return false;}
-    finally {locked.current = false; setBusy(false);}
+    catch {if (isCurrentClient()) setError(copy.failed); return false;}
+    finally {if (isCurrentClient()) {locked.current = false; setBusy(false);}}
   }
   useEffect(() => {
+    mounted.current = true;
+    const unsubscribe = client.subscribe?.(journey => {
+      if (!isCurrentClient()) return;
+      setView(journey); setSaved(client.hasSavedJourney()); setAccount(client.account?.() ?? null);
+      if (journey.pendingMessage) {setSurface('chat'); setOverlayOpen(false); setPaymentOpen(false);}
+    });
+    if (restoredClient.current !== client) {
+      restoredClient.current = client; locked.current = false; ready.current = null;
+      pendingMessage.current = null; pendingFile.current = null; stagedAttachment.current = undefined;
+      setView(null); setOutgoing(null); setText(''); setFile(null); setSending(false); setError('');
+      setSurface(undefined); setOverlayOpen(false); setPaymentOpen(false); setHistoryOpen(false); setLoginOpen(false);
+      setSaved(client.hasSavedJourney()); setAccount(client.account?.() ?? null);
+    }
     void request(client.hasSavedJourney() ? 'state' : 'begin');
-    // Each mounted client restores once; the request lock also handles StrictMode.
+    return () => {mounted.current = false; unsubscribe?.();};
+    // One restore per client; the lock also handles StrictMode's effect replay.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client]);
   useEffect(() => {
-    setOverlayOpen(phase === 'account' || (!!phase && view?.guestEnabled !== false && !['refunded', 'refund_pending', 'refund_failed'].includes(view?.payment?.status ?? '') && ['identity', 'verification', 'offer', 'intake'].includes(phase)));
-    setPaymentOpen(phase === 'payment' && !['failed', 'refunded', 'refund_pending', 'refund_failed'].includes(view?.payment?.status ?? ''));
-  }, [phase, view?.guestEnabled, view?.payment?.status]);
+    setOverlayOpen(!messagePending && (phase === 'account' || (!!phase && view?.guestEnabled !== false && !['refunded', 'refund_pending', 'refund_failed'].includes(view?.payment?.status ?? '') && ['identity', 'verification', 'offer', 'intake'].includes(phase))));
+    setPaymentOpen(!messagePending && phase === 'payment' && !['failed', 'refunded', 'refund_pending', 'refund_failed'].includes(view?.payment?.status ?? ''));
+  }, [phase, messagePending, view?.guestEnabled, view?.payment?.status]);
   useEffect(() => {
     if (!retryAt) return;
     const timer = setInterval(() => setNow(Date.now()), 500);
@@ -213,12 +246,12 @@ export function GuestJourney({client, locale = 'en', clinicName, getAccountToken
   }, [retryAt]);
   const pending = (phase === 'payment' && view?.payment?.status === 'pending') || view?.payment?.status === 'refund_pending';
   useEffect(() => {
-    if (!pending) return;
+    if (!pending || messagePending) return;
     const timer = setInterval(() => {if (!locked.current) void request('paymentStatus');}, 5000);
     return () => clearInterval(timer);
     // request reads the same stable client; polling stops as soon as phase changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pending, client]);
+  }, [pending, messagePending, client]);
   const price = (amount: number, currency: string) => {try {return new Intl.NumberFormat(locale.replace('_', '-'), {style: 'currency', currency}).format(amount / 100);} catch {return `${(amount / 100).toFixed(2)} ${currency}`;}};
   const titles = {chat: copy.title, identity: copy.details, verification: copy.verifyTitle, account: copy.accountTitle, offer: copy.offerTitle, payment: copy.paymentTitle, intake: copy.intakeTitle, ready: copy.readyTitle};
   const signIn = safeGuestNavigation(view?.signInUrl);
@@ -245,10 +278,10 @@ export function GuestJourney({client, locale = 'en', clinicName, getAccountToken
   useEffect(() => {
     if (!formVisible) thread.current?.scrollTo({top: showWelcome ? 0 : thread.current.scrollHeight, behavior: 'auto'});
   }, [messageCount, outgoing, phase, formVisible, showWelcome]);
-  const choiceUnlocked = guestActive && !!view && !view.care && ['chat', 'identity', 'verification', 'offer', 'payment'].includes(view.phase)
+  const choiceUnlocked = !messagePending && guestActive && !!view && !view.care && ['chat', 'identity', 'verification', 'offer', 'payment'].includes(view.phase)
     && (!view.payment || ['failed', 'refunded'].includes(view.payment.status));
   const resumeBookingForm = inPersonSelected && formPhase && phase !== 'intake';
-  const bookingActionable = bookingAvailable && (choiceUnlocked || resumeBookingForm || resumeBookingPayment);
+  const bookingActionable = !messagePending && bookingAvailable && (choiceUnlocked || resumeBookingForm || resumeBookingPayment);
   function openInPersonBooking() {
     if (locked.current || !bookingActionable || (bookingDeadline !== undefined && Date.now() >= bookingDeadline)) return;
     if (resumeBookingPayment) setPaymentOpen(true);
@@ -271,7 +304,7 @@ export function GuestJourney({client, locale = 'en', clinicName, getAccountToken
   useEffect(() => {if (phase === 'offer') setConsent(false);}, [phase, view?.payment?.status, quotedAmount, quotedCurrency]);
   async function sendMessage() {
     const value = text.trim();
-    if ((!value && !file) || locked.current) return;
+    if ((!value && !file) || locked.current || messagePending) return;
     if (file && file.size > MAX_UPLOAD_BYTES) {setError(chatLabels.chat.fileTooLarge); return;}
     const selectedFile = file;
     if (pendingMessage.current?.text !== value || pendingFile.current !== selectedFile) {
@@ -289,32 +322,51 @@ export function GuestJourney({client, locale = 'en', clinicName, getAccountToken
       if (selectedFile && !stagedAttachment.current) {
         const result = await client.request('uploadAttachment', {file: {fileName: selectedFile.name, contentType: selectedFile.type || 'application/octet-stream', contentLength: selectedFile.size}});
         if (!accept(result) || !result.ok || !result.upload) {setOutgoing(null); return;}
+        if (!isCurrentClient()) return;
         const uploaded = await fetch(result.upload.url, {method: 'PUT', body: selectedFile, headers: {'content-type': selectedFile.type || 'application/octet-stream'}});
+        if (!isCurrentClient()) return;
         if (!uploaded.ok) throw new Error('upload_failed');
         stagedAttachment.current = result.upload.attachment;
       }
-      const ok = accept(await client.request('message', {...message, ...(stagedAttachment.current ? {attachment: stagedAttachment.current} : {})}));
+      const result = await client.request('message', {...message, ...(stagedAttachment.current ? {attachment: stagedAttachment.current} : {})});
+      if (!isCurrentClient() || !result.ok && result.error === 'request_superseded') {sent = true; return;}
+      const ok = accept(result);
       if (ok) {sent = true; pendingMessage.current = null; pendingFile.current = null; stagedAttachment.current = undefined;}
       setOutgoing(null);
-    } catch {setError(chatLabels.chat.sendFailed); setOutgoing(null);}
+    } catch {if (isCurrentClient()) {setError(chatLabels.chat.sendFailed); setOutgoing(null);}}
     finally {
-      if (!sent) {setText(current => current || value); setFile(current => current ?? selectedFile);}
-      locked.current = false; setBusy(false); setSending(false);
+      if (isCurrentClient()) {
+        if (!sent) {setText(current => current || value); setFile(current => current ?? selectedFile);}
+        locked.current = false; setBusy(false); setSending(false);
+      }
     }
+  }
+  async function retryPendingReply() {
+    const pending = view?.pendingMessage;
+    if (!pending || !isCurrentClient() || restoredClient.current !== client || locked.current || busy || sending || Date.now() < Date.parse(pending.startedAt) + 120_000) return;
+    const accepted = view.messages.find(message => message.id === pending.requestId && message.role === 'user' && message.sentAt === pending.startedAt);
+    if (!accepted) return;
+    // Retry the already accepted turn, never the patient's unsent draft. The
+    // server validates this payload and reuses its stored task and nonce.
+    locked.current = true; setBusy(true); setSending(true); setError('');
+    try {accept(await client.request('message', {requestId: pending.requestId, text: accepted.text,
+      ...(accepted.attachments?.[0] ? {attachment: accepted.attachments[0]} : {})}));}
+    catch {if (isCurrentClient()) setError(chatLabels.chat.sendFailed);}
+    finally {if (isCurrentClient()) {locked.current = false; setBusy(false); setSending(false);}}
   }
   function showAuth(purpose: 'login' | 'signup') {
     setHistoryOpen(false); setOverlayOpen(false); setAuthPurpose(purpose); setLoginOpen(true);
   }
   async function openLogin(purpose: 'login' | 'signup' = 'login') {
-    if (busy) return;
+    if (busy || messagePending) return;
     if (!view && !await request(saved ? 'state' : 'begin')) return;
-    showAuth(purpose);
+    if (isCurrentClient()) showAuth(purpose);
   }
   function clearDraftInput() {
     setText(''); setFile(null); pendingMessage.current = null; pendingFile.current = null; stagedAttachment.current = undefined;
   }
   async function loginRequest(action: HistoryAction, input: Omit<GuestRequest, 'action' | 'credential'>): Promise<GuestResult> {
-    if (locked.current) return {ok: false, error: 'journey_busy'};
+    if (locked.current || messagePending) return {ok: false, error: 'journey_busy'};
     locked.current = true; setBusy(true);
     try {
       const result = await client.request(action === 'sendHistoryCode' ? 'sendLoginCode' : action === 'verifyHistoryCode' ? 'verifyLoginCode' : action, input);
@@ -328,14 +380,14 @@ export function GuestJourney({client, locale = 'en', clinicName, getAccountToken
       }
       return result;
     } catch {return {ok: false, error: 'service_unavailable'};}
-    finally {locked.current = false; setBusy(false);}
+    finally {if (isCurrentClient()) {locked.current = false; setBusy(false);}}
   }
   async function submitIdentity(identity: GuestIdentity, consents: {healthConsent: true; messagingConsent: boolean}, delivery?: 'sms' | 'whatsapp'): Promise<GuestResult> {
-    if (locked.current) return {ok: false, error: 'journey_busy'};
+    if (locked.current || messagePending) return {ok: false, error: 'journey_busy'};
     locked.current = true; setBusy(true);
     try {const result = await client.request('identity', {identity, ...consents}); if (result.ok) {accept(result); if (delivery) setChannel(delivery);} return result;}
     catch {return {ok: false, error: 'service_unavailable'};}
-    finally {locked.current = false; setBusy(false);}
+    finally {if (isCurrentClient()) {locked.current = false; setBusy(false);}}
   }
   async function signOut() {
     if (await request('logout')) {client.forget(); setView(null); setSaved(false); setAccount(null); setLoginOpen(false); setSurface(undefined); await request('begin');}
@@ -380,7 +432,7 @@ export function GuestJourney({client, locale = 'en', clinicName, getAccountToken
               {showEntry ? <div className="guest-welcome-transition">
                 <div className="guest-entry-welcome">
                   <h1>{copy.title}</h1><p className="guest-description">{copy.intro}</p>
-                  <GuestCareOptions offers={welcomeOffers} choice={view.choice} busy={busy || sending} freeLabel={copy.free}
+                  <GuestCareOptions offers={welcomeOffers} choice={view.choice} busy={busy || sending || messagePending} freeLabel={copy.free}
                     messageClinicianLabel={copy.messageClinician} videoNowLabel={copy.videoNow} formatPrice={price}
                     onChoose={choice => {setConsent(false); void request('chooseCare', {choice});}}/>
                   <button className="guest-primary guest-text-agent" onClick={() => {setSurface('chat'); composer.current?.focus({preventScroll: true});}}>{userMessageCount > 0 ? copy.backChat : copy.textAgent}</button>
@@ -395,11 +447,14 @@ export function GuestJourney({client, locale = 'en', clinicName, getAccountToken
                 </div>}
                 <time dateTime={message.sentAt}>{new Date(message.sentAt).toLocaleTimeString(locale.replace('_', '-'), {hour: '2-digit', minute: '2-digit'})}</time>
               </div>)}
-              {!showEntry && !sending && recommendedOffer && <GuestCareOptions offers={[recommendedOffer]}
+              {!showEntry && !sending && !messagePending && recommendedOffer && <GuestCareOptions offers={[recommendedOffer]}
                 busy={busy} freeLabel={copy.free} messageClinicianLabel={copy.messageClinician} videoNowLabel={copy.videoNow}
                 formatPrice={price} onChoose={choice => {setConsent(false); void request('chooseCare', {choice});}}/>}
               {!showEntry && !messages.length && phase !== 'ready' && <AgentWelcome message={chatLabels.agent.empty}/>}
-              {sending && <div className="guest-typing" role="status" aria-label={copy.busy}><span/><span/><span/></div>}
+              {(sending || messagePending) && <div className="guest-typing" role="status" aria-label={copy.busy}><span/><span/><span/></div>}
+              {messagePending && !busy && !sending && pendingRetryAt !== undefined && now >= pendingRetryAt && <div className="guest-pending-retry" role="status">
+                <button type="button" className="guest-secondary" onClick={() => void retryPendingReply()}>{copy.retryMessage}</button>
+              </div>}
             </>}
             {error && !overlayOpen && !paymentOpen && <p className="guest-error" role="alert">{error}{remaining > 0 && ` (${remaining}s)`}</p>}
             {notice && !overlayOpen && <p className="guest-notice" role="status">{notice}</p>}
@@ -422,7 +477,7 @@ export function GuestJourney({client, locale = 'en', clinicName, getAccountToken
               {care ? <a className="guest-primary" href={care}>{copy.openCare}</a> : <button className="guest-primary" disabled={busy} onClick={() => void request('complete')}>{busy ? copy.busy : copy.complete}</button>}
             </aside>}
           </AgentThread>
-          {guestActive && <ChatComposer draft={text} onDraft={setText} file={file} onFile={setFile} busy={busy || sending}
+          {guestActive && <ChatComposer draft={text} onDraft={setText} file={file} onFile={setFile} busy={busy || sending || messagePending}
             labels={chatLabels.chat} inputRef={composer} maxLength={2000} placeholder={chatLabels.agent.placeholder}
             onFocus={() => setSurface('chat')} onBlur={() => {
               if (userMessageCount === 0 && !pendingMessage.current) setSurface(current => current === 'chat' ? undefined : current);

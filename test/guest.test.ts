@@ -179,7 +179,7 @@ describe('ambiguous checkout response reconciliation', () => {
   });
 
   it('does not poll after a clinical/business refusal or for unrelated actions', async () => {
-    for (const [action, original] of [['checkout', {ok: false, error: 'care_unavailable'}], ['complete', {ok: false, error: 'service_unavailable'}], ['message', {ok: false, error: 'service_unavailable'}]] as const) {
+    for (const [action, original] of [['checkout', {ok: false, error: 'care_unavailable'}], ['complete', {ok: false, error: 'service_unavailable'}], ['message', {ok: false, error: 'care_unavailable'}]] as const) {
       const f = recoveryFixture([{ok: true, journey: CHECKOUT_READY}], original); await f.client.request('begin');
       assert.deepEqual(await f.client.request(action), original); assert.equal(f.calls.filter(c => c.action === 'state').length, 0);
     }

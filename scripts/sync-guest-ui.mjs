@@ -8,6 +8,7 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const target = join(repo, 'packages/natzar-client/src/guest-ui');
 mkdirSync(target, {recursive: true});
 const files = ['GuestJourney.tsx', 'GuestCareOptions.tsx', 'GuestOverlay.tsx', 'HistoryDialog.tsx', 'GuestAccountFrame.tsx', 'SignupFields.tsx', 'RequiredMark.tsx', 'GuestSingleSelect.tsx', 'GuestDialog.tsx', 'BirthdateInput.tsx', 'signup-copy.ts', 'login-copy.ts', 'PhoneInput.tsx', 'history-copy.ts', 'modal-scroll.ts', 'form-focus.ts', 'QuickIntake.tsx', 'IntakeSelect.tsx', 'intake-copy.ts', 'IdentityForm.tsx', 'GuestCheckout.tsx', 'copy.ts', 'consent-copy.ts', 'styles.ts'];
+files.push('history-actions.ts');
 const copies = files.map(file => ({file, source: join(repo, 'frontend/guest', file)}));
 copies.push({file: 'country-flag-assets.ts', source: join(repo, 'frontend/patient-interface/welcome/country-flag-assets.ts')});
 copies.push({file: 'birthdate-calendar.ts', source: join(repo, 'frontend/shared/birthdate-calendar.ts')});

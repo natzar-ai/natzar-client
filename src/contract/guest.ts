@@ -31,6 +31,8 @@ export type GuestFile = {fileName: string; contentType: string; contentLength: n
 export type GuestAttachment = GuestFile & {key: string; ref?: string; url?: string};
 export type GuestUpload = {url: string; attachment: GuestAttachment};
 export type GuestMessage = {id: string; role: 'user' | 'assistant'; text: string; sentAt: string; channel?: GuestChannel; attachments?: GuestAttachment[]};
+/** One durably accepted chat turn. It grants no care or patient-chart authority. */
+export type GuestPendingMessage = {requestId: string; startedAt: string; status: 'queued' | 'processing'};
 export type GuestOffer = GuestCare & {label: string; amountCents: number; currency: string};
 export type GuestPayment = {
   id: string | null; status: 'free' | 'pending' | 'paid' | 'failed' | 'refunded' | 'refund_pending' | 'refund_failed'; amountCents: number; currency: string;
@@ -39,6 +41,7 @@ export type GuestPayment = {
 export type GuestView = {
   id: string; clinicId: string; clinicName: string; channel: GuestChannel; phase: GuestPhase;
   messages: GuestMessage[]; offers: GuestOffer[]; choice?: GuestCare;
+  pendingMessage?: GuestPendingMessage;
   /** The assessed route for this conversation. Selection still requires verified eligibility. */
   recommendedCare?: GuestCare;
   /** In-chat appointment offer and its original validity window. */

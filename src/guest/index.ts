@@ -9,7 +9,7 @@
 import {createGuestCookieStorage, type GuestCookieStorage} from './cookie';
 export {createGuestCookieStorage, type GuestCookieStorage} from './cookie';
 import type {GuestAccount, GuestAction, GuestRequest, GuestResult, GuestView} from '../contract/guest';
-export type {GuestAttachment, GuestFile, GuestMessage, GuestUpload, GuestAccount, GuestAction, GuestRequest, GuestResult, GuestView, GuestIntake, GuestIntakeSelections, GuestIdentity, GuestSignup, GuestCare, GuestOffer, GuestPayment} from '../contract/guest';
+export type {GuestAttachment, GuestFile, GuestMessage, GuestPendingMessage, GuestUpload, GuestAccount, GuestAction, GuestRequest, GuestResult, GuestView, GuestIntake, GuestIntakeSelections, GuestIdentity, GuestSignup, GuestCare, GuestOffer, GuestPayment} from '../contract/guest';
 
 export type GuestStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 export interface GuestClientOptions {
@@ -32,6 +32,8 @@ export interface GuestClient {
   isRemembered(): boolean;
   rememberOnDevice(enabled: boolean): void;
   request(action: GuestAction, input?: Omit<GuestRequest, 'action' | 'credential'>): Promise<GuestResult>;
+  /** Accepted chat turns and read-only progress observations for a custom UI. */
+  subscribe?(listener: (journey: GuestView) => void): () => void;
   /** Call only after normal patient sign-in; a guest OTP never unlocks a chart. */
   linkAccount(idToken: string): Promise<GuestResult>;
   /** Explicit user handoff to the clinic's hosted guest page. Bearer stays in the fragment. */
@@ -56,6 +58,11 @@ function validResult(value: unknown): value is GuestResult {
   if (result.ok === false) return typeof result.error === 'string';
   if (result.ok !== true || !('journey' in result) || !result.journey) return false;
   const view = result.journey as Partial<GuestView>;
+  const pending = view.pendingMessage;
+  if (pending !== undefined && (!pending || typeof pending !== 'object' || Object.keys(pending).length !== 3 ||
+    typeof pending.requestId !== 'string' || !pending.requestId.trim() || pending.requestId.length > 200 ||
+    typeof pending.startedAt !== 'string' || !Number.isFinite(Date.parse(pending.startedAt)) ||
+    !['queued', 'processing'].includes(pending.status))) return false;
   if ('account' in result && result.account && !validAccount(result.account)) return false;
   return typeof view.id === 'string' && typeof view.clinicId === 'string' && typeof view.phase === 'string' && Array.isArray(view.messages) && Array.isArray(view.offers);
 }
@@ -95,6 +102,9 @@ export function createGuestClient(options: GuestClientOptions): GuestClient {
   try {accountStore = typeof sessionStorage === 'undefined' ? null : sessionStorage;} catch { /* Memory-only login. */ }
   let account: GuestAccount | null = null, proposedAccount = '';
   let lastView: GuestView | null = null, requestGeneration = 0;
+  const listeners = new Set<(journey: GuestView) => void>();
+  let pendingObservation: AbortController | undefined;
+  const messageFlights = new Map<string, {signature: string; promise: Promise<GuestResult>}>();
   const accountKey = key + ':account';
   const historyProposalKey = key + ':history-proposal';
   try {const raw = accountStore?.getItem(accountKey); if (raw) account = JSON.parse(raw) as GuestAccount;} catch { /* Invalid/blocked session storage. */ }
@@ -145,7 +155,11 @@ export function createGuestClient(options: GuestClientOptions): GuestClient {
     if (result.credential && result.credential.split('.')[1] !== credential.split('.')[1]) {saveAccount(null); proposedAccount = ''; saveHistoryProposal('');}
     remember(result.credential ?? credential);
     if (result.account) {saveAccount(result.account); proposedAccount = ''; saveHistoryProposal('');}
+    const changed = JSON.stringify(lastView) !== JSON.stringify(result.journey);
     lastView = result.journey;
+    if (changed) for (const listener of listeners) {
+      try {listener(result.journey);} catch { /* A custom view cannot change transport ownership. */ }
+    }
   }
   async function invoke(action: GuestAction, input: Omit<GuestRequest, 'action' | 'credential'> = {}, idToken?: string, observation?: AbortSignal): Promise<GuestResult> {
     const stateAccount = action === 'state' ? input.accountCredential ?? currentAccount()?.credential : undefined;
@@ -203,12 +217,102 @@ export function createGuestClient(options: GuestClientOptions): GuestClient {
     } catch {return {ok: false, error: 'service_unavailable'};}
     finally {clearTimeout(timeout); observation?.removeEventListener('abort', abandonObservation);}
   }
-  async function request(action: GuestAction, input: Omit<GuestRequest, 'action' | 'credential'> = {}): Promise<GuestResult> {
-    const generation = ++requestGeneration, expectedCredential = credential;
-    const before = action === 'checkout' && lastView ? checkoutSnapshot(lastView) : null;
-    const requestId = input.requestId ?? globalThis.crypto.randomUUID();
-    const original = await invoke(action, {...input, requestId});
+  const superseded = (): GuestResult => ({ok: false, error: 'request_superseded'});
+  function pause(ms: number, signal: AbortSignal): Promise<void> {
+    return new Promise(resolve => {
+      if (signal.aborted) {resolve(); return;}
+      const done = () => {clearTimeout(timer); signal.removeEventListener('abort', done); resolve();};
+      const timer = setTimeout(done, ms); signal.addEventListener('abort', done, {once: true});
+    });
+  }
+  async function observeMessage(original: GuestResult, target: {journeyId: string; requestId: string; startedAt?: string},
+    current: () => boolean, signal: AbortSignal, deadline: number): Promise<GuestResult> {
+    let latest = original;
+    const accountCredential = currentAccount()?.credential;
+    while (current() && !signal.aborted && Date.now() < deadline) {
+      await pause(Math.min(1500, Math.max(0, deadline - Date.now())), signal);
+      if (!current() || signal.aborted) return superseded();
+      const remaining = deadline - Date.now(); if (remaining <= 0) break;
+      const controller = new AbortController(), abandon = () => controller.abort();
+      signal.addEventListener('abort', abandon, {once: true});
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const expired = new Promise<GuestResult>(resolve => {timer = setTimeout(() => {controller.abort(); resolve({ok: false, error: 'service_unavailable'});}, Math.min(5000, remaining));});
+      let observed: GuestResult;
+      try {observed = await Promise.race([invoke('state', {requestId: target.requestId}, undefined, controller.signal), expired]);}
+      finally {clearTimeout(timer); signal.removeEventListener('abort', abandon); controller.abort();}
+      if (!current() || signal.aborted) return superseded();
+      if (!observed.ok) {
+        if (observed.error === 'account_expired') {saveAccount(null); continue;}
+        if (['session_expired', 'session_invalid', 'session_not_found', 'clinic_disabled', 'guest_disabled'].includes(observed.error)) return observed;
+        continue; // Observations never repeat the clinical message or care actions.
+      }
+      const view = observed.journey;
+      if (view.id !== target.journeyId || view.clinicId !== options.clinicId ||
+        observed.credential && observed.credential !== credential ||
+        observed.account && observed.account.credential !== accountCredential) return superseded();
+      const pending = view.pendingMessage;
+      if (pending && (pending.requestId !== target.requestId || target.startedAt && pending.startedAt !== target.startedAt)) return superseded();
+      const user = view.messages.findIndex(message => message.id === target.requestId && message.role === 'user');
+      // Clinic availability/refund recovery is terminal state, not a clinical
+      // reply. Cancellation retains this exact accepted user report.
+      if (!pending && view.guestEnabled === false && user >= 0 && (!target.startedAt || view.messages[user].sentAt === target.startedAt)) {
+        rememberResult(observed); return observed;
+      }
+      const completed = !pending && user >= 0 && (!target.startedAt || view.messages[user].sentAt === target.startedAt)
+        && view.messages[user + 1]?.role === 'assistant';
+      if (pending || completed) {
+        target.startedAt ??= pending?.startedAt;
+        rememberResult(observed); latest = observed;
+        if (completed) return observed;
+      }
+    }
+    return current() && !signal.aborted ? latest : superseded();
+  }
+  async function performRequest(action: GuestAction, input: Omit<GuestRequest, 'action' | 'credential'> = {}, idToken?: string): Promise<GuestResult> {
+    pendingObservation?.abort();
+    const observation = new AbortController(); pendingObservation = observation;
+    const generation = ++requestGeneration;
+    let expectedCredential = credential;
     const current = () => generation === requestGeneration && credential === expectedCredential;
+    const beforeView = lastView, before = action === 'checkout' && lastView ? checkoutSnapshot(lastView) : null;
+    const requestId = input.requestId ?? globalThis.crypto.randomUUID(), messageDeadline = Date.now() + 120_000;
+    const accountBeforeState = action === 'state' && (input.accountCredential ?? currentAccount()?.credential);
+    try {
+      let original = await invoke(action, {...input, requestId}, idToken, observation.signal);
+      if (!current() || observation.signal.aborted) return superseded();
+      if (!original.ok && original.error === 'account_expired') {
+        saveAccount(null);
+        if (accountBeforeState) {const retry = {...input}; delete retry.accountCredential; original = await invoke('state', {...retry, requestId}, idToken, observation.signal);}
+      }
+      if (!current() || observation.signal.aborted) return superseded();
+      // An explicit enqueue failure is safe to retry once with the SAME durable id.
+      // Ambiguous network errors instead use read-only state recovery below.
+      if (action === 'message' && !original.ok && original.error === 'message_queue_unavailable') {
+        await pause(500, observation.signal);
+        if (!current() || observation.signal.aborted) return superseded();
+        original = await invoke(action, {...input, requestId}, idToken, observation.signal);
+      }
+      if (!current() || observation.signal.aborted) return superseded();
+      if (original.ok) {
+        if (original.journey.pendingMessage) {
+          const scopedCredential = original.credential ?? expectedCredential;
+          if (scopedCredential.split('.')[1] !== original.journey.id ||
+            !['begin', 'resume'].includes(action) && expectedCredential && scopedCredential !== expectedCredential) return superseded();
+        }
+        if (action === 'message' && beforeView && original.journey.id !== beforeView.id) return superseded();
+        if (original.journey.pendingMessage && action === 'message' && original.journey.pendingMessage.requestId !== requestId) return superseded();
+        rememberResult(original); expectedCredential = credential;
+        if (['declineHistory', 'sendHistoryCode', 'sendLoginCode', 'logout'].includes(action)) {saveHistoryProposal(''); proposedAccount = '';}
+        if (action === 'logout') {remember(''); expectedCredential = credential;}
+        if (original.journey.pendingMessage && ['message', 'state', 'resume', 'begin'].includes(action)) {
+          const pending = original.journey.pendingMessage;
+          return await observeMessage(original, {journeyId: original.journey.id, requestId: pending.requestId, startedAt: pending.startedAt}, current, observation.signal,
+            action === 'message' ? messageDeadline : Math.min(messageDeadline, Date.parse(pending.startedAt) + 120_000));
+        }
+      } else if (action === 'message' && expectedCredential && beforeView &&
+        ['service_unavailable', 'temporarily_unavailable', 'demo_unavailable', 'message_queue_unavailable'].includes(original.error)) {
+        return await observeMessage(original, {journeyId: beforeView.id, requestId}, current, observation.signal, messageDeadline);
+      }
     if (action !== 'checkout' || original.ok || !ambiguousCheckout.has(original.error) || !expectedCredential || !before ||
       !['offer', 'payment'].includes(before.phase) || !current()) return original;
     // Four short read-only observations: <=10s overall, without widening the
@@ -234,14 +338,28 @@ export function createGuestClient(options: GuestClientOptions): GuestClient {
       if (checkoutProgress(before, observed.journey)) {rememberResult(observed); return observed;}
     }
     return original;
+    } finally {if (pendingObservation === observation) pendingObservation = undefined;}
   }
+  function request(action: GuestAction, input: Omit<GuestRequest, 'action' | 'credential'> = {}): Promise<GuestResult> {
+    if (action !== 'message') return performRequest(action, input);
+    const requestId = input.requestId ?? globalThis.crypto.randomUUID(), key = credential + ':' + requestId;
+    const signature = JSON.stringify({...input, requestId});
+    const existing = messageFlights.get(key);
+    if (existing) return existing.signature === signature ? existing.promise : Promise.resolve({ok: false, error: 'invalid_request_id'});
+    const promise = performRequest(action, {...input, requestId}); messageFlights.set(key, {signature, promise});
+    const clear = () => {if (messageFlights.get(key)?.promise === promise) messageFlights.delete(key);};
+    void promise.then(clear, clear);
+    return promise;
+  }
+
   return {
     hasSavedJourney: () => !!credential,
     canRemember: () => !!cookieStore || !!options.rememberStorage,
     isRemembered: () => remembered,
     rememberOnDevice: enabled => {persistencePreference = enabled; remembered = enabled && (!!cookieStore || !!options.rememberStorage); remember(credential);},
     request,
-    linkAccount: idToken => {requestGeneration++; return invoke('linkAccount', {}, idToken);},
+    subscribe: listener => {listeners.add(listener); return () => {listeners.delete(listener);};},
+    linkAccount: idToken => performRequest('linkAccount', {}, idToken),
     handoffUrl: guestPageUrl => {
       const url = validateGuestUrl(guestPageUrl);
       if (url.pathname !== '/guest') throw new TypeError('The handoff must use the hosted guest page');
@@ -249,9 +367,9 @@ export function createGuestClient(options: GuestClientOptions): GuestClient {
       if (credential) url.hash = new URLSearchParams({credential}).toString();
       return url.href;
     },
-    forget: () => {requestGeneration++; lastView = null; remember(''); saveAccount(null); proposedAccount = ''; saveHistoryProposal(''); remembered = !!cookieStore && persistencePreference;},
+    forget: () => {requestGeneration++; pendingObservation?.abort(); messageFlights.clear(); lastView = null; remember(''); saveAccount(null); proposedAccount = ''; saveHistoryProposal(''); remembered = !!cookieStore && persistencePreference;},
     account: currentAccount,
-    forgetAccount: () => {requestGeneration++; saveAccount(null);},
+    forgetAccount: () => {requestGeneration++; pendingObservation?.abort(); saveAccount(null);},
     accountOperation: async (operation, input = {}) => {
       const login = currentAccount();
       if (!login) return {ok: false, error: 'account_expired'};

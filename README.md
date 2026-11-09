@@ -50,9 +50,9 @@ WhatsApp/SMS links.
 Existing patient records require normal account sign-in.
 
 The opening welcome screen shows the clinic's available on-demand options.
-Booking cards disappear when the conversation starts. When the server recommends
-care, the clinic name opens a separate welcome screen with one action for that
-route. Guests can attach files up to 20 MB,
+During the conversation, only the server-assessed care route is offered. The
+clinic name can also reopen the welcome screen to continue that route.
+Guests can attach files up to 20 MB,
 including file-only messages. Uploaded files accompany the conversation when
 its history is saved.
 
@@ -66,6 +66,16 @@ For plain HTML, call `registerGuestElement()` from
 `@natzar/client/guest/elements`, then add `<natzar-guest clinic-id="…"
 graphql-url="…" api-key="…" locale="en_US"></natzar-guest>`. For custom UIs,
 `createGuestClient()` from `@natzar/client/guest` exposes the typed journey API.
+
+Guest replies run in the background. `request('message', ...)` keeps the same
+request ID while observing progress through read-only state requests. Custom
+UIs can use `subscribe()` to display accepted messages and typing progress.
+An `ok` result with `journey.pendingMessage` still present is an accepted,
+unfinished turn; keep care actions unavailable until assessment completes.
+Observation is bounded at 120 seconds. The supplied UI then offers **Try again**,
+using the accepted message's original ID, text and attachment, without changing
+an unsent composer draft. Reloads resume observation and expose an aged pending
+turn for retry. Do not turn a pending retry into a new patient message.
 
 The default host cookie resumes saved guest conversations automatically on
 revisits. Custom clients can control persistence with `rememberOnDevice()`. Guest credentials never unlock patient chart operations. Hosted

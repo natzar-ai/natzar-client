@@ -1,7 +1,7 @@
 // GENERATED FILE — edit frontend/guest or shared/jurisdictions.ts, then run sync-contract.
 import {GuestSingleSelect} from './GuestSingleSelect';
 import {useEffect, useId, useRef, useState} from 'react';
-import type {GuestAction, GuestRequest, GuestResult, GuestSignup, GuestView} from '../contract/guest';
+import type {GuestRequest, GuestResult, GuestSignup, GuestView} from '../contract/guest';
 import {guestPhoneNumber} from './guest-phone';
 import {smsLoginAllowed} from './login-policy';
 import {GuestPhoneInput} from './PhoneInput';
@@ -16,8 +16,7 @@ import {SignupFields} from './SignupFields';
 import {signupCopy} from './signup-copy';
 import {GuestSignupError, normalizeGuestSignup} from './guest-signup';
 
-export type HistoryAction = Extract<GuestAction, 'sendHistoryCode' | 'verifyHistoryCode' | 'appendHistory' | 'deleteHistory' | 'declineHistory'>;
-export const isHistoryConfirmation = (action: HistoryAction | 'offerHistory') => action === 'appendHistory' || action === 'deleteHistory';
+import type {HistoryAction} from './history-actions';
 
 /** An optional, contained dialog. The website outside the chat remains usable. */
 export function HistoryDialog({open, history, locale, busy, onRequest, onClose, onSwitchToLogin, purpose = 'history', initialPhone, phoneLocked = false, country = 'US', initialProfile, clinicName = '', privacyUrl, termsUrl}: {
