@@ -44,6 +44,8 @@ export type GuestView = {
   pendingMessage?: GuestPendingMessage;
   /** The assessed route for this conversation. Selection still requires verified eligibility. */
   recommendedCare?: GuestCare;
+  /** A link to continue the current assessed offer within this guest journey. */
+  careOfferLink?: {messageId: string; href: string};
   /** In-chat appointment offer and its original validity window. */
   inPersonBooking?: {messageId: string; expiresAt: string; available: boolean};
   identity?: Partial<GuestIdentity>; phoneVerified: boolean; intake?: GuestIntake;
@@ -66,7 +68,7 @@ export type GuestView = {
 export type GuestRequest = {
   action: GuestAction; credential?: string; clinicId?: string; locale?: string;
   file?: GuestFile; attachment?: GuestAttachment;
-  text?: string; requestId?: string; choice?: GuestCare; identity?: GuestIdentity;
+  text?: string; requestId?: string; choice?: GuestCare; careOfferId?: string; identity?: GuestIdentity;
   code?: string; verificationChannel?: 'sms' | 'whatsapp'; intake?: GuestIntake; consent?: boolean; resumeTicket?: string;
   healthConsent?: boolean; messagingConsent?: boolean;
   phone?: string;

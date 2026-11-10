@@ -29,6 +29,7 @@ const inPersonCare = {modality: 'inPerson', mode: 'book'} as const;
 
 export interface GuestJourneyProps {
   client: GuestClient; locale?: string; clinicName?: string;
+  initialCareOfferId?: string;
   getAccountToken?: () => Promise<string | null>;
   onSignIn?: () => void;
   onReady?: (care: NonNullable<GuestView['care']>) => void;
@@ -39,8 +40,9 @@ function safeGuestNavigation(value?: string): string | null {
   try {const url = new URL(value, typeof location === 'undefined' ? 'https://natzar.ai' : location.href); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : null;} catch {return null;}
 }
 
-export function GuestJourney({client, locale = 'en', clinicName, getAccountToken, onSignIn, onReady}: GuestJourneyProps) {
+export function GuestJourney({client, locale = 'en', clinicName, initialCareOfferId, getAccountToken, onSignIn, onReady}: GuestJourneyProps) {
   const clientOwner = useRef(client), mounted = useRef(true), restoredClient = useRef<GuestClient | null>(null);
+  const initialCareOffer = useRef(initialCareOfferId);
   clientOwner.current = client;
   const isCurrentClient = useCallback(() => mounted.current && clientOwner.current === client, [client]);
   const copy = guestCopy(locale);
@@ -240,6 +242,20 @@ export function GuestJourney({client, locale = 'en', clinicName, getAccountToken
     setPaymentOpen(!messagePending && phase === 'payment' && !['failed', 'refunded', 'refund_pending', 'refund_failed'].includes(view?.payment?.status ?? ''));
   }, [phase, messagePending, view?.guestEnabled, view?.payment?.status]);
   useEffect(() => {
+    const offerId = initialCareOffer.current;
+    if (!offerId || !view || busy || messagePending) return;
+    initialCareOffer.current = undefined;
+    if (view.phase !== 'chat') return;
+    if (view.careOfferLink?.messageId !== offerId) {
+      setError(copy.careRouteChanged);
+      setSurface('chat');
+      return;
+    }
+    void request('chooseCare', {careOfferId: offerId, accountCredential: client.account?.()?.credential});
+    // Consume the opened link once, after restoring the authenticated journey.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client, view, busy, messagePending]);
+  useEffect(() => {
     if (!retryAt) return;
     const timer = setInterval(() => setNow(Date.now()), 500);
     return () => clearInterval(timer);
@@ -434,20 +450,31 @@ export function GuestJourney({client, locale = 'en', clinicName, getAccountToken
                   <h1>{copy.title}</h1><p className="guest-description">{copy.intro}</p>
                   <GuestCareOptions offers={welcomeOffers} choice={view.choice} busy={busy || sending || messagePending} freeLabel={copy.free}
                     messageClinicianLabel={copy.messageClinician} videoNowLabel={copy.videoNow} formatPrice={price}
-                    onChoose={choice => {setConsent(false); void request('chooseCare', {choice});}}/>
+                    onChoose={choice => {
+                      setConsent(false);
+                      void request('chooseCare', view.careOfferLink ? {careOfferId: view.careOfferLink.messageId, accountCredential: account?.credential} : {choice});
+                    }}/>
                   <button className="guest-primary guest-text-agent" onClick={() => {setSurface('chat'); composer.current?.focus({preventScroll: true});}}>{userMessageCount > 0 ? copy.backChat : copy.textAgent}</button>
                 </div>
               </div> : messages.map((message, index) => <div key={message.id} className="guest-message" data-role={message.role}
                 data-run-end={messages[index + 1]?.role !== message.role}>{renderEmphasis(message.text)}
                 {'attachments' in message && message.attachments?.map(attachment => <a className="guest-message-file" key={attachment.key} href={safeGuestNavigation(attachment.url) ?? undefined} target="_blank" rel="noreferrer">{attachment.fileName}</a>)}
                 {'fileName' in message && typeof message.fileName === 'string' && message.fileName && <span className="guest-message-file">{message.fileName}</span>}
-                {booking?.messageId === message.id && <div className="guest-booking-action" style={{display: 'flex', marginTop: 12}}>
+                {view.careOfferLink?.messageId === message.id && recommendedOffer &&
+                  <a className="guest-step-action" href={view.careOfferLink.href} aria-disabled={busy || messagePending}
+                    onClick={event => {
+                      event.preventDefault();
+                      if (busy || messagePending) return;
+                      setConsent(false);
+                      void request('chooseCare', {careOfferId: message.id, accountCredential: account?.credential});
+                    }}>{copy.openCare}<span aria-hidden="true">↗</span></a>}
+                {booking?.messageId === message.id && view.careOfferLink?.messageId !== message.id && <div className="guest-booking-action" style={{display: 'flex', marginTop: 12}}>
                   <LinkPrimaryButton label={bookingExpired ? chatLabels.agent.linkExpired : bookingActionable ? chatLabels.agent.linkBook : chatLabels.agent.linkUnavailable}
                     busy={false} disabled={!bookingActionable || busy} onClick={openInPersonBooking}/>
                 </div>}
                 <time dateTime={message.sentAt}>{new Date(message.sentAt).toLocaleTimeString(locale.replace('_', '-'), {hour: '2-digit', minute: '2-digit'})}</time>
               </div>)}
-              {!showEntry && !sending && !messagePending && recommendedOffer && <GuestCareOptions offers={[recommendedOffer]}
+              {!showEntry && !sending && !messagePending && recommendedOffer && !view.careOfferLink && <GuestCareOptions offers={[recommendedOffer]}
                 busy={busy} freeLabel={copy.free} messageClinicianLabel={copy.messageClinician} videoNowLabel={copy.videoNow}
                 formatPrice={price} onChoose={choice => {setConsent(false); void request('chooseCare', {choice});}}/>}
               {!showEntry && !messages.length && phase !== 'ready' && <AgentWelcome message={chatLabels.agent.empty}/>}
