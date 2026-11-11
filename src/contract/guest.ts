@@ -34,6 +34,10 @@ export type GuestMessage = {id: string; role: 'user' | 'assistant'; text: string
 /** One durably accepted chat turn. It grants no care or patient-chart authority. */
 export type GuestPendingMessage = {requestId: string; startedAt: string; status: 'queued' | 'processing'};
 export type GuestOffer = GuestCare & {label: string; amountCents: number; currency: string};
+export type GuestCareOffer = {
+  messageId: string; care: GuestCare; expiresAt: string; available: boolean;
+  price?: {amountCents: number; currency: string};
+};
 export type GuestPayment = {
   id: string | null; status: 'free' | 'pending' | 'paid' | 'failed' | 'refunded' | 'refund_pending' | 'refund_failed'; amountCents: number; currency: string;
   checkoutUrl?: string; clientSecret?: string; publishableKey?: string;
@@ -44,6 +48,8 @@ export type GuestView = {
   pendingMessage?: GuestPendingMessage;
   /** The assessed route for this conversation. Selection still requires verified eligibility. */
   recommendedCare?: GuestCare;
+  /** A care offer attached to the assistant message that issued it. */
+  careOffer?: GuestCareOffer;
   /** In-chat appointment offer and its original validity window. */
   inPersonBooking?: {messageId: string; expiresAt: string; available: boolean};
   identity?: Partial<GuestIdentity>; phoneVerified: boolean; intake?: GuestIntake;
@@ -67,6 +73,7 @@ export type GuestRequest = {
   action: GuestAction; credential?: string; clinicId?: string; locale?: string;
   file?: GuestFile; attachment?: GuestAttachment;
   text?: string; requestId?: string; choice?: GuestCare; identity?: GuestIdentity;
+  offerMessageId?: string;
   code?: string; verificationChannel?: 'sms' | 'whatsapp'; intake?: GuestIntake; consent?: boolean; resumeTicket?: string;
   healthConsent?: boolean; messagingConsent?: boolean;
   phone?: string;
