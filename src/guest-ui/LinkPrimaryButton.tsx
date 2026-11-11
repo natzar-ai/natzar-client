@@ -1,4 +1,10 @@
 // GENERATED FILE — edit frontend/guest or shared/jurisdictions.ts, then run sync-contract.
+import type {ReactNode} from 'react';
+
+export function LinkActionRow({children, className}: {children: ReactNode; className?: string}) {
+  return <div className={className} style={{display: 'flex', gap: 8, marginTop: 12}}>{children}</div>;
+}
+
 export function LinkPrimaryButton({label, busy, disabled, onClick}: {
   label: string;
   busy: boolean;

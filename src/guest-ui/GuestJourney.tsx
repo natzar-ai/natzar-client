@@ -1,12 +1,12 @@
 // GENERATED FILE — edit frontend/guest or shared/jurisdictions.ts, then run sync-contract.
 import {AgentThread, AgentWelcome} from './AgentWelcome';
 import {ChatComposer, MAX_UPLOAD_BYTES} from './ChatComposer';
-import {LinkPrimaryButton} from './LinkPrimaryButton';
+import {LinkActionRow, LinkPrimaryButton} from './LinkPrimaryButton';
 import {chatCopy} from './chat-copy';
 import {GuestSingleSelect} from './GuestSingleSelect';
 import {useCallback, useEffect, useRef, useState} from 'react';
 import type {GuestClient} from '../guest/index';
-import type {GuestAccount, GuestAction, GuestIdentity, GuestRequest, GuestResult, GuestView, GuestMessage} from '../contract/guest';
+import type {GuestAccount, GuestAction, GuestCareOffer, GuestIdentity, GuestRequest, GuestResult, GuestView, GuestMessage} from '../contract/guest';
 import {guestCopy} from './copy';
 import {GuestCareOptions} from './GuestCareOptions';
 import {guestStyles} from './styles';
@@ -80,13 +80,13 @@ export function GuestJourney({client, locale = 'en', clinicName, initialCareOffe
   const live = useRef({id: '', phase: '' as string, text: '', open: false});
   const [retryAt, setRetryAt] = useState(0);
   const [now, setNow] = useState(Date.now());
-  const booking = view?.inPersonBooking;
-  const bookingDeadline = booking ? Date.parse(booking.expiresAt) : undefined;
+  const careOffer: GuestCareOffer | undefined = view?.careOffer ?? (view?.inPersonBooking ? {...view.inPersonBooking, care: inPersonCare} : undefined);
+  const offerDeadline = careOffer ? Date.parse(careOffer.expiresAt) : undefined;
   useEffect(() => {
-    if (bookingDeadline === undefined) return;
-    const timer = setTimeout(() => setNow(Date.now()), Math.max(0, bookingDeadline - Date.now()));
+    if (offerDeadline === undefined) return;
+    const timer = setTimeout(() => setNow(Date.now()), Math.max(0, offerDeadline - Date.now()));
     return () => clearTimeout(timer);
-  }, [bookingDeadline]);
+  }, [offerDeadline]);
   const locked = useRef(false);
   const pendingMessage = useRef<{text: string; requestId: string} | null>(null);
   const pendingFile = useRef<File | null>(null);
@@ -193,7 +193,9 @@ export function GuestJourney({client, locale = 'en', clinicName, initialCareOffe
         const current = await client.request('state').catch(() => null);
         if (!isCurrentClient()) return false;
         if (current?.ok) accept(current);
-        else setView(previous => previous && {...previous, recommendedCare: undefined});
+        else setView(previous => previous && {...previous, recommendedCare: undefined,
+          careOffer: previous.careOffer && {...previous.careOffer, available: false},
+          inPersonBooking: previous.inPersonBooking && {...previous.inPersonBooking, available: false}});
         if (!current?.ok || (userMessageCount > 0 && !current.journey.recommendedCare)) {
           setOverlayOpen(false);
           setSurface('chat');
@@ -212,7 +214,9 @@ export function GuestJourney({client, locale = 'en', clinicName, initialCareOffe
         setSurface('chat');
       }
       if (result.ok && action === 'chooseCare' && ['identity', 'verification', 'account', 'offer'].includes(result.journey.phase)) setOverlayOpen(true);
-      if (result.ok && action === 'complete' && result.journey.phase === 'ready') setSurface('welcome');
+      if (result.ok && action === 'complete' && result.journey.phase === 'ready') {
+        setSurface(result.journey.careOffer?.care.mode === 'book' || result.journey.inPersonBooking ? 'chat' : 'welcome');
+      }
       return accept(result);
     }
     catch {if (isCurrentClient()) setError(copy.failed); return false;}
@@ -280,12 +284,13 @@ export function GuestJourney({client, locale = 'en', clinicName, initialCareOffe
   const quotedAmount = chosenOffer?.amountCents ?? view?.payment?.amountCents ?? 0;
   const quotedCurrency = chosenOffer?.currency ?? view?.payment?.currency ?? 'USD';
   const guestActive = view?.guestEnabled !== false;
-  const inPersonSelected = view?.choice?.modality === inPersonCare.modality && view.choice.mode === inPersonCare.mode;
-  const resumeBookingPayment = inPersonSelected && phase === 'payment' && view?.payment?.status === 'pending';
-  const bookingExpired = bookingDeadline !== undefined && bookingDeadline <= now;
-  const bookingAvailable = guestActive && !!booking?.available && !bookingExpired;
+  const offerSelected = !!careOffer && view?.choice?.modality === careOffer.care.modality && view.choice.mode === careOffer.care.mode;
+  const resumeOfferPayment = offerSelected && phase === 'payment' && view?.payment?.status === 'pending';
+  const offerExpired = offerDeadline !== undefined && offerDeadline <= now;
+  const offerAvailable = guestActive && !!careOffer?.available && !offerExpired;
+  const completedBooking = offerSelected && careOffer.care.mode === 'book' && phase === 'ready' ? care : null;
   const showWelcome = !guestActive || surface === 'welcome' || (surface === undefined &&
-    (userMessageCount === 0 || phase === 'ready' || !!view?.payment && !(bookingAvailable && resumeBookingPayment)));
+    (userMessageCount === 0 || (!!view?.payment || phase === 'ready') && !completedBooking && !(offerAvailable && resumeOfferPayment)));
   const refunded = view?.payment?.status === 'refunded';
   const refundPending = view?.payment?.status === 'refund_pending';
   const refundFailed = view?.payment?.status === 'refund_failed';
@@ -296,13 +301,21 @@ export function GuestJourney({client, locale = 'en', clinicName, initialCareOffe
   }, [messageCount, outgoing, phase, formVisible, showWelcome]);
   const choiceUnlocked = !messagePending && guestActive && !!view && !view.care && ['chat', 'identity', 'verification', 'offer', 'payment'].includes(view.phase)
     && (!view.payment || ['failed', 'refunded'].includes(view.payment.status));
-  const resumeBookingForm = inPersonSelected && formPhase && phase !== 'intake';
-  const bookingActionable = !messagePending && bookingAvailable && (choiceUnlocked || resumeBookingForm || resumeBookingPayment);
-  function openInPersonBooking() {
-    if (locked.current || !bookingActionable || (bookingDeadline !== undefined && Date.now() >= bookingDeadline)) return;
-    if (resumeBookingPayment) setPaymentOpen(true);
-    else if (resumeBookingForm) setOverlayOpen(true);
-    else {setConsent(false); void request('chooseCare', {choice: inPersonCare});}
+  const resumeOfferForm = offerSelected && formPhase && phase !== 'intake';
+  const offerActionable = !messagePending && offerAvailable && (choiceUnlocked || resumeOfferForm || resumeOfferPayment);
+  async function openCareOffer(messageId: string) {
+    if (locked.current || !careOffer || careOffer.messageId !== messageId) return false;
+    if (completedBooking) {window.location.assign(completedBooking); return true;}
+    if (!offerActionable || (offerDeadline !== undefined && Date.now() >= offerDeadline)) return false;
+    if (resumeOfferPayment) setPaymentOpen(true);
+    else if (resumeOfferForm) setOverlayOpen(true);
+    else {
+      setConsent(false);
+      return request('chooseCare', view?.careOfferLink?.messageId === messageId
+        ? {careOfferId: messageId, accountCredential: account?.credential}
+        : {choice: careOffer.care, offerMessageId: messageId});
+    }
+    return true;
   }
   useEffect(() => {
     const surfaceOpen = (formPhase && overlayOpen) || (phase === 'payment' && paymentOpen);
@@ -310,7 +323,7 @@ export function GuestJourney({client, locale = 'en', clinicName, initialCareOffe
     surfaceWasOpen.current = surfaceOpen;
     if (!closed) return;
     const animation = requestAnimationFrame(() => (pendingAction.current
-      ?? thread.current?.querySelector<HTMLButtonElement>('.guest-booking-action button:enabled')
+      ?? thread.current?.querySelector<HTMLButtonElement>('.guest-message-action button:enabled')
       ?? frame.current?.querySelector<HTMLButtonElement>('.guest-offer[aria-pressed="true"]')
       ?? composer.current)?.focus({preventScroll: true}));
     return () => cancelAnimationFrame(animation);
@@ -410,24 +423,32 @@ export function GuestJourney({client, locale = 'en', clinicName, initialCareOffe
   }
   const greeting = account?.firstName?.trim() ? copy.welcomeName.replace('{{name}}', () => account.firstName!.trim())
     : copy.welcomeClinic.replace('{{clinic}}', () => view?.clinicName || clinicName || copy.assistant);
-  const signedInSurface = !!account && !loginOpen && (!view?.choice || phase === 'ready');
-  const profileIntake = signedInSurface && guestActive && !view?.intake?.confirmed ? account?.profileIntake : undefined;
+  const signedInSurface = !!account && !loginDialogOpen && (!view?.choice || phase === 'ready' || !!careOffer && !view.payment);
+  const profileIntake = signedInSurface && (!view?.choice || phase === 'ready') && guestActive && !view?.intake?.confirmed ? account?.profileIntake : undefined;
   const profileVisible = profileOpen && !!profileIntake;
-  const recommendation = bookingExpired && view?.recommendedCare?.modality === 'inPerson' ? undefined : view?.recommendedCare;
+  const accountCovered = profileVisible || (formPhase && overlayOpen) || paymentOpen;
+  const recommendation = offerExpired ? undefined : view?.recommendedCare;
   const recommendedOffer = choiceUnlocked && recommendation &&
     (recommendation.modality !== view.choice?.modality || recommendation.mode !== view.choice?.mode)
     ? view.offers.find(offer => offer.modality === recommendation.modality && offer.mode === recommendation.mode) : undefined;
   const welcomeOffers = !choiceUnlocked ? [] : userMessageCount > 0 ? (recommendedOffer ? [recommendedOffer] : [])
     : view.offers.filter(offer => !refunded || offer.modality !== view.choice?.modality || offer.mode !== view.choice?.mode);
   const showEntry = showWelcome && (welcomeOffers.length > 0 || userMessageCount > 0);
+  const pricedOffer = careOffer?.price ? price(careOffer.price.amountCents, careOffer.price.currency) : undefined;
+  const offerLabel = completedBooking ? chatLabels.agent.linkBook : offerExpired ? chatLabels.agent.linkExpired
+    : !offerActionable ? chatLabels.agent.linkUnavailable : careOffer?.care.mode === 'book' ? chatLabels.agent.linkBook
+    : careOffer?.care.modality === 'async'
+      ? pricedOffer ? chatLabels.agent.inviteAcceptPay.replace('{{amount}}', pricedOffer) : chatLabels.agent.inviteAccept
+      : pricedOffer ? chatLabels.agent.linkJoinPay.replace('{{amount}}', pricedOffer) : chatLabels.agent.linkJoin;
   const messages: Array<GuestMessage & {fileName?: string}> = [...(view?.messages ?? []), ...(outgoing && !view?.messages.some(message => message.id === outgoing.id) ? [{...outgoing, role: 'user' as const}] : [])];
   return <section ref={frame} className="natzar-guest" data-guest-frame="" data-guest-phase={phase ?? (saved ? 'restoring' : 'welcome')} lang={locale.replace('_', '-')}>
     <style>{guestStyles}</style>
-    {signedInSurface && <><header className="guest-header guest-header-login" inert={profileVisible}>
+    {signedInSurface && <><header className="guest-header guest-header-login" inert={accountCovered}>
       {profileIntake && <button type="button" className="guest-signup-button" disabled={busy} onClick={() => {setError(''); setProfileOpen(true);}}>{copy.completeProfile}</button>}
       <span className="guest-brand">{greeting}</span><button type="button" className="guest-login-button" disabled={busy} onClick={() => void signOut()}>{loginLabels.signOut}</button></header>
-      {phase === 'ready' && care && <aside className="guest-account-care"><a className="guest-step-action" href={care}>{copy.openCare}<span aria-hidden="true">↗</span></a></aside>}
-      <GuestAccountFrame client={client} frameUrl={account!.frameUrl} locale={locale} onExpired={accountExpired} draft={text} onDraftChange={setText} inert={profileVisible}/></>}
+      {phase === 'ready' && care && (!completedBooking || !view?.careOffer) && <aside className="guest-account-care"><a className="guest-step-action" href={care}>{copy.openCare}<span aria-hidden="true">↗</span></a></aside>}
+      <GuestAccountFrame client={client} frameUrl={account!.frameUrl} locale={locale} onExpired={accountExpired} draft={text} onDraftChange={setText} inert={accountCovered}
+        careOffer={!view?.care ? careOffer : undefined} onCareOffer={openCareOffer}/></>}
     <div className="guest-chat-surface" hidden={formVisible || signedInSurface} inert={formVisible || historyDialogOpen || loginOpen || phase === 'identity' && overlayOpen} aria-hidden={formVisible || historyDialogOpen || loginOpen || phase === 'identity' && overlayOpen || undefined}>
       <header className="guest-header guest-header-login" hidden={!view && !error}>
         {view && guestActive && !showWelcome && (recommendedOffer || view.choice || view.payment) ? <button type="button" className="guest-brand guest-welcome-link" aria-label={copy.welcomeScreen} disabled={busy} onClick={() => setSurface('welcome')}>{greeting}</button>
@@ -460,21 +481,13 @@ export function GuestJourney({client, locale = 'en', clinicName, initialCareOffe
                 data-run-end={messages[index + 1]?.role !== message.role}>{renderEmphasis(message.text)}
                 {'attachments' in message && message.attachments?.map(attachment => <a className="guest-message-file" key={attachment.key} href={safeGuestNavigation(attachment.url) ?? undefined} target="_blank" rel="noreferrer">{attachment.fileName}</a>)}
                 {'fileName' in message && typeof message.fileName === 'string' && message.fileName && <span className="guest-message-file">{message.fileName}</span>}
-                {view.careOfferLink?.messageId === message.id && recommendedOffer &&
-                  <a className="guest-step-action" href={view.careOfferLink.href} aria-disabled={busy || messagePending}
-                    onClick={event => {
-                      event.preventDefault();
-                      if (busy || messagePending) return;
-                      setConsent(false);
-                      void request('chooseCare', {careOfferId: message.id, accountCredential: account?.credential});
-                    }}>{copy.openCare}<span aria-hidden="true">↗</span></a>}
-                {booking?.messageId === message.id && view.careOfferLink?.messageId !== message.id && <div className="guest-booking-action" style={{display: 'flex', marginTop: 12}}>
-                  <LinkPrimaryButton label={bookingExpired ? chatLabels.agent.linkExpired : bookingActionable ? chatLabels.agent.linkBook : chatLabels.agent.linkUnavailable}
-                    busy={false} disabled={!bookingActionable || busy} onClick={openInPersonBooking}/>
-                </div>}
+                {message.role === 'assistant' && careOffer?.messageId === message.id && <LinkActionRow className="guest-message-action">
+                  <LinkPrimaryButton label={offerLabel} busy={false} disabled={!(offerActionable || completedBooking) || busy}
+                    onClick={() => void openCareOffer(message.id)}/>
+                </LinkActionRow>}
                 <time dateTime={message.sentAt}>{new Date(message.sentAt).toLocaleTimeString(locale.replace('_', '-'), {hour: '2-digit', minute: '2-digit'})}</time>
               </div>)}
-              {!showEntry && !sending && !messagePending && recommendedOffer && !view.careOfferLink && <GuestCareOptions offers={[recommendedOffer]}
+              {!showEntry && !sending && !messagePending && recommendedOffer && !careOffer && <GuestCareOptions offers={[recommendedOffer]}
                 busy={busy} freeLabel={copy.free} messageClinicianLabel={copy.messageClinician} videoNowLabel={copy.videoNow}
                 formatPrice={price} onChoose={choice => {setConsent(false); void request('chooseCare', {choice});}}/>}
               {!showEntry && !messages.length && phase !== 'ready' && <AgentWelcome message={chatLabels.agent.empty}/>}
