@@ -30,7 +30,7 @@ export type GuestIntakeSelections = {conditions: string[]; medications: string[]
 export type GuestFile = {fileName: string; contentType: string; contentLength: number};
 export type GuestAttachment = GuestFile & {key: string; ref?: string; url?: string};
 export type GuestUpload = {url: string; attachment: GuestAttachment};
-export type GuestMessage = {id: string; role: 'user' | 'assistant'; text: string; sentAt: string; channel?: GuestChannel; attachments?: GuestAttachment[]};
+export type GuestMessage = {id: string; role: 'user' | 'assistant'; text: string; sentAt: string; channel?: GuestChannel; attachments?: GuestAttachment[]; clinicContactUrl?: string};
 /** One durably accepted chat turn. It grants no care or patient-chart authority. */
 export type GuestPendingMessage = {requestId: string; startedAt: string; status: 'queued' | 'processing'};
 export type GuestOffer = GuestCare & {label: string; amountCents: number; currency: string};

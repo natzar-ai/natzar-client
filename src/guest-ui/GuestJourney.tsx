@@ -40,6 +40,10 @@ function safeGuestNavigation(value?: string): string | null {
   try {const url = new URL(value, typeof location === 'undefined' ? 'https://natzar.ai' : location.href); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : null;} catch {return null;}
 }
 
+function safeClinicContact(value?: string): string | null {
+  return value && /^tel:\+[1-9]\d{6,14}$/.test(value) ? value : safeGuestNavigation(value);
+}
+
 export function GuestJourney({client, locale = 'en', clinicName, initialCareOfferId, getAccountToken, onSignIn, onReady}: GuestJourneyProps) {
   const clientOwner = useRef(client), mounted = useRef(true), restoredClient = useRef<GuestClient | null>(null);
   const initialCareOffer = useRef(initialCareOfferId);
@@ -479,6 +483,8 @@ export function GuestJourney({client, locale = 'en', clinicName, initialCareOffe
                 </div>
               </div> : messages.map((message, index) => <div key={message.id} className="guest-message" data-role={message.role}
                 data-run-end={messages[index + 1]?.role !== message.role}>{renderEmphasis(message.text)}
+                {message.role === 'assistant' && message.clinicContactUrl && safeClinicContact(message.clinicContactUrl) &&
+                  <a className="guest-message-file" href={safeClinicContact(message.clinicContactUrl) ?? undefined} target="_blank" rel="noopener noreferrer">{message.clinicContactUrl.replace(/^tel:/, '')}</a>}
                 {'attachments' in message && message.attachments?.map(attachment => <a className="guest-message-file" key={attachment.key} href={safeGuestNavigation(attachment.url) ?? undefined} target="_blank" rel="noreferrer">{attachment.fileName}</a>)}
                 {'fileName' in message && typeof message.fileName === 'string' && message.fileName && <span className="guest-message-file">{message.fileName}</span>}
                 {message.role === 'assistant' && careOffer?.messageId === message.id && <LinkActionRow className="guest-message-action">
