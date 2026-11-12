@@ -15,7 +15,10 @@ copies.push({file: 'birthdate-calendar.ts', source: join(repo, 'frontend/shared/
 copies.push({file: 'flowbite-datepicker.d.ts', source: join(repo, 'frontend/patient-interface/flowbite-datepicker.d.ts')});
 copies.push({file: 'jurisdictions.ts', source: join(repo, 'shared/jurisdictions.ts')});
 copies.push({file: 'login-policy.ts', source: join(repo, 'shared/patient-login.ts')});
-for (const file of ['AgentWelcome.tsx', 'ChatComposer.tsx', 'LinkPrimaryButton.tsx', 'chat-copy.ts']) copies.push({file, source: join(repo, 'frontend/partner-embed', file)});
+for (const file of ['AgentChat.tsx', 'AgentWelcome.tsx', 'ChatComposer.tsx', 'ChatMessage.tsx', 'ChatTranscript.tsx', 'LinkPrimaryButton.tsx', 'chat-copy.ts', 'chat-dates.ts', 'links.ts']) {
+  copies.push({file, source: join(repo, 'frontend/partner-embed', file)});
+}
+copies.push({file: 'chat-scroll.ts', source: join(repo, 'frontend/partner-embed/frame/scroll.ts')});
 copies.push({file: 'emphasis.tsx', source: join(repo, 'frontend/partner-embed/emphasis.tsx')});
 copies.push({file: 'payment-dialog.ts', source: join(repo, 'frontend/embed-core/loader/payment-dialog.ts')});
 copies.push({file: 'frame-fill.ts', source: join(repo, 'frontend/embed-core/loader/fill.ts')});
@@ -45,10 +48,14 @@ for (const {file, source} of copies) {
     .replaceAll("'../../shared/jurisdictions'", "'./jurisdictions'")
     .replaceAll("'../../shared/patient-login'", "'./login-policy'")
     .replaceAll("'../partner-embed/emphasis'", "'./emphasis'")
+    .replaceAll("'../partner-embed/AgentChat'", "'./AgentChat'")
     .replaceAll("'../partner-embed/AgentWelcome'", "'./AgentWelcome'")
     .replaceAll("'../partner-embed/ChatComposer'", "'./ChatComposer'")
+    .replaceAll("'../partner-embed/ChatTranscript'", "'./ChatTranscript'")
     .replaceAll("'../partner-embed/LinkPrimaryButton'", "'./LinkPrimaryButton'")
     .replaceAll("'../partner-embed/chat-copy'", "'./chat-copy'")
+    .replaceAll("'./frame/scroll'", "'./chat-scroll'")
+    .replaceAll('"../../shared/partner-api/referrals"', '"../contract/referrals"')
     .replace(/import (en|fr|es|de|it) from '\.\/locales\/(en|fr|es|de|it)\.json';/g, "import {$1} from './chat-locales-data';")
     .replaceAll("'../embed-core/loader/fill'", "'./frame-fill'")
     .replaceAll("'../embed-core/loader/payment-dialog'", "'./payment-dialog'")

@@ -1,12 +1,14 @@
 // GENERATED FILE — edit frontend/guest or shared/jurisdictions.ts, then run sync-contract.
-import {AgentThread, AgentWelcome} from './AgentWelcome';
-import {ChatComposer, MAX_UPLOAD_BYTES} from './ChatComposer';
+import {AgentChat, type ChatSubmissionResult} from './AgentChat';
+import {AgentHeader} from './AgentWelcome';
+import {MessageBubble, type ThreadMessage} from './ChatTranscript';
 import {LinkActionRow, LinkPrimaryButton} from './LinkPrimaryButton';
 import {chatCopy} from './chat-copy';
 import {GuestSingleSelect} from './GuestSingleSelect';
-import {useCallback, useEffect, useRef, useState} from 'react';
+import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import type {GuestClient} from '../guest/index';
 import type {GuestAccount, GuestAction, GuestCareOffer, GuestIdentity, GuestRequest, GuestResult, GuestView, GuestMessage} from '../contract/guest';
+import {GUEST_HISTORY_PROMPT_MESSAGES, GUEST_MAX_TEXT} from '../contract/guest';
 import {guestCopy} from './copy';
 import {GuestCareOptions} from './GuestCareOptions';
 import {guestStyles} from './styles';
@@ -15,7 +17,6 @@ import {QuickIntake} from './QuickIntake';
 import {GuestCheckout} from './GuestCheckout';
 import {GuestOverlay} from './GuestOverlay';
 import {smsLoginAllowed} from './login-policy';
-import {renderEmphasis} from './emphasis';
 import {createFillTracker} from './frame-fill';
 import {focusFormField} from './form-focus';
 import {HistoryDialog} from './HistoryDialog';
@@ -51,6 +52,7 @@ export function GuestJourney({client, locale = 'en', clinicName, initialCareOffe
   const isCurrentClient = useCallback(() => mounted.current && clientOwner.current === client, [client]);
   const copy = guestCopy(locale);
   const chatLabels = chatCopy(locale);
+  const dateLocale = locale.replace('_', '-');
   const [view, setView] = useState<GuestView | null>(null);
   const [saved, setSaved] = useState(() => client.hasSavedJourney());
   const [busy, setBusy] = useState(true);
@@ -69,18 +71,20 @@ export function GuestJourney({client, locale = 'en', clinicName, initialCareOffe
   const [profileOpen, setProfileOpen] = useState(false);
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [loginOpen, setLoginOpen] = useState(false), [account, setAccount] = useState<GuestAccount | null>(null);
+  const [authDialog, setAuthDialog] = useState<'manual' | 'automatic'>();
+  const [account, setAccount] = useState<GuestAccount | null>(null);
   const [authPurpose, setAuthPurpose] = useState<'login' | 'signup'>('login');
+  const [authPhone, setAuthPhone] = useState<string>();
   const loginLabels = loginCopy(locale);
   const accountExpired = useCallback(() => {
-    client.forgetAccount?.(); setAccount(null); setProfileOpen(false); setAuthPurpose('login'); setLoginOpen(true);
+    client.forgetAccount?.(); setAccount(null); setProfileOpen(false); setAuthPurpose('login'); setAuthDialog('manual');
     void client.request('state').then(result => {
       if (!isCurrentClient()) return;
       if (result.ok) setView(result.journey);
       else if (result.error === 'session_expired') {client.forget(); setView(null); setSaved(false); setError(copy.expired);}
     }).catch(() => {});
   }, [client, copy.expired, isCurrentClient]);
-  const historyAttempted = useRef<string | null>(null), restoreHistoryFocus = useRef(false), historyDismissals = useRef(0);
+  const historyAttempted = useRef<string | null>(null), promptedSignup = useRef<string | null>(null), restoreHistoryFocus = useRef(false);
   const live = useRef({id: '', phase: '' as string, text: '', open: false});
   const [retryAt, setRetryAt] = useState(0);
   const [now, setNow] = useState(Date.now());
@@ -102,7 +106,7 @@ export function GuestJourney({client, locale = 'en', clinicName, initialCareOffe
   const surfaceWasOpen = useRef(false);
   const ready = useRef<string | null>(null);
   const phase = view?.phase;
-  const loginDialogOpen = loginOpen || !!view?.login?.appendConfirmation;
+  const loginDialogOpen = !!authDialog || !!view?.login?.appendConfirmation;
   const historyDialogOpen = historyOpen || !!view?.history?.appendConfirmation;
   live.current = {id: view?.id ?? '', phase: phase ?? '', text, open: historyDialogOpen || loginDialogOpen};
   const messagePending = !!view?.pendingMessage;
@@ -113,16 +117,16 @@ export function GuestJourney({client, locale = 'en', clinicName, initialCareOffe
     return () => clearTimeout(timer);
   }, [pendingRetryAt]);
   const userMessageCount = view?.messages.filter(message => message.role === 'user').length ?? 0;
-  function closeHistory() {historyDismissals.current++; restoreHistoryFocus.current = true; setHistoryOpen(false);}
+  function closeHistory() {restoreHistoryFocus.current = true; setHistoryOpen(false);}
   async function historyRequest(action: HistoryAction | 'offerHistory', input: Omit<GuestRequest, 'action' | 'credential'> = {}): Promise<GuestResult> {
     if (locked.current || messagePending) return {ok: false, error: 'journey_busy'};
-    const id = view?.id, dismissal = historyDismissals.current;
+    const id = view?.id;
     locked.current = true; setBusy(true);
     try {
       const result = await client.request(action, input);
       if (!isCurrentClient()) return {ok: false, error: 'request_superseded'};
       if (result.ok) {
-        if (action === 'offerHistory' && input.consent !== true && dismissal === historyDismissals.current && live.current.id === id && live.current.phase === 'chat' && !live.current.text.trim() && !live.current.open) showAuth('signup');
+        if (action === 'offerHistory' && promptedSignup.current !== id && live.current.id === id && live.current.phase === 'chat' && !live.current.text.trim() && !live.current.open) showAuth('signup');
         accept(result);
         if (action === 'declineHistory') closeHistory();
         if (action === 'deleteHistory') clearDraftInput();
@@ -136,17 +140,13 @@ export function GuestJourney({client, locale = 'en', clinicName, initialCareOffe
     finally {if (isCurrentClient()) {locked.current = false; setBusy(false);}}
   }
   useEffect(() => {
-    if (historyOpen || loginOpen || account || busy || messagePending || text.trim() || !view?.history?.canOffer || historyAttempted.current === view.id) return;
-    const id = view.id;
-    const timer = setTimeout(() => {
-      if (locked.current || live.current.id !== id || live.current.text.trim() || live.current.phase !== 'chat' || live.current.open || document.visibilityState === 'hidden') return;
-      historyAttempted.current = id;
-      void historyRequest('offerHistory');
-    }, 2400);
-    return () => clearTimeout(timer);
-    // The same client and current refs are used when the quiet period ends.
+    if (locked.current || account || busy || messagePending || !view?.history?.canOffer || historyAttempted.current === view.id) return;
+    // Record a prompt shown during submission even if the patient already closed it.
+    if (promptedSignup.current !== view.id && (historyDialogOpen || loginDialogOpen || text.trim())) return;
+    historyAttempted.current = view.id;
+    void historyRequest('offerHistory');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [busy, messagePending, historyOpen, loginOpen, account, text, view?.id, view?.history?.canOffer]);
+  }, [busy, messagePending, historyDialogOpen, loginDialogOpen, account, text, view?.id, view?.history?.canOffer]);
   useEffect(() => {
     if (!historyOpen && !busy && restoreHistoryFocus.current) {
       restoreHistoryFocus.current = false; composer.current?.focus({preventScroll: true});
@@ -156,7 +156,6 @@ export function GuestJourney({client, locale = 'en', clinicName, initialCareOffe
   useEffect(() => {
     if (error && overlayOpen) focusFormField(frame.current?.querySelector<HTMLElement>('.guest-overlay[data-open="true"] [role="alert"]') ?? null);
   }, [error, overlayOpen]);
-  const messageCount = view?.messages.length ?? 0;
   useEffect(() => {
     const element = frame.current, win = element?.ownerDocument.defaultView;
     if (!element || !win) return;
@@ -168,6 +167,7 @@ export function GuestJourney({client, locale = 'en', clinicName, initialCareOffe
   function accept(result: GuestResult) {
     if (!isCurrentClient() || !result.ok && result.error === 'request_superseded') return false;
     if (result.ok) {
+      if (!result.journey.pendingMessage && !result.journey.history?.canSave) setAuthDialog(current => current === 'automatic' ? undefined : current);
       setView(result.journey); setSaved(client.hasSavedJourney());
       setAccount(result.account ?? client.account?.() ?? null);
       if (result.journey.care && ready.current !== result.journey.care.id) {ready.current = result.journey.care.id; onReady?.(result.journey.care);}
@@ -237,7 +237,8 @@ export function GuestJourney({client, locale = 'en', clinicName, initialCareOffe
       restoredClient.current = client; locked.current = false; ready.current = null;
       pendingMessage.current = null; pendingFile.current = null; stagedAttachment.current = undefined;
       setView(null); setOutgoing(null); setText(''); setFile(null); setSending(false); setError('');
-      setSurface(undefined); setOverlayOpen(false); setPaymentOpen(false); setHistoryOpen(false); setLoginOpen(false);
+      setSurface(undefined); setOverlayOpen(false); setPaymentOpen(false); setHistoryOpen(false); setAuthDialog(undefined);
+      setAuthPhone(undefined);
       setSaved(client.hasSavedJourney()); setAccount(client.account?.() ?? null);
     }
     void request(client.hasSavedJourney() ? 'state' : 'begin');
@@ -300,9 +301,6 @@ export function GuestJourney({client, locale = 'en', clinicName, initialCareOffe
   const refundFailed = view?.payment?.status === 'refund_failed';
   const formPhase = phase === 'account' || (!!phase && ['identity', 'verification', 'offer', 'intake'].includes(phase) && !refunded && !refundPending && !refundFailed);
   const formVisible = phase !== 'identity' && (guestActive || phase === 'account') && formPhase && overlayOpen;
-  useEffect(() => {
-    if (!formVisible) thread.current?.scrollTo({top: showWelcome ? 0 : thread.current.scrollHeight, behavior: 'auto'});
-  }, [messageCount, outgoing, phase, formVisible, showWelcome]);
   const choiceUnlocked = !messagePending && guestActive && !!view && !view.care && ['chat', 'identity', 'verification', 'offer', 'payment'].includes(view.phase)
     && (!view.payment || ['failed', 'refunded'].includes(view.payment.status));
   const resumeOfferForm = offerSelected && formPhase && phase !== 'intake';
@@ -335,11 +333,8 @@ export function GuestJourney({client, locale = 'en', clinicName, initialCareOffe
   const smsAllowed = smsLoginAllowed(view?.identity?.phone ?? '');
   const verificationChannel = smsAllowed ? channel : 'whatsapp';
   useEffect(() => {if (phase === 'offer') setConsent(false);}, [phase, view?.payment?.status, quotedAmount, quotedCurrency]);
-  async function sendMessage() {
-    const value = text.trim();
-    if ((!value && !file) || locked.current || messagePending) return;
-    if (file && file.size > MAX_UPLOAD_BYTES) {setError(chatLabels.chat.fileTooLarge); return;}
-    const selectedFile = file;
+  async function sendMessage(value: string, selectedFile: File | null): Promise<ChatSubmissionResult> {
+    if (locked.current || messagePending) return 'failed';
     if (pendingMessage.current?.text !== value || pendingFile.current !== selectedFile) {
       pendingMessage.current = {text: value, requestId: crypto.randomUUID()};
       pendingFile.current = selectedFile;
@@ -349,30 +344,45 @@ export function GuestJourney({client, locale = 'en', clinicName, initialCareOffe
     setSurface('chat');
     setOutgoing({id: message.requestId, text: value, sentAt: new Date().toISOString(), fileName: selectedFile?.name});
     locked.current = true; setBusy(true); setError('');
-    setSending(true); setText(''); setFile(null);
-    let sent = false;
+    setSending(true);
+    let outcome: ChatSubmissionResult = 'failed';
+    let openedSignup = false;
     try {
       if (selectedFile && !stagedAttachment.current) {
         const result = await client.request('uploadAttachment', {file: {fileName: selectedFile.name, contentType: selectedFile.type || 'application/octet-stream', contentLength: selectedFile.size}});
-        if (!accept(result) || !result.ok || !result.upload) {setOutgoing(null); return;}
-        if (!isCurrentClient()) return;
+        if (!accept(result) || !result.ok || !result.upload) {setOutgoing(null); return 'failed';}
+        if (!isCurrentClient()) return 'superseded';
         const uploaded = await fetch(result.upload.url, {method: 'PUT', body: selectedFile, headers: {'content-type': selectedFile.type || 'application/octet-stream'}});
-        if (!isCurrentClient()) return;
+        if (!isCurrentClient()) return 'superseded';
         if (!uploaded.ok) throw new Error('upload_failed');
         stagedAttachment.current = result.upload.attachment;
       }
+      if (view?.history?.canSave && !view.history.offered && !account && !live.current.open &&
+        promptedSignup.current !== view.id && userMessageCount === GUEST_HISTORY_PROMPT_MESSAGES - 1) {
+        promptedSignup.current = view.id;
+        openedSignup = true;
+        setAuthPhone(undefined);
+        setAuthPurpose('signup');
+        setAuthDialog('automatic');
+      }
       const result = await client.request('message', {...message, ...(stagedAttachment.current ? {attachment: stagedAttachment.current} : {})});
-      if (!isCurrentClient() || !result.ok && result.error === 'request_superseded') {sent = true; return;}
-      const ok = accept(result);
-      if (ok) {sent = true; pendingMessage.current = null; pendingFile.current = null; stagedAttachment.current = undefined;}
+      if (!isCurrentClient()) return 'superseded';
+      if (!result.ok && result.error === 'request_superseded') outcome = 'superseded';
+      else if (accept(result)) {
+        outcome = 'sent'; pendingMessage.current = null; pendingFile.current = null; stagedAttachment.current = undefined;
+      }
       setOutgoing(null);
     } catch {if (isCurrentClient()) {setError(chatLabels.chat.sendFailed); setOutgoing(null);}}
     finally {
       if (isCurrentClient()) {
-        if (!sent) {setText(current => current || value); setFile(current => current ?? selectedFile);}
+        if (outcome !== 'sent' && openedSignup) {
+          promptedSignup.current = null;
+          setAuthDialog(current => current === 'automatic' ? undefined : current);
+        }
         locked.current = false; setBusy(false); setSending(false);
       }
     }
+    return outcome;
   }
   async function retryPendingReply() {
     const pending = view?.pendingMessage;
@@ -387,8 +397,9 @@ export function GuestJourney({client, locale = 'en', clinicName, initialCareOffe
     catch {if (isCurrentClient()) setError(chatLabels.chat.sendFailed);}
     finally {if (isCurrentClient()) {locked.current = false; setBusy(false); setSending(false);}}
   }
-  function showAuth(purpose: 'login' | 'signup') {
-    setHistoryOpen(false); setOverlayOpen(false); setAuthPurpose(purpose); setLoginOpen(true);
+  function showAuth(purpose: 'login' | 'signup', phone?: string) {
+    setAuthPhone(phone);
+    setHistoryOpen(false); setOverlayOpen(false); setAuthPurpose(purpose); setAuthDialog('manual');
   }
   async function openLogin(purpose: 'login' | 'signup' = 'login') {
     if (busy || messagePending) return;
@@ -406,10 +417,10 @@ export function GuestJourney({client, locale = 'en', clinicName, initialCareOffe
       if (result.ok) {
         accept(result);
         if (action === 'deleteHistory') clearDraftInput();
-        if (action === 'declineHistory' || result.account && (isHistoryConfirmation(action) || authPurpose === 'signup')) setLoginOpen(false);
+        if (action === 'declineHistory' || result.account && (isHistoryConfirmation(action) || authPurpose === 'signup')) setAuthDialog(undefined);
       } else if (isHistoryConfirmation(action) && (result.error === 'code_expired' || result.error === 'email_already_associated' && authPurpose === 'signup')) {
         const cleared = await client.request('declineHistory');
-        if (cleared.ok) {accept(cleared); setLoginOpen(true);}
+        if (cleared.ok) {accept(cleared); setAuthDialog('manual');}
       }
       return result;
     } catch {return {ok: false, error: 'service_unavailable'};}
@@ -423,7 +434,7 @@ export function GuestJourney({client, locale = 'en', clinicName, initialCareOffe
     finally {if (isCurrentClient()) {locked.current = false; setBusy(false);}}
   }
   async function signOut() {
-    if (await request('logout')) {client.forget(); setView(null); setSaved(false); setAccount(null); setLoginOpen(false); setSurface(undefined); await request('begin');}
+    if (await request('logout')) {client.forget(); setView(null); setSaved(false); setAccount(null); setAuthDialog(undefined); setSurface(undefined); await request('begin');}
   }
   const greeting = account?.firstName?.trim() ? copy.welcomeName.replace('{{name}}', () => account.firstName!.trim())
     : copy.welcomeClinic.replace('{{clinic}}', () => view?.clinicName || clinicName || copy.assistant);
@@ -444,65 +455,96 @@ export function GuestJourney({client, locale = 'en', clinicName, initialCareOffe
     : careOffer?.care.modality === 'async'
       ? pricedOffer ? chatLabels.agent.inviteAcceptPay.replace('{{amount}}', pricedOffer) : chatLabels.agent.inviteAccept
       : pricedOffer ? chatLabels.agent.linkJoinPay.replace('{{amount}}', pricedOffer) : chatLabels.agent.linkJoin;
-  const messages: Array<GuestMessage & {fileName?: string}> = [...(view?.messages ?? []), ...(outgoing && !view?.messages.some(message => message.id === outgoing.id) ? [{...outgoing, role: 'user' as const}] : [])];
+  const guestMessages = view?.messages;
+  const messages = useMemo(() => {
+    if (!guestActive) return [];
+    const transcript: Array<ThreadMessage & Pick<GuestMessage, 'clinicContactUrl'>> = (guestMessages ?? []).map(message => ({
+      id: message.id, author: message.role === 'user' ? 'patient' : 'agent', body: message.text, sentAt: message.sentAt,
+      emergency: message.role === 'assistant' && message.emergency === true, clinicContactUrl: message.clinicContactUrl,
+      attachments: message.attachments?.map(attachment => ({id: attachment.key, fileName: attachment.fileName, url: attachment.url})),
+    }));
+    if (outgoing && !transcript.some(message => message.id === outgoing.id)) {
+      transcript.push({id: outgoing.id, author: 'patient', body: outgoing.text, sentAt: outgoing.sentAt, pending: true,
+        attachments: outgoing.fileName ? [{fileName: outgoing.fileName}] : undefined});
+    }
+    return transcript;
+  }, [guestActive, guestMessages, outgoing]);
+  const canCompose = !!view && guestActive && view.care?.modality !== 'async';
+  const chatError = error && !overlayOpen && !paymentOpen ? error + (remaining > 0 ? ` (${remaining}s)` : '') : undefined;
   return <section ref={frame} className="natzar-guest" data-guest-frame="" data-guest-phase={phase ?? (saved ? 'restoring' : 'welcome')} lang={locale.replace('_', '-')}>
     <style>{guestStyles}</style>
-    {signedInSurface && <><header className="guest-header guest-header-login" inert={accountCovered}>
+    {signedInSurface && <><AgentHeader className="guest-header guest-header-login" inert={accountCovered}>
       {profileIntake && <button type="button" className="guest-signup-button" disabled={busy} onClick={() => {setError(''); setProfileOpen(true);}}>{copy.completeProfile}</button>}
-      <span className="guest-brand">{greeting}</span><button type="button" className="guest-login-button" disabled={busy} onClick={() => void signOut()}>{loginLabels.signOut}</button></header>
+      <span className="guest-brand">{greeting}</span><button type="button" className="guest-login-button" disabled={busy} onClick={() => void signOut()}>{loginLabels.signOut}</button></AgentHeader>
       {phase === 'ready' && care && (!completedBooking || !view?.careOffer) && <aside className="guest-account-care"><a className="guest-step-action" href={care}>{copy.openCare}<span aria-hidden="true">↗</span></a></aside>}
       <GuestAccountFrame client={client} frameUrl={account!.frameUrl} locale={locale} onExpired={accountExpired} draft={text} onDraftChange={setText} inert={accountCovered}
         careOffer={!view?.care ? careOffer : undefined} onCareOffer={openCareOffer}/></>}
-    <div className="guest-chat-surface" hidden={formVisible || signedInSurface} inert={formVisible || historyDialogOpen || loginOpen || phase === 'identity' && overlayOpen} aria-hidden={formVisible || historyDialogOpen || loginOpen || phase === 'identity' && overlayOpen || undefined}>
-      <header className="guest-header guest-header-login" hidden={!view && !error}>
-        {view && guestActive && !showWelcome && (recommendedOffer || view.choice || view.payment) ? <button type="button" className="guest-brand guest-welcome-link" aria-label={copy.welcomeScreen} disabled={busy} onClick={() => setSurface('welcome')}>{greeting}</button>
-          : <span className="guest-brand">{greeting}</span>}<span className="guest-status">{copy.guest}</span>
-        {!account && <button type="button" className="guest-signup-button" disabled={busy} onClick={() => void openLogin('signup')}>{signupCopy(locale).action}</button>}
-        <button type="button" className="guest-login-button" disabled={busy} onClick={() => {if (account) void signOut(); else void openLogin();}}>{account ? loginLabels.signOut : loginLabels.action}</button>
-      </header>
+    <div className="guest-chat-surface" hidden={formVisible || signedInSurface} inert={formVisible || historyDialogOpen || loginDialogOpen || phase === 'identity' && overlayOpen} aria-hidden={formVisible || historyDialogOpen || loginDialogOpen || phase === 'identity' && overlayOpen || undefined}>
       <main className="guest-main">
-        {!view ? error ? <div className="guest-recovery" aria-live="polite"><p role="alert">{error}</p>
+        {view && <h1 className="guest-chat-title">{copy.assistant}</h1>}
+        <AgentChat
+          locale={dateLocale}
+          headerProps={{className: 'guest-header guest-header-login', hidden: !view && !error}}
+          heading={<>
+            {view && guestActive && !showWelcome && (recommendedOffer || view.choice || view.payment) ? <button type="button" className="guest-brand guest-welcome-link" aria-label={copy.welcomeScreen} disabled={busy} onClick={() => setSurface('welcome')}>{greeting}</button>
+              : <span className="guest-brand">{greeting}</span>}<span className="guest-status">{copy.guest}</span>
+            {!account && <button type="button" className="guest-signup-button" disabled={busy} onClick={() => void openLogin('signup')}>{signupCopy(locale).action}</button>}
+            <button type="button" className="guest-login-button" disabled={busy} onClick={() => {if (account) void signOut(); else void openLogin();}}>{account ? loginLabels.signOut : loginLabels.action}</button>
+          </>}
+          loading={!view ? (error ? <div className="guest-recovery" aria-live="polite"><p role="alert">{error}</p>
           <button className="guest-secondary" disabled={busy || remaining > 0} onClick={() => void request(saved ? 'state' : 'begin')}>{copy.resume}</button>
         </div> : <div className="guest-loading" role="status" aria-live="polite" aria-busy="true" aria-label={copy.busy}>
           <span className="guest-loading-spinner" aria-hidden="true"/>
-        </div> : <>
-          <h1 className="guest-chat-title">{copy.assistant}</h1>
-          <AgentThread className={guestActive ? 'guest-thread' : 'guest-recovery'} ref={thread} role={guestActive ? 'log' : undefined} aria-live="polite" aria-label={copy.guest} emergencyMessage={chatLabels.agent.urgent}>
+        </div>) : undefined}
+          messages={messages}
+          transcriptRef={thread}
+          transcriptProps={{className: guestActive ? 'guest-thread' : 'guest-recovery', role: guestActive ? 'log' : undefined,
+            'aria-live': 'polite', 'aria-label': copy.guest}}
+          messageClassName="guest-message"
+          attachmentClassName="guest-message-file"
+          resolveAttachmentUrl={safeGuestNavigation}
+          awaiting={guestActive && messagePending}
+          typingClassName="guest-typing"
+          typingLabel={copy.busy}
+          scrollRevision={phase}
+          showStart={showWelcome}
+          showEmpty={guestActive && phase !== 'ready'}
+          entry={showEntry && view ? <div className="guest-welcome-transition">
+            <div className="guest-entry-welcome">
+              <h1>{copy.title}</h1><p className="guest-description">{copy.intro}</p>
+              <GuestCareOptions offers={welcomeOffers} choice={view.choice} busy={busy || sending || messagePending} freeLabel={copy.free}
+                messageClinicianLabel={copy.messageClinician} videoNowLabel={copy.videoNow} formatPrice={price}
+                onChoose={choice => {
+                  setConsent(false);
+                  void request('chooseCare', view.careOfferLink ? {careOfferId: view.careOfferLink.messageId, accountCredential: account?.credential} : {choice});
+                }}/>
+              <button className="guest-primary guest-text-agent" onClick={() => {setSurface('chat'); composer.current?.focus({preventScroll: true});}}>{userMessageCount > 0 ? copy.backChat : copy.textAgent}</button>
+            </div>
+          </div> : undefined}
+          afterMessages={guestActive && !showEntry && !sending && !messagePending && recommendedOffer && !careOffer && <GuestCareOptions offers={[recommendedOffer]}
+            busy={busy} freeLabel={copy.free} messageClinicianLabel={copy.messageClinician} videoNowLabel={copy.videoNow}
+            formatPrice={price} onChoose={choice => {setConsent(false); void request('chooseCare', {choice});}}/>}
+          renderMessage={(message, bubble) => {
+            if (message.author !== 'agent') return null;
+            const contact = safeClinicContact(message.clinicContactUrl);
+            const offer = careOffer?.messageId === message.id;
+            if (!contact && !offer) return null;
+            return <MessageBubble {...bubble}>
+              {contact && <a className="guest-clinic-contact" href={contact} target="_blank" rel="noopener noreferrer">
+                {message.clinicContactUrl?.replace(/^tel:/, '')}
+              </a>}
+              {offer && <LinkActionRow className="guest-message-action">
+                <LinkPrimaryButton label={offerLabel} busy={false} disabled={!(offerActionable || completedBooking) || busy}
+                  onClick={() => void openCareOffer(message.id)}/>
+              </LinkActionRow>}
+            </MessageBubble>;
+          }}
+          afterTyping={view && <>
             {!guestActive && <p className="guest-notice" role="status">{copy.disabledExisting}</p>}
-            {guestActive && <>
-              {showEntry ? <div className="guest-welcome-transition">
-                <div className="guest-entry-welcome">
-                  <h1>{copy.title}</h1><p className="guest-description">{copy.intro}</p>
-                  <GuestCareOptions offers={welcomeOffers} choice={view.choice} busy={busy || sending || messagePending} freeLabel={copy.free}
-                    messageClinicianLabel={copy.messageClinician} videoNowLabel={copy.videoNow} formatPrice={price}
-                    onChoose={choice => {
-                      setConsent(false);
-                      void request('chooseCare', view.careOfferLink ? {careOfferId: view.careOfferLink.messageId, accountCredential: account?.credential} : {choice});
-                    }}/>
-                  <button className="guest-primary guest-text-agent" onClick={() => {setSurface('chat'); composer.current?.focus({preventScroll: true});}}>{userMessageCount > 0 ? copy.backChat : copy.textAgent}</button>
-                </div>
-              </div> : messages.map((message, index) => <div key={message.id} className="guest-message" data-role={message.role}
-                data-run-end={messages[index + 1]?.role !== message.role}>{renderEmphasis(message.text)}
-                {message.role === 'assistant' && message.clinicContactUrl && safeClinicContact(message.clinicContactUrl) &&
-                  <a className="guest-message-file" href={safeClinicContact(message.clinicContactUrl) ?? undefined} target="_blank" rel="noopener noreferrer">{message.clinicContactUrl.replace(/^tel:/, '')}</a>}
-                {'attachments' in message && message.attachments?.map(attachment => <a className="guest-message-file" key={attachment.key} href={safeGuestNavigation(attachment.url) ?? undefined} target="_blank" rel="noreferrer">{attachment.fileName}</a>)}
-                {'fileName' in message && typeof message.fileName === 'string' && message.fileName && <span className="guest-message-file">{message.fileName}</span>}
-                {message.role === 'assistant' && careOffer?.messageId === message.id && <LinkActionRow className="guest-message-action">
-                  <LinkPrimaryButton label={offerLabel} busy={false} disabled={!(offerActionable || completedBooking) || busy}
-                    onClick={() => void openCareOffer(message.id)}/>
-                </LinkActionRow>}
-                <time dateTime={message.sentAt}>{new Date(message.sentAt).toLocaleTimeString(locale.replace('_', '-'), {hour: '2-digit', minute: '2-digit'})}</time>
-              </div>)}
-              {!showEntry && !sending && !messagePending && recommendedOffer && !careOffer && <GuestCareOptions offers={[recommendedOffer]}
-                busy={busy} freeLabel={copy.free} messageClinicianLabel={copy.messageClinician} videoNowLabel={copy.videoNow}
-                formatPrice={price} onChoose={choice => {setConsent(false); void request('chooseCare', {choice});}}/>}
-              {!showEntry && !messages.length && phase !== 'ready' && <AgentWelcome message={chatLabels.agent.empty}/>}
-              {(sending || messagePending) && <div className="guest-typing" role="status" aria-label={copy.busy}><span/><span/><span/></div>}
-              {messagePending && !busy && !sending && pendingRetryAt !== undefined && now >= pendingRetryAt && <div className="guest-pending-retry" role="status">
-                <button type="button" className="guest-secondary" onClick={() => void retryPendingReply()}>{copy.retryMessage}</button>
-              </div>}
-            </>}
-            {error && !overlayOpen && !paymentOpen && <p className="guest-error" role="alert">{error}{remaining > 0 && ` (${remaining}s)`}</p>}
+            {guestActive && messagePending && !busy && !sending && pendingRetryAt !== undefined && now >= pendingRetryAt && <div className="guest-pending-retry" role="status">
+              <button type="button" className="guest-secondary" onClick={() => void retryPendingReply()}>{copy.retryMessage}</button>
+            </div>}
+            {!canCompose && chatError && <p className="guest-error" role="alert">{chatError}</p>}
             {notice && !overlayOpen && <p className="guest-notice" role="status">{notice}</p>}
             {showWelcome && (guestActive || phase === 'account') && formPhase && !overlayOpen && !welcomeOffers.length && <aside className="guest-pending-step">
               {phase === 'intake' && <p className="guest-hint">{copy.requiredBeforeCare}</p>}
@@ -519,24 +561,25 @@ export function GuestJourney({client, locale = 'en', clinicName, initialCareOffe
               <p className="guest-notice" role="status">{refunded ? copy.refunded : refundFailed ? copy.refundFailed : copy.refundPending}</p>
               {(refundPending || refundFailed) && <button className="guest-link" disabled={busy} onClick={() => void request('paymentStatus')}>{copy.refundCheck}</button>}
             </aside>}
-            {showWelcome && phase === 'ready' && <aside className="guest-pending-step"><p className="guest-description">{copy.readyBody}</p>
+            {(showWelcome || view.care?.modality === 'async') && phase === 'ready' && <aside className="guest-pending-step"><p className="guest-description">{copy.readyBody}</p>
               {care ? <a className="guest-primary" href={care}>{copy.openCare}</a> : <button className="guest-primary" disabled={busy} onClick={() => void request('complete')}>{busy ? copy.busy : copy.complete}</button>}
             </aside>}
-          </AgentThread>
-          {guestActive && <ChatComposer draft={text} onDraft={setText} file={file} onFile={setFile} busy={busy || sending || messagePending}
-            labels={chatLabels.chat} inputRef={composer} maxLength={2000} placeholder={chatLabels.agent.placeholder}
-            onFocus={() => setSurface('chat')} onBlur={() => {
+          </>}
+          composer={canCompose ? {
+            draft: text, onDraft: setText, file, onFile: setFile, busy: busy || sending || messagePending, error: chatError,
+            inputRef: composer, maxLength: GUEST_MAX_TEXT, onFocus: () => setSurface('chat'), onBlur: () => {
               if (userMessageCount === 0 && !pendingMessage.current) setSurface(current => current === 'chat' ? undefined : current);
-            }} onSend={() => void sendMessage()}/>}
-
-        </>}
+            }, onError: setError, submit: sendMessage, scope: client, isCurrent: isCurrentClient,
+          } : undefined}
+        />
       </main>
     </div>
     {view?.history && phase === 'chat' && <HistoryDialog open={historyDialogOpen && !loginDialogOpen} history={view.history} locale={locale} busy={busy}
       onRequest={historyRequest} onClose={closeHistory}/>}
-    {view && <HistoryDialog key={authPurpose} purpose={authPurpose} country={view.country} open={loginDialogOpen} history={{saved: !!account, offered: true, canOffer: false, canSave: true, ...view.login}} locale={locale} busy={busy}
-      clinicName={view.clinicName} privacyUrl={safeGuestNavigation(view.privacyUrl) ?? undefined} termsUrl={safeGuestNavigation(view.termsUrl) ?? undefined} initialPhone={view.identity?.phone} phoneLocked={view.profile === 'patient' && view.phoneVerified}
-      onRequest={loginRequest} onClose={() => setLoginOpen(false)} onSwitchToLogin={authPurpose === 'signup' ? () => showAuth('login') : undefined}/>}
+    {view && <HistoryDialog key={authPurpose} purpose={authPurpose} country={view.country} open={loginDialogOpen} history={{saved: !!account, offered: true, canOffer: false, canSave: true, ...view.login}} locale={locale} busy={busy && !sending} awaitingReply={sending || messagePending}
+      clinicName={view.clinicName} privacyUrl={safeGuestNavigation(view.privacyUrl) ?? undefined} termsUrl={safeGuestNavigation(view.termsUrl) ?? undefined} initialPhone={authPhone ?? view.identity?.phone} phoneLocked={view.profile === 'patient' && view.phoneVerified}
+      onRequest={loginRequest} onClose={() => setAuthDialog(undefined)} onSwitchToLogin={authPurpose === 'signup' ? () => showAuth('login') : undefined}
+      onSwitchToSignup={authPurpose === 'login' ? phone => showAuth('signup', phone) : undefined}/>}
     {profileIntake && account && <GuestOverlay open={profileVisible} title={copy.intakeTitle} closeLabel={copy.backChat} busy={busy} onClose={() => setProfileOpen(false)}>
       {error && <p className="guest-error" role="alert">{error}</p>}
       <QuickIntake identity={profileIntake} locale={locale} copy={copy} busy={busy}

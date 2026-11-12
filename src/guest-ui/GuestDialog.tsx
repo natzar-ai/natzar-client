@@ -1,7 +1,7 @@
 // GENERATED FILE — edit frontend/guest or shared/jurisdictions.ts, then run sync-contract.
 import {useLayoutEffect, useRef, useState, type ReactNode, type RefObject} from 'react';
 export function GuestDialog({id, purpose, step, title, why, closeLabel, onClose, panel, scroll, heading, blocked, symbol, footer, children, fitWhy = false}: {
-  id: string; purpose: string; step: string; title: string; why: string; closeLabel: string; onClose(): void;
+  id: string; purpose: string; step: string; title: string; why: ReactNode; closeLabel: string; onClose(): void;
   panel: RefObject<HTMLDivElement | null>; scroll: RefObject<HTMLDivElement | null>; heading: RefObject<HTMLHeadingElement | null>;
   fitWhy?: boolean; blocked: boolean; symbol?: ReactNode; footer?: ReactNode; children: ReactNode;
 }) {
@@ -11,12 +11,12 @@ export function GuestDialog({id, purpose, step, title, why, closeLabel, onClose,
     if (!fitWhy || !why) {setShowWhy(true); setConsentSpace(false); setTightTitle(false); return;}
     const body = scroll.current, paragraph = introduction.current, card = panel.current;
     if (!body || !paragraph || !card) return;
+    const shade = card.parentElement!;
     const fit = () => {
       // Allocate optional copy and spacing from the frame's fixed height, never
       // from the flex child's temporarily expanded height while measuring.
       const hidden = paragraph.hidden, spacing = card.dataset.consentSpace, tight = card.dataset.tightTitle;
       delete card.dataset.consentSpace; delete card.dataset.tightTitle; paragraph.hidden = false;
-      const shade = card.parentElement!;
       const shadeStyle = getComputedStyle(shade), cardStyle = getComputedStyle(card), whyStyle = getComputedStyle(paragraph);
       const footer = card.querySelector<HTMLElement>('.guest-signup-footer');
       const capacity = shade.clientHeight - parseFloat(shadeStyle.paddingTop) - parseFloat(shadeStyle.paddingBottom)
@@ -35,6 +35,7 @@ export function GuestDialog({id, purpose, step, title, why, closeLabel, onClose,
     };
     fit();
     const observer = new ResizeObserver(fit);
+    observer.observe(shade);
     observer.observe(body);
     const form = body.querySelector('form');
     if (form) observer.observe(form);

@@ -207,7 +207,7 @@ export function createGuestClient(options: GuestClientOptions): GuestClient {
       // its generation. A late poll cannot restore a forgotten/newer session.
       if (observation) return result;
       if (result.ok) rememberResult(result);
-      if (result.ok && ['declineHistory', 'sendHistoryCode', 'sendLoginCode', 'logout'].includes(action)) {saveHistoryProposal(''); proposedAccount = '';}
+      if (result.ok && ['declineHistory', 'sendHistoryCode', 'sendLoginCode', 'cancelLoginCode', 'logout'].includes(action)) {saveHistoryProposal(''); proposedAccount = '';}
       if (!result.ok && result.error === 'account_expired') {
         saveAccount(null);
         if (action === 'state' && stateAccount) {const retry = {...input}; delete retry.accountCredential; return invoke('state', retry, idToken);}
@@ -302,7 +302,7 @@ export function createGuestClient(options: GuestClientOptions): GuestClient {
         if (action === 'message' && beforeView && original.journey.id !== beforeView.id) return superseded();
         if (original.journey.pendingMessage && action === 'message' && original.journey.pendingMessage.requestId !== requestId) return superseded();
         rememberResult(original); expectedCredential = credential;
-        if (['declineHistory', 'sendHistoryCode', 'sendLoginCode', 'logout'].includes(action)) {saveHistoryProposal(''); proposedAccount = '';}
+        if (['declineHistory', 'sendHistoryCode', 'sendLoginCode', 'cancelLoginCode', 'logout'].includes(action)) {saveHistoryProposal(''); proposedAccount = '';}
         if (action === 'logout') {remember(''); expectedCredential = credential;}
         if (original.journey.pendingMessage && ['message', 'state', 'resume', 'begin'].includes(action)) {
           const pending = original.journey.pendingMessage;

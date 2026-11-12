@@ -6,7 +6,7 @@
 /** Public guest journey contract. Guest credentials never authorize patient chart access. */
 export type GuestChannel = 'web' | 'whatsapp' | 'sms';
 export type GuestPhase = 'chat' | 'identity' | 'verification' | 'account' | 'offer' | 'payment' | 'intake' | 'ready';
-export type GuestAction = 'begin' | 'resume' | 'state' | 'uploadAttachment' | 'message' | 'offerHistory' | 'sendHistoryCode' | 'verifyHistoryCode' | 'appendHistory' | 'deleteHistory' | 'declineHistory' | 'sendLoginCode' | 'verifyLoginCode' | 'profileIntake' | 'chooseCare' | 'identity' | 'sendCode' | 'verify' | 'checkout' | 'paymentStatus' | 'intake' | 'complete' | 'linkAccount' | 'logout';
+export type GuestAction = 'begin' | 'resume' | 'state' | 'uploadAttachment' | 'message' | 'offerHistory' | 'sendHistoryCode' | 'verifyHistoryCode' | 'appendHistory' | 'deleteHistory' | 'declineHistory' | 'sendLoginCode' | 'verifyLoginCode' | 'cancelLoginCode' | 'profileIntake' | 'chooseCare' | 'identity' | 'sendCode' | 'verify' | 'checkout' | 'paymentStatus' | 'intake' | 'complete' | 'linkAccount' | 'logout';
 /** Separately authenticated chat session. Never stored in the anonymous guest cookie. */
 export type GuestAccount = {credential: string; firstName?: string; frameUrl: string; expiresAt: string;
   profileIntake?: Pick<GuestIdentity, 'birthdate' | 'sexAssignedAtBirth' | 'country'>};
@@ -30,7 +30,7 @@ export type GuestIntakeSelections = {conditions: string[]; medications: string[]
 export type GuestFile = {fileName: string; contentType: string; contentLength: number};
 export type GuestAttachment = GuestFile & {key: string; ref?: string; url?: string};
 export type GuestUpload = {url: string; attachment: GuestAttachment};
-export type GuestMessage = {id: string; role: 'user' | 'assistant'; text: string; sentAt: string; channel?: GuestChannel; attachments?: GuestAttachment[]; clinicContactUrl?: string};
+export type GuestMessage = {id: string; role: 'user' | 'assistant'; text: string; sentAt: string; channel?: GuestChannel; attachments?: GuestAttachment[]; clinicContactUrl?: string; emergency?: boolean};
 /** One durably accepted chat turn. It grants no care or patient-chart authority. */
 export type GuestPendingMessage = {requestId: string; startedAt: string; status: 'queued' | 'processing'};
 export type GuestOffer = GuestCare & {label: string; amountCents: number; currency: string};
@@ -69,7 +69,8 @@ export type GuestView = {
     appendConfirmation?: boolean;
     verification?: {phone: string; channel: 'sms' | 'whatsapp'; sentAt: string};
   };
-  login?: {appendConfirmation?: boolean; verification?: {phone: string; channel: 'sms' | 'whatsapp'; sentAt: string}};
+  login?: {appendConfirmation?: boolean; verification?: {phone: string; channel: 'sms' | 'whatsapp'; sentAt: string};
+    signupVerification?: {channel: 'sms' | 'whatsapp'; sentAt: string}};
 };
 export type GuestRequest = {
   action: GuestAction; credential?: string; clinicId?: string; locale?: string;
